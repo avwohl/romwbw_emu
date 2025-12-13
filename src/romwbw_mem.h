@@ -346,7 +346,8 @@ private:
                 return ram[phys];
             }
             // Not shadowed - read from ROM
-            uint32_t phys = (current_bank * BANK_SIZE) + addr;
+            // Mask to 4 bits since we only have 16 ROM banks (512KB / 32KB = 16)
+            uint32_t phys = ((current_bank & 0x0F) * BANK_SIZE) + addr;
             return rom[phys];
         }
     }

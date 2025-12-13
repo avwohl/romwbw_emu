@@ -16,7 +16,7 @@ LDFLAGS = -s WASM=1 \
 ROMWBW_CFLAGS = -O2 -std=c++11 -I$(QKZ80_SRC)
 ROMWBW_LDFLAGS = -s WASM=1 \
           -s EXPORTED_FUNCTIONS='["_main","_romwbw_key_input","_romwbw_set_boot_string","_romwbw_load_rom","_romwbw_load_disk","_romwbw_get_disk_data","_romwbw_get_disk_size","_romwbw_start","_romwbw_stop","_romwbw_is_running","_romwbw_get_instruction_count","_romwbw_get_pc","_romwbw_set_debug","_romwbw_autostart","_malloc","_free"]' \
-          -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS"]' \
+          -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS","HEAPU8"]' \
           -s ALLOW_MEMORY_GROWTH=1 \
           -s INITIAL_MEMORY=67108864
 
@@ -60,6 +60,10 @@ cpm_cli: $(CLI_SRCS) bios.sys ../cpm22.sys ../drivea.img
 # RomWBW WebAssembly build
 romwbw.js: $(ROMWBW_SRCS)
 	$(EMCC) $(ROMWBW_CFLAGS) $(ROMWBW_LDFLAGS) -o romwbw.js $(ROMWBW_SRCS)
+
+# RomWBW debug build with DWARF symbols for Chrome DevTools
+romwbw-debug.js: $(ROMWBW_SRCS)
+	$(EMCC) $(ROMWBW_CFLAGS) $(ROMWBW_LDFLAGS) -g -gsource-map -o romwbw-debug.js $(ROMWBW_SRCS)
 
 # RomWBW with preloaded ROM (optional - requires SBC_simh_std.rom)
 romwbw-bundled.js: $(ROMWBW_SRCS) ../SBC_simh_std.rom

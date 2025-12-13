@@ -754,6 +754,31 @@ void HBIOSDispatch::handleSYS() {
       break;
     }
 
+    case HBF_SYSSETBNK: {
+      // Set current bank
+      // Input: L = bank ID to set
+      uint8_t bank = cpu->regs.HL.get_low();
+      if (memory) {
+        memory->select_bank(bank);
+      }
+      cur_bank = bank;
+      if (debug) {
+        emu_log("[HBIOS] SYSSETBNK bank=0x%02X\n", bank);
+      }
+      break;
+    }
+
+    case HBF_SYSGETBNK: {
+      // Get current bank
+      // Output: L = current bank ID
+      uint8_t bank = cur_bank;
+      if (memory) {
+        bank = memory->get_current_bank();
+      }
+      cpu->regs.HL.set_low(bank);
+      break;
+    }
+
     case HBF_SYSGET: {
       // Get system info - subfunc in C
       switch (subfunc) {

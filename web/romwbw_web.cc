@@ -6,7 +6,7 @@
  * Console I/O via JavaScript callbacks through emu_io.h abstraction.
  */
 
-#include "../src/qkz80.h"
+#include "qkz80.h"  // From cpmemu via -I flag
 #include "../src/romwbw_mem.h"
 #include "../src/hbios_dispatch.h"
 #include "../src/emu_io.h"
@@ -49,28 +49,51 @@ static void handle_emu_signal(uint8_t value) {
 // I/O Port Handling
 //=============================================================================
 
+static int io_in_count = 0;
+
 static uint8_t handle_in(uint8_t port) {
+  uint8_t result = 0xFF;
+
   switch (port) {
     case 0x68:  // UART data
       if (emu_console_has_input()) {
-        return emu_console_read_char() & 0xFF;
+        result = emu_console_read_char() & 0xFF;
+      } else {
+        result = 0;
       }
-      return 0;
+      break;
 
     case 0x6D:  // UART status (SSER)
       // Bit 0: RX ready, Bit 5: TX empty
-      return (emu_console_has_input() ? 0x01 : 0x00) | 0x20;
+      result = (emu_console_has_input() ? 0x01 : 0x00) | 0x20;
+      break;
 
     case 0x78:  // Bank register
     case 0x7C:
-      return memory.get_current_bank();
+      result = memory.get_current_bank();
+      break;
 
     default:
-      return 0xFF;
+      result = 0xFF;
+      break;
   }
+
+  if (debug && io_in_count < 50 && port != 0x6D) {  // Skip 0x6D (polled often)
+    emu_log("[IN] port=0x%02X -> 0x%02X\n", port, result);
+    io_in_count++;
+  }
+
+  return result;
 }
 
+static int io_out_count = 0;
+
 static void handle_out(uint8_t port, uint8_t value) {
+  if (debug && io_out_count < 100) {
+    emu_log("[OUT] port=0x%02X value=0x%02X (%c)\n", port, value,
+            (value >= 32 && value < 127) ? value : '.');
+    io_out_count++;
+  }
   switch (port) {
     case 0x68:  // UART data
       emu_console_write_char(value);
@@ -97,6 +120,13 @@ static void run_batch() {
   for (int i = 0; i < 50000 && running && !waiting_for_input; i++) {
     uint16_t pc = cpu.regs.PC.get_pair16();
     uint8_t opcode = memory.fetch_mem(pc) & 0xFF;
+
+    // Log when PC is near HBIOS entry
+    static int near_fff0_count = 0;
+    if (debug && pc >= 0xFFF0 && pc <= 0xFFFF && near_fff0_count < 10) {
+      emu_log("[PC] at 0x%04X, opcode=0x%02X\n", pc, opcode);
+      near_fff0_count++;
+    }
 
     // Check for HBIOS trap
     if (hbios.checkTrap(pc)) {
