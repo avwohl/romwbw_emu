@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>RomWBW Emulator</title>
+  <title>RomWBW DEBUG Emulator</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
   <style>
     body {
@@ -86,44 +86,24 @@
 <body>
   <div class="header-row">
     <h1>RomWBW Emulator <a href="https://github.com/avwohl/cpmemu" style="font-size:12px;color:#888;margin-left:10px;">[sources]</a></h1>
-    <span id="status" style="color:#888;font-size:14px;">Loading...</span>
-    <span class="info">512KB ROM + 512KB RAM | Z80 | v@VERSION@</span>
+    <span class="info">512KB ROM + 512KB RAM | Z80</span>
   </div>
+  <div id="status">Loading...</div>
 
   <div class="controls">
     <div class="file-input">
-      <label>ROM:</label>
-      <select id="romSelect" style="margin-right:4px;">
-        <option value="">-- Select ROM --</option>
-        <option value="SBC_std.rom">SBC_std.rom (DS1302 RTC, NVRAM)</option>
-        <option value="SBC_simh_std.rom">SBC_simh_std.rom (SimH)</option>
-        <option value="RCZ80_std.rom">RCZ80_std.rom (RC2014)</option>
-      </select>
-      <input type="file" id="romFile" accept=".rom,.bin" style="width:180px;">
-      <label style="margin-left:12px;">Boot:</label><input type="text" id="bootString" placeholder="e.g., 0, C" style="width:80px;">
+      <label>ROM:</label><input type="file" id="romFile" accept=".rom,.bin">
+      <label style="margin-left:12px;">Disk 0:</label><input type="file" id="disk0File" accept=".img,.dsk"><button id="downloadDisk0Btn" disabled>↓Disk0</button>
     </div>
     <div class="file-input">
-      <label>Disk 0:</label>
-      <select id="disk0Select" style="margin-right:4px;">
-        <option value="">-- Select Disk --</option>
-        <option value="hd1k_cpm22.img">hd1k_cpm22.img (CP/M 2.2)</option>
-        <option value="hd1k_zsdos.img">hd1k_zsdos.img (ZSDOS)</option>
-      </select>
-      <input type="file" id="disk0File" accept=".img,.dsk" style="width:180px;">
-      <button id="downloadDisk0Btn" disabled>↓</button>
-    </div>
-    <div class="file-input">
-      <label>Disk 1:</label>
-      <select id="disk1Select" style="margin-right:4px;">
-        <option value="">-- Select Disk --</option>
-        <option value="hd1k_cpm22.img">hd1k_cpm22.img (CP/M 2.2)</option>
-        <option value="hd1k_zsdos.img">hd1k_zsdos.img (ZSDOS)</option>
-      </select>
-      <input type="file" id="disk1File" accept=".img,.dsk" style="width:180px;">
-      <button id="downloadDisk1Btn" disabled>↓</button>
-      <button id="startBtn" style="margin-left:20px;">Start</button>
+      <label>Disk 1:</label><input type="file" id="disk1File" accept=".img,.dsk"><button id="downloadDisk1Btn" disabled>↓Disk1</button>
+      <button id="startBtn" disabled style="margin-left:20px;">Start</button>
       <button id="stopBtn" disabled>Stop</button>
       <label style="margin-left:20px;"><input type="checkbox" id="debugCheckbox"> Debug</label>
+    </div>
+    <div class="file-input">
+      <label>Boot:</label><input type="text" id="bootString" placeholder="e.g., HD0:0, 0, C" style="width:120px;">
+      <span style="font-size:11px;color:#666;margin-left:8px;">Auto-boot command (leave empty for boot menu)</span>
     </div>
   </div>
 
@@ -143,7 +123,7 @@
 
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
-  <script src="romwbw.js"></script>
+  <script src="romwbw-debug.js"></script>
   <script>
     // Terminal setup
     const term = new Terminal({
@@ -174,7 +154,6 @@
     const downloadDisk1Btn = document.getElementById('downloadDisk1Btn');
 
     let romLoaded = false;
-    let diskLoaded = [false, false];
 
     // Console output from emulator
     Module.onConsoleOutput = function(ch) {
@@ -193,41 +172,6 @@
     Module.onStatus = function(msg) {
       statusDiv.textContent = msg;
     };
-
-    // NVRAM persistence via localStorage
-    const NVRAM_KEY = 'romwbw_nvram';
-
-    Module.onNvramSave = function(data) {
-      // Save NVRAM to localStorage as base64
-      let binary = '';
-      for (let i = 0; i < data.length; i++) {
-        binary += String.fromCharCode(data[i]);
-      }
-      localStorage.setItem(NVRAM_KEY, btoa(binary));
-      console.log('NVRAM saved to localStorage');
-    };
-
-    function loadNvramFromStorage() {
-      const saved = localStorage.getItem(NVRAM_KEY);
-      if (saved && Module._romwbw_load_nvram) {
-        try {
-          const binary = atob(saved);
-          const data = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) {
-            data[i] = binary.charCodeAt(i);
-          }
-          const ptr = Module._malloc(data.length);
-          Module.HEAPU8.set(data, ptr);
-          Module._romwbw_load_nvram(ptr, data.length);
-          Module._free(ptr);
-          console.log('NVRAM loaded from localStorage');
-          return true;
-        } catch (e) {
-          console.log('Error loading NVRAM:', e);
-        }
-      }
-      return false;
-    }
 
     //=========================================================================
     // VDA (Video Display Adapter) callbacks
@@ -399,102 +343,54 @@
       }
     });
 
-    // Helper to load ROM data into emulator
-    function loadRomData(data, name) {
-      const ptr = Module._malloc(data.length);
-      Module.HEAPU8.set(data, ptr);
-      Module._romwbw_load_rom(ptr, data.length);
-      Module._free(ptr);
-      romLoaded = true;
-      statusDiv.textContent = 'ROM loaded: ' + name + ' (' + data.length + ' bytes)';
-    }
-
-    // Helper to load disk data into emulator
-    function loadDiskData(unit, data, name) {
-      const ptr = Module._malloc(data.length);
-      Module.HEAPU8.set(data, ptr);
-      Module._romwbw_load_disk(unit, ptr, data.length);
-      Module._free(ptr);
-      diskLoaded[unit] = true;
-      if (unit === 0) downloadDisk0Btn.disabled = false;
-      if (unit === 1) downloadDisk1Btn.disabled = false;
-      statusDiv.textContent = 'Disk ' + unit + ' loaded: ' + name;
-    }
-
-    // Load ROM from server select
-    document.getElementById('romSelect').addEventListener('change', function(e) {
-      const filename = e.target.value;
-      if (!filename) return;
-      statusDiv.textContent = 'Loading ' + filename + '...';
-      fetch(filename)
-        .then(r => r.arrayBuffer())
-        .then(buf => {
-          loadRomData(new Uint8Array(buf), filename);
-          romFile.value = '';  // Clear file input
-        })
-        .catch(err => { statusDiv.textContent = 'Error loading ROM: ' + err; });
-    });
-
-    // Load ROM file from local
+    // Load ROM file
     romFile.addEventListener('change', function(e) {
       const file = e.target.files[0];
       if (!file) return;
       const reader = new FileReader();
       reader.onload = function(e) {
-        loadRomData(new Uint8Array(e.target.result), file.name);
-        document.getElementById('romSelect').value = '';  // Clear select
+        const data = new Uint8Array(e.target.result);
+        const ptr = Module._malloc(data.length);
+        Module.HEAPU8.set(data, ptr);
+        Module._romwbw_load_rom(ptr, data.length);
+        Module._free(ptr);
+        romLoaded = true;
+        startBtn.disabled = false;
+        statusDiv.textContent = 'ROM loaded: ' + file.name + ' (' + data.length + ' bytes)';
       };
       reader.readAsArrayBuffer(file);
     });
 
-    // Load disk 0 from server select
-    document.getElementById('disk0Select').addEventListener('change', function(e) {
-      const filename = e.target.value;
-      if (!filename) return;
-      statusDiv.textContent = 'Loading ' + filename + '...';
-      fetch(filename)
-        .then(r => r.arrayBuffer())
-        .then(buf => {
-          loadDiskData(0, new Uint8Array(buf), filename);
-          disk0File.value = '';
-        })
-        .catch(err => { statusDiv.textContent = 'Error loading disk: ' + err; });
-    });
-
-    // Load disk 0 file from local
+    // Load disk 0 file
     disk0File.addEventListener('change', function(e) {
       const file = e.target.files[0];
       if (!file) return;
       const reader = new FileReader();
       reader.onload = function(e) {
-        loadDiskData(0, new Uint8Array(e.target.result), file.name);
-        document.getElementById('disk0Select').value = '';
+        const data = new Uint8Array(e.target.result);
+        const ptr = Module._malloc(data.length);
+        Module.HEAPU8.set(data, ptr);
+        Module._romwbw_load_disk(0, ptr, data.length);
+        Module._free(ptr);
+        downloadDisk0Btn.disabled = false;
+        statusDiv.textContent = 'Disk 0 loaded: ' + file.name;
       };
       reader.readAsArrayBuffer(file);
     });
 
-    // Load disk 1 from server select
-    document.getElementById('disk1Select').addEventListener('change', function(e) {
-      const filename = e.target.value;
-      if (!filename) return;
-      statusDiv.textContent = 'Loading ' + filename + '...';
-      fetch(filename)
-        .then(r => r.arrayBuffer())
-        .then(buf => {
-          loadDiskData(1, new Uint8Array(buf), filename);
-          disk1File.value = '';
-        })
-        .catch(err => { statusDiv.textContent = 'Error loading disk: ' + err; });
-    });
-
-    // Load disk 1 file from local
+    // Load disk 1 file
     disk1File.addEventListener('change', function(e) {
       const file = e.target.files[0];
       if (!file) return;
       const reader = new FileReader();
       reader.onload = function(e) {
-        loadDiskData(1, new Uint8Array(e.target.result), file.name);
-        document.getElementById('disk1Select').value = '';
+        const data = new Uint8Array(e.target.result);
+        const ptr = Module._malloc(data.length);
+        Module.HEAPU8.set(data, ptr);
+        Module._romwbw_load_disk(1, ptr, data.length);
+        Module._free(ptr);
+        downloadDisk1Btn.disabled = false;
+        statusDiv.textContent = 'Disk 1 loaded: ' + file.name;
       };
       reader.readAsArrayBuffer(file);
     });
@@ -507,45 +403,10 @@
     });
 
     // Start button
-    startBtn.addEventListener('click', async function() {
-      startBtn.disabled = true;
+    startBtn.addEventListener('click', function() {
       term.clear();
       term.writeln('RomWBW Emulator - WebAssembly Edition');
       term.writeln('');
-
-      // Auto-load default ROM if none loaded
-      if (!romLoaded) {
-        const defaultRom = 'SBC_std.rom';  // Has DS1302 RTC with NVRAM
-        statusDiv.textContent = 'Loading default ROM...';
-        try {
-          const response = await fetch(defaultRom);
-          const buf = await response.arrayBuffer();
-          loadRomData(new Uint8Array(buf), defaultRom);
-          document.getElementById('romSelect').value = defaultRom;
-        } catch (err) {
-          statusDiv.textContent = 'Error loading ROM: ' + err;
-          startBtn.disabled = false;
-          return;
-        }
-      }
-
-      // Auto-load default disk if none loaded
-      if (!diskLoaded[0]) {
-        const defaultDisk = 'hd1k_zsdos.img';
-        statusDiv.textContent = 'Loading default disk...';
-        try {
-          const response = await fetch(defaultDisk);
-          const buf = await response.arrayBuffer();
-          loadDiskData(0, new Uint8Array(buf), defaultDisk);
-          document.getElementById('disk0Select').value = defaultDisk;
-        } catch (err) {
-          // Disk is optional, just log warning
-          console.log('Could not load default disk:', err);
-        }
-      }
-
-      // Load NVRAM settings from localStorage
-      loadNvramFromStorage();
 
       // Set boot string if provided
       const bootStr = document.getElementById('bootString').value.trim();
@@ -563,7 +424,7 @@
       }
 
       Module._romwbw_start();
-      statusDiv.textContent = 'Running';
+      startBtn.disabled = true;
       stopBtn.disabled = false;
       term.focus();
     });
@@ -571,7 +432,7 @@
     // Stop button
     stopBtn.addEventListener('click', function() {
       Module._romwbw_stop();
-      startBtn.disabled = false;
+      startBtn.disabled = !romLoaded;
       stopBtn.disabled = true;
       statusDiv.textContent = 'Stopped';
     });
@@ -615,10 +476,9 @@
 
     // Wait for WASM to load
     Module.onRuntimeInitialized = function() {
-      statusDiv.textContent = 'Ready - Load a ROM or click Start';
-      startBtn.disabled = false;
+      statusDiv.textContent = 'Ready - Load a ROM to begin';
       term.writeln('RomWBW Emulator ready.');
-      term.writeln('Load a ROM image or click Start to boot.');
+      term.writeln('Load a ROM image and click Start to boot.');
       term.writeln('');
     };
   </script>

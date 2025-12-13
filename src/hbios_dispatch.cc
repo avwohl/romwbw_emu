@@ -55,7 +55,11 @@ void HBIOSDispatch::reset() {
   }
   snd_duration = 100;
 
-  // Note: NVRAM is NOT cleared on reset - it's persistent
+  // Initialize NVRAM with valid RomWBW header if empty
+  // First byte 'W' indicates NVRAM is initialized
+  if (nvram[0] != 'W') {
+    nvram[0] = 'W';
+  }
 }
 
 //=============================================================================
@@ -63,7 +67,15 @@ void HBIOSDispatch::reset() {
 //=============================================================================
 
 void HBIOSDispatch::loadNvram(const uint8_t* data, int size) {
-  if (!data || size <= 0) return;
+  if (!data || size <= 0) {
+    // Initialize with valid RomWBW NVRAM header if no data provided
+    // First byte 'W' indicates NVRAM is initialized
+    nvram[0] = 'W';
+    if (debug) {
+      emu_log("[HBIOS] NVRAM initialized with default header\n");
+    }
+    return;
+  }
   int copy_size = (size < NVRAM_SIZE) ? size : NVRAM_SIZE;
   memcpy(nvram, data, copy_size);
   if (debug) {
