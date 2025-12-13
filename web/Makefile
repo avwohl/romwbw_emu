@@ -85,7 +85,7 @@ deploy: cpm.js
 
 deploy-romwbw: romwbw.js
 	mkdir -p ~/www/romwbw
-	sed "s/@VERSION@/$$(cat ../VERSION)/" romwbw.html > ~/www/romwbw/romwbw.html
+	sed "s/@VERSION@/$$(cat ../VERSION)/" romwbw.html > ~/www/romwbw/index.html
 	cp romwbw.js romwbw.wasm ~/www/romwbw/
 
 .PHONY: all clean serve serve-romwbw deploy deploy-romwbw
