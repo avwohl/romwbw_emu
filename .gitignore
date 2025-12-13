@@ -29,3 +29,6 @@ Thumbs.db
 *.map
 *.hex
 *.ihx
+
+# Local machine-specific makefile settings
+src/local.mk
