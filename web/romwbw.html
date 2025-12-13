@@ -379,6 +379,7 @@
       Module.HEAPU8.set(data, ptr);
       Module._romwbw_load_disk(unit, ptr, data.length);
       Module._free(ptr);
+      diskLoaded[unit] = true;
       if (unit === 0) downloadDisk0Btn.disabled = false;
       if (unit === 1) downloadDisk1Btn.disabled = false;
       statusDiv.textContent = 'Disk ' + unit + ' loaded: ' + name;
@@ -489,6 +490,21 @@
           statusDiv.textContent = 'Error loading ROM: ' + err;
           startBtn.disabled = false;
           return;
+        }
+      }
+
+      // Auto-load default disk if none loaded
+      if (!diskLoaded[0]) {
+        const defaultDisk = 'hd1k_zsdos.img';
+        statusDiv.textContent = 'Loading default disk...';
+        try {
+          const response = await fetch(defaultDisk);
+          const buf = await response.arrayBuffer();
+          loadDiskData(0, new Uint8Array(buf), defaultDisk);
+          document.getElementById('disk0Select').value = defaultDisk;
+        } catch (err) {
+          // Disk is optional, just log warning
+          console.log('Could not load default disk:', err);
         }
       }
 
