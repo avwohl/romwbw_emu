@@ -154,6 +154,7 @@
     const downloadDisk1Btn = document.getElementById('downloadDisk1Btn');
 
     let romLoaded = false;
+    let diskLoaded = [false, false];
 
     // Console output from emulator
     Module.onConsoleOutput = function(ch) {
@@ -355,7 +356,6 @@
         Module._romwbw_load_rom(ptr, data.length);
         Module._free(ptr);
         romLoaded = true;
-        startBtn.disabled = false;
         statusDiv.textContent = 'ROM loaded: ' + file.name + ' (' + data.length + ' bytes)';
       };
       reader.readAsArrayBuffer(file);
@@ -432,7 +432,7 @@
     // Stop button
     stopBtn.addEventListener('click', function() {
       Module._romwbw_stop();
-      startBtn.disabled = !romLoaded;
+      startBtn.disabled = false;
       stopBtn.disabled = true;
       statusDiv.textContent = 'Stopped';
     });
@@ -476,9 +476,10 @@
 
     // Wait for WASM to load
     Module.onRuntimeInitialized = function() {
-      statusDiv.textContent = 'Ready - Load a ROM to begin';
+      statusDiv.textContent = 'Ready - Load a ROM or click Start';
+      startBtn.disabled = false;
       term.writeln('RomWBW Emulator ready.');
-      term.writeln('Load a ROM image and click Start to boot.');
+      term.writeln('Load a ROM image or click Start to boot.');
       term.writeln('');
     };
   </script>
