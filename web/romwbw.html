@@ -92,12 +92,34 @@
 
   <div class="controls">
     <div class="file-input">
-      <label>ROM:</label><input type="file" id="romFile" accept=".rom,.bin">
+      <label>ROM:</label>
+      <select id="romSelect" style="margin-right:4px;">
+        <option value="">-- Select ROM --</option>
+        <option value="emu_romwbw.rom">emu_romwbw.rom (EMU build)</option>
+        <option value="SBC_simh_std.rom">SBC_simh_std.rom (SIMH)</option>
+      </select>
+      <input type="file" id="romFile" accept=".rom,.bin" style="width:180px;">
       <label style="margin-left:12px;">Boot:</label><input type="text" id="bootString" placeholder="e.g., 0, C" style="width:80px;">
-      <label style="margin-left:12px;">Disk 0:</label><input type="file" id="disk0File" accept=".img,.dsk"><button id="downloadDisk0Btn" disabled>↓</button>
     </div>
     <div class="file-input">
-      <label>Disk 1:</label><input type="file" id="disk1File" accept=".img,.dsk"><button id="downloadDisk1Btn" disabled>↓</button>
+      <label>Disk 0:</label>
+      <select id="disk0Select" style="margin-right:4px;">
+        <option value="">-- Select Disk --</option>
+        <option value="hd1k_cpm22.img">hd1k_cpm22.img (CP/M 2.2)</option>
+        <option value="hd1k_zsdos.img">hd1k_zsdos.img (ZSDOS)</option>
+      </select>
+      <input type="file" id="disk0File" accept=".img,.dsk" style="width:180px;">
+      <button id="downloadDisk0Btn" disabled>↓</button>
+    </div>
+    <div class="file-input">
+      <label>Disk 1:</label>
+      <select id="disk1Select" style="margin-right:4px;">
+        <option value="">-- Select Disk --</option>
+        <option value="hd1k_cpm22.img">hd1k_cpm22.img (CP/M 2.2)</option>
+        <option value="hd1k_zsdos.img">hd1k_zsdos.img (ZSDOS)</option>
+      </select>
+      <input type="file" id="disk1File" accept=".img,.dsk" style="width:180px;">
+      <button id="downloadDisk1Btn" disabled>↓</button>
       <button id="startBtn" style="margin-left:20px;">Start</button>
       <button id="stopBtn" disabled>Stop</button>
       <label style="margin-left:20px;"><input type="checkbox" id="debugCheckbox"> Debug</label>
@@ -341,53 +363,101 @@
       }
     });
 
-    // Load ROM file
+    // Helper to load ROM data into emulator
+    function loadRomData(data, name) {
+      const ptr = Module._malloc(data.length);
+      Module.HEAPU8.set(data, ptr);
+      Module._romwbw_load_rom(ptr, data.length);
+      Module._free(ptr);
+      romLoaded = true;
+      statusDiv.textContent = 'ROM loaded: ' + name + ' (' + data.length + ' bytes)';
+    }
+
+    // Helper to load disk data into emulator
+    function loadDiskData(unit, data, name) {
+      const ptr = Module._malloc(data.length);
+      Module.HEAPU8.set(data, ptr);
+      Module._romwbw_load_disk(unit, ptr, data.length);
+      Module._free(ptr);
+      if (unit === 0) downloadDisk0Btn.disabled = false;
+      if (unit === 1) downloadDisk1Btn.disabled = false;
+      statusDiv.textContent = 'Disk ' + unit + ' loaded: ' + name;
+    }
+
+    // Load ROM from server select
+    document.getElementById('romSelect').addEventListener('change', function(e) {
+      const filename = e.target.value;
+      if (!filename) return;
+      statusDiv.textContent = 'Loading ' + filename + '...';
+      fetch(filename)
+        .then(r => r.arrayBuffer())
+        .then(buf => {
+          loadRomData(new Uint8Array(buf), filename);
+          romFile.value = '';  // Clear file input
+        })
+        .catch(err => { statusDiv.textContent = 'Error loading ROM: ' + err; });
+    });
+
+    // Load ROM file from local
     romFile.addEventListener('change', function(e) {
       const file = e.target.files[0];
       if (!file) return;
       const reader = new FileReader();
       reader.onload = function(e) {
-        const data = new Uint8Array(e.target.result);
-        const ptr = Module._malloc(data.length);
-        Module.HEAPU8.set(data, ptr);
-        Module._romwbw_load_rom(ptr, data.length);
-        Module._free(ptr);
-        romLoaded = true;
-        statusDiv.textContent = 'ROM loaded: ' + file.name + ' (' + data.length + ' bytes)';
+        loadRomData(new Uint8Array(e.target.result), file.name);
+        document.getElementById('romSelect').value = '';  // Clear select
       };
       reader.readAsArrayBuffer(file);
     });
 
-    // Load disk 0 file
+    // Load disk 0 from server select
+    document.getElementById('disk0Select').addEventListener('change', function(e) {
+      const filename = e.target.value;
+      if (!filename) return;
+      statusDiv.textContent = 'Loading ' + filename + '...';
+      fetch(filename)
+        .then(r => r.arrayBuffer())
+        .then(buf => {
+          loadDiskData(0, new Uint8Array(buf), filename);
+          disk0File.value = '';
+        })
+        .catch(err => { statusDiv.textContent = 'Error loading disk: ' + err; });
+    });
+
+    // Load disk 0 file from local
     disk0File.addEventListener('change', function(e) {
       const file = e.target.files[0];
       if (!file) return;
       const reader = new FileReader();
       reader.onload = function(e) {
-        const data = new Uint8Array(e.target.result);
-        const ptr = Module._malloc(data.length);
-        Module.HEAPU8.set(data, ptr);
-        Module._romwbw_load_disk(0, ptr, data.length);
-        Module._free(ptr);
-        downloadDisk0Btn.disabled = false;
-        statusDiv.textContent = 'Disk 0 loaded: ' + file.name;
+        loadDiskData(0, new Uint8Array(e.target.result), file.name);
+        document.getElementById('disk0Select').value = '';
       };
       reader.readAsArrayBuffer(file);
     });
 
-    // Load disk 1 file
+    // Load disk 1 from server select
+    document.getElementById('disk1Select').addEventListener('change', function(e) {
+      const filename = e.target.value;
+      if (!filename) return;
+      statusDiv.textContent = 'Loading ' + filename + '...';
+      fetch(filename)
+        .then(r => r.arrayBuffer())
+        .then(buf => {
+          loadDiskData(1, new Uint8Array(buf), filename);
+          disk1File.value = '';
+        })
+        .catch(err => { statusDiv.textContent = 'Error loading disk: ' + err; });
+    });
+
+    // Load disk 1 file from local
     disk1File.addEventListener('change', function(e) {
       const file = e.target.files[0];
       if (!file) return;
       const reader = new FileReader();
       reader.onload = function(e) {
-        const data = new Uint8Array(e.target.result);
-        const ptr = Module._malloc(data.length);
-        Module.HEAPU8.set(data, ptr);
-        Module._romwbw_load_disk(1, ptr, data.length);
-        Module._free(ptr);
-        downloadDisk1Btn.disabled = false;
-        statusDiv.textContent = 'Disk 1 loaded: ' + file.name;
+        loadDiskData(1, new Uint8Array(e.target.result), file.name);
+        document.getElementById('disk1Select').value = '';
       };
       reader.readAsArrayBuffer(file);
     });
