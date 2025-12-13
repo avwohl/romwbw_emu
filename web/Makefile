@@ -88,4 +88,13 @@ deploy-romwbw: romwbw.js
 	sed "s/@VERSION@/$$(cat ../VERSION)/" romwbw.html > ~/www/romwbw/index.html
 	cp romwbw.js romwbw.wasm ~/www/romwbw/
 
-.PHONY: all clean serve serve-romwbw deploy deploy-romwbw
+# Test deployment (romwbw1) - for testing before production
+deploy-test: romwbw.js
+	mkdir -p ~/www/romwbw1
+	sed "s/@VERSION@/$$(cat ../VERSION)-test/" romwbw.html > ~/www/romwbw1/index.html
+	cp romwbw.js romwbw.wasm ~/www/romwbw1/
+	cp ~/www/romwbw/*.rom ~/www/romwbw1/ 2>/dev/null || true
+	cp ~/www/romwbw/*.img ~/www/romwbw1/ 2>/dev/null || true
+	@echo "Test deployment at https://www.awohl.com/romwbw1"
+
+.PHONY: all clean serve serve-romwbw deploy deploy-romwbw deploy-test
