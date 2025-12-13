@@ -1,23 +1,30 @@
 RomWBW Emulator - Remaining Tasks
 ==================================
 
-Status: CLI version works. WebAssembly version needs testing.
+Status: CLI and WebAssembly versions both build and run.
 
 Completed:
 ----------
 - Split off from ~/src/cpmemu - DONE
 - CLI version builds and runs using installed qkz80 library
 - Updated web/Makefile to use qkz80 sources from cpmemu for WASM build
+- Fixed web/Makefile QKZ80_SRC to use relative path (../../cpmemu/src)
+- Fixed duplicate js_status symbol in romwbw_web.cc (now uses emu_status)
+- WebAssembly version builds successfully with emscripten
+- Removed legacy CP/M BIOS mode code (~560 lines removed)
+  - Removed CPMDisk class, BiosEntry enum, handle_bios_call()
+  - Removed --cpm and --disk-a/b/c/d options
+  - Updated to version 2.0.0, focused purely on RomWBW/HBIOS
+- Fixed debug output appearing by default (now requires --debug flag)
+- Web files installed to ~/ww/romwbw/
 
 Remaining Tasks:
 ----------------
 
-1. BUILD AND TEST WEBASSEMBLY VERSION
-   - Log in as user with emscripten installed
-   - cd web && make romwbw.js
-   - Test with: make serve-romwbw (opens http://localhost:8080)
+1. TEST WEBASSEMBLY VERSION IN BROWSER
+   - Test with: cd web && make serve-romwbw (opens http://localhost:8080)
    - Load romwbw.html and test with emu_romwbw.rom or SBC_simh_std.rom
-   - Debug memory bank switching issues mentioned in previous notes
+   - Verify boot prompt and OS boot options work
 
 2. VERIFY ALL OSes BOOT
    - At boot prompt, test each OS option:
@@ -26,18 +33,9 @@ Remaining Tasks:
      - Z (ZSDOS)
    - Ensure boot ROM prompt works in both CLI and WebAssembly
 
-3. REFACTOR SHARED CODE (if not already done)
-   - Memory bank code is in romwbw_mem.h (shared)
-   - HBIOS dispatch is in hbios_dispatch.cc (shared)
-   - I/O abstraction is in emu_io.h with emu_io_cli.cc / emu_io_wasm.cc
-   - Verify the factoring is complete and both versions use same core
-
-4. OPTIONAL: Make QKZ80_SRC path in web/Makefile configurable
-   - Currently hardcoded to /home/wohl2/src/cpmemu/src
-   - Could use environment variable or local.mk override
-
 Notes:
 ------
 - CLI emulator: ./src/romwbw_emu --romwbw roms/emu_romwbw.rom
 - Console escape: Ctrl+E
 - Boot help: press H at boot prompt
+- Version: 2.0.0 (2025-12-13)
