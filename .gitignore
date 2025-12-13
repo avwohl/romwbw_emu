@@ -1,0 +1,31 @@
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+
+# Executables
+src/romwbw_emu
+
+# WebAssembly build artifacts
+web/*.js
+web/*.wasm
+web/*.data
+web/cpm_cli
+
+# Editor files
+*~
+*.swp
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Assembler artifacts
+*.rel
+*.lst
+*.map
+*.hex
+*.ihx

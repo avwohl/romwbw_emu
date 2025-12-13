@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>RomWBW Emulator</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+  <style>
+    body {
+      background: #1a1a2e;
+      color: #eee;
+      font-family: 'Segoe UI', Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+    }
+    h1 {
+      color: #00aaff;
+      margin-bottom: 10px;
+    }
+    #status {
+      color: #888;
+      margin-bottom: 10px;
+      font-size: 14px;
+    }
+    #terminal-container {
+      border: 2px solid #333;
+      border-radius: 8px;
+      overflow: hidden;
+      display: inline-block;
+    }
+    .controls {
+      margin: 15px 0;
+    }
+    button {
+      background: #0066aa;
+      color: white;
+      border: none;
+      padding: 4px 12px;
+      margin-right: 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    button:hover {
+      background: #0088cc;
+    }
+    button:disabled {
+      background: #555;
+      cursor: not-allowed;
+    }
+    .file-input {
+      margin: 4px 0;
+    }
+    label {
+      display: inline-block;
+      margin-right: 8px;
+      font-size: 13px;
+    }
+    .header-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .info {
+      font-size: 12px;
+      color: #666;
+    }
+    .instructions {
+      margin-top: 20px;
+      padding: 15px;
+      background: #222;
+      border-radius: 8px;
+      font-size: 13px;
+      max-width: 700px;
+    }
+    .instructions h3 {
+      color: #00aaff;
+      margin-top: 0;
+    }
+    .instructions code {
+      background: #333;
+      padding: 2px 6px;
+      border-radius: 3px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header-row">
+    <h1>RomWBW Emulator <a href="https://github.com/avwohl/cpmemu" style="font-size:12px;color:#888;margin-left:10px;">[sources]</a></h1>
+    <span class="info">512KB ROM + 512KB RAM | Z80</span>
+  </div>
+  <div id="status">Loading...</div>
+
+  <div class="controls">
+    <div class="file-input">
+      <label>ROM:</label><input type="file" id="romFile" accept=".rom,.bin">
+      <label style="margin-left:12px;">Disk 0:</label><input type="file" id="disk0File" accept=".img,.dsk"><button id="downloadDisk0Btn" disabled>↓Disk0</button>
+    </div>
+    <div class="file-input">
+      <label>Disk 1:</label><input type="file" id="disk1File" accept=".img,.dsk"><button id="downloadDisk1Btn" disabled>↓Disk1</button>
+      <button id="startBtn" disabled style="margin-left:20px;">Start</button>
+      <button id="stopBtn" disabled>Stop</button>
+      <label style="margin-left:20px;"><input type="checkbox" id="debugCheckbox"> Debug</label>
+    </div>
+    <div class="file-input">
+      <label>Boot:</label><input type="text" id="bootString" placeholder="e.g., HD0:0, 0, C" style="width:120px;">
+      <span style="font-size:11px;color:#666;margin-left:8px;">Auto-boot command (leave empty for boot menu)</span>
+    </div>
+  </div>
+
+  <div id="terminal-container">
+    <div id="terminal"></div>
+  </div>
+
+  <div class="instructions">
+    <h3>Quick Start</h3>
+    <p>1. Load a RomWBW ROM image (e.g., <code>SBC_simh_std.rom</code> from the RomWBW distribution)</p>
+    <p>2. Optionally load disk images for hard disk units</p>
+    <p>3. Click <strong>Start</strong> to boot RomWBW</p>
+    <p>4. At the boot prompt, press <code>h</code> for help, or select a boot option</p>
+    <h3>Boot Loader Commands</h3>
+    <p><code>h</code> - Help | <code>l</code> - List ROM apps | <code>d</code> - List devices | <code>m</code> - Monitor | <code>z</code> - Z-System</p>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+  <script src="romwbw.js"></script>
+  <script>
+    // Terminal setup
+    const term = new Terminal({
+      cols: 80,
+      rows: 25,
+      cursorBlink: true,
+      fontSize: 16,
+      fontFamily: 'Consolas, Monaco, monospace',
+      theme: {
+        background: '#0a0a1a',
+        foreground: '#00aaff',
+        cursor: '#00aaff'
+      }
+    });
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(document.getElementById('terminal'));
+    fitAddon.fit();
+
+    const statusDiv = document.getElementById('status');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const debugCheckbox = document.getElementById('debugCheckbox');
+    const romFile = document.getElementById('romFile');
+    const disk0File = document.getElementById('disk0File');
+    const disk1File = document.getElementById('disk1File');
+    const downloadDisk0Btn = document.getElementById('downloadDisk0Btn');
+    const downloadDisk1Btn = document.getElementById('downloadDisk1Btn');
+
+    let romLoaded = false;
+
+    // Console output from emulator
+    Module.onConsoleOutput = function(ch) {
+      if (ch === 13) {  // CR
+        term.write('\r\n');
+      } else if (ch === 10) {  // LF - ignore (CR already did newline)
+        // Do nothing
+      } else if (ch === 8) {  // Backspace
+        term.write('\b \b');
+      } else if (ch >= 32 && ch < 127) {
+        term.write(String.fromCharCode(ch));
+      }
+    };
+
+    // Status messages from emulator
+    Module.onStatus = function(msg) {
+      statusDiv.textContent = msg;
+    };
+
+    //=========================================================================
+    // VDA (Video Display Adapter) callbacks
+    //=========================================================================
+
+    // Track VDA cursor separately from terminal cursor
+    let vdaCursorRow = 0;
+    let vdaCursorCol = 0;
+    let vdaAttr = 0x07;
+    let vdaFg = 7;
+    let vdaBg = 0;
+
+    // ANSI color codes (CGA palette)
+    const ansiColors = [
+      '#000000', // 0: Black
+      '#0000AA', // 1: Blue
+      '#00AA00', // 2: Green
+      '#00AAAA', // 3: Cyan
+      '#AA0000', // 4: Red
+      '#AA00AA', // 5: Magenta
+      '#AA5500', // 6: Brown/Yellow
+      '#AAAAAA', // 7: Light Gray
+      '#555555', // 8: Dark Gray
+      '#5555FF', // 9: Light Blue
+      '#55FF55', // 10: Light Green
+      '#55FFFF', // 11: Light Cyan
+      '#FF5555', // 12: Light Red
+      '#FF55FF', // 13: Light Magenta
+      '#FFFF55', // 14: Yellow
+      '#FFFFFF'  // 15: White
+    ];
+
+    Module.onVdaInit = function(rows, cols) {
+      // Initialize video display
+      term.clear();
+      vdaCursorRow = 0;
+      vdaCursorCol = 0;
+      console.log('VDA Init: ' + rows + 'x' + cols);
+    };
+
+    Module.onVdaClear = function() {
+      term.clear();
+      vdaCursorRow = 0;
+      vdaCursorCol = 0;
+    };
+
+    Module.onVdaSetCursor = function(row, col) {
+      vdaCursorRow = row;
+      vdaCursorCol = col;
+      // Use ANSI escape sequence to position cursor (1-based)
+      term.write('\x1b[' + (row + 1) + ';' + (col + 1) + 'H');
+    };
+
+    Module.onVdaWriteChar = function(ch, attr) {
+      // Apply attribute if different
+      if (attr !== vdaAttr) {
+        vdaAttr = attr;
+        // Convert attribute to ANSI colors (simple: low nibble = fg, high nibble = bg)
+        let fg = attr & 0x0F;
+        let bg = (attr >> 4) & 0x07;
+        term.write('\x1b[' + (30 + (fg & 7)) + ';' + (40 + bg) + 'm');
+      }
+      if (ch >= 32 && ch < 127) {
+        term.write(String.fromCharCode(ch));
+      } else if (ch === 13) {
+        term.write('\r');
+      } else if (ch === 10) {
+        term.write('\n');
+      }
+    };
+
+    Module.onVdaFill = function(row, col, count, ch, attr) {
+      // Position cursor and fill with character
+      term.write('\x1b[' + (row + 1) + ';' + (col + 1) + 'H');
+      const fillChar = (ch >= 32 && ch < 127) ? String.fromCharCode(ch) : ' ';
+      term.write(fillChar.repeat(count));
+    };
+
+    Module.onVdaScroll = function(lines) {
+      if (lines > 0) {
+        // Scroll up: use ANSI scroll up
+        term.write('\x1b[' + lines + 'S');
+      } else if (lines < 0) {
+        // Scroll down: use ANSI scroll down
+        term.write('\x1b[' + (-lines) + 'T');
+      }
+    };
+
+    Module.onVdaSetAttr = function(attr) {
+      vdaAttr = attr;
+      let fg = attr & 0x0F;
+      let bg = (attr >> 4) & 0x07;
+      term.write('\x1b[' + (30 + (fg & 7)) + ';' + (40 + bg) + 'm');
+    };
+
+    Module.onVdaSetColor = function(fg, bg) {
+      vdaFg = fg;
+      vdaBg = bg;
+      term.write('\x1b[' + (30 + (fg & 7)) + ';' + (40 + (bg & 7)) + 'm');
+    };
+
+    //=========================================================================
+    // Sound callbacks (using Web Audio API)
+    //=========================================================================
+
+    let audioContext = null;
+
+    function getAudioContext() {
+      if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      return audioContext;
+    }
+
+    Module.onSndReset = function() {
+      // Stop all sounds
+      if (audioContext) {
+        audioContext.close();
+        audioContext = null;
+      }
+    };
+
+    Module.onSndBeep = function(freq, duration_ms) {
+      try {
+        const ctx = getAudioContext();
+        const oscillator = ctx.createOscillator();
+        const gainNode = ctx.createGain();
+
+        oscillator.connect(gainNode);
+        gainNode.connect(ctx.destination);
+
+        oscillator.type = 'square';  // Retro sound
+        oscillator.frequency.value = freq;
+        gainNode.gain.value = 0.1;   // Not too loud
+
+        oscillator.start();
+        oscillator.stop(ctx.currentTime + duration_ms / 1000);
+      } catch (e) {
+        console.log('Sound error:', e);
+      }
+    };
+
+    Module.onSndNote = function(channel, note, duration_ms) {
+      // Convert MIDI note number to frequency: f = 440 * 2^((n-69)/12)
+      const freq = 440 * Math.pow(2, (note - 69) / 12);
+      Module.onSndBeep(freq, duration_ms);
+    };
+
+    Module.onSndVolume = function(channel, volume) {
+      // Volume control (0-255) - could be used to adjust gain
+      console.log('Sound volume:', channel, volume);
+    };
+
+    // Keyboard input to emulator
+    term.onKey(function(e) {
+      if (Module._romwbw_key_input) {
+        let ch = e.key.charCodeAt(0);
+        if (e.key === 'Enter') ch = 13;
+        else if (e.key === 'Backspace') ch = 8;
+        else if (e.key === 'Delete') ch = 127;
+        else if (e.key === 'Escape') ch = 27;
+        // Handle Ctrl+key combinations
+        if (e.domEvent.ctrlKey && e.key.length === 1) {
+          ch = e.key.toUpperCase().charCodeAt(0) - 64;
+          if (ch < 0) ch = 0;
+          if (ch > 31) ch = 31;
+        }
+        Module._romwbw_key_input(ch);
+      }
+    });
+
+    // Load ROM file
+    romFile.addEventListener('change', function(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const data = new Uint8Array(e.target.result);
+        const ptr = Module._malloc(data.length);
+        Module.HEAPU8.set(data, ptr);
+        Module._romwbw_load_rom(ptr, data.length);
+        Module._free(ptr);
+        romLoaded = true;
+        startBtn.disabled = false;
+        statusDiv.textContent = 'ROM loaded: ' + file.name + ' (' + data.length + ' bytes)';
+      };
+      reader.readAsArrayBuffer(file);
+    });
+
+    // Load disk 0 file
+    disk0File.addEventListener('change', function(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const data = new Uint8Array(e.target.result);
+        const ptr = Module._malloc(data.length);
+        Module.HEAPU8.set(data, ptr);
+        Module._romwbw_load_disk(0, ptr, data.length);
+        Module._free(ptr);
+        downloadDisk0Btn.disabled = false;
+        statusDiv.textContent = 'Disk 0 loaded: ' + file.name;
+      };
+      reader.readAsArrayBuffer(file);
+    });
+
+    // Load disk 1 file
+    disk1File.addEventListener('change', function(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const data = new Uint8Array(e.target.result);
+        const ptr = Module._malloc(data.length);
+        Module.HEAPU8.set(data, ptr);
+        Module._romwbw_load_disk(1, ptr, data.length);
+        Module._free(ptr);
+        downloadDisk1Btn.disabled = false;
+        statusDiv.textContent = 'Disk 1 loaded: ' + file.name;
+      };
+      reader.readAsArrayBuffer(file);
+    });
+
+    // Debug checkbox
+    debugCheckbox.addEventListener('change', function() {
+      if (Module._romwbw_set_debug) {
+        Module._romwbw_set_debug(debugCheckbox.checked ? 1 : 0);
+      }
+    });
+
+    // Start button
+    startBtn.addEventListener('click', function() {
+      term.clear();
+      term.writeln('RomWBW Emulator - WebAssembly Edition');
+      term.writeln('');
+
+      // Set boot string if provided
+      const bootStr = document.getElementById('bootString').value.trim();
+      if (bootStr && Module._romwbw_set_boot_string) {
+        // Pass the string to the emulator (allocate temp buffer)
+        const len = bootStr.length + 1;
+        const ptr = Module._malloc(len);
+        for (let i = 0; i < bootStr.length; i++) {
+          Module.HEAPU8[ptr + i] = bootStr.charCodeAt(i);
+        }
+        Module.HEAPU8[ptr + bootStr.length] = 0;  // Null terminate
+        Module._romwbw_set_boot_string(ptr);
+        Module._free(ptr);
+        term.writeln('Auto-boot: ' + bootStr);
+      }
+
+      Module._romwbw_start();
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+      term.focus();
+    });
+
+    // Stop button
+    stopBtn.addEventListener('click', function() {
+      Module._romwbw_stop();
+      startBtn.disabled = !romLoaded;
+      stopBtn.disabled = true;
+      statusDiv.textContent = 'Stopped';
+    });
+
+    // Download disk 0
+    downloadDisk0Btn.addEventListener('click', function() {
+      const size = Module._romwbw_get_disk_size(0);
+      const ptr = Module._romwbw_get_disk_data(0);
+      if (ptr && size > 0) {
+        const data = new Uint8Array(Module.HEAPU8.buffer, ptr, size);
+        const blob = new Blob([data], {type: 'application/octet-stream'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'romwbw_disk0.img';
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+    });
+
+    // Download disk 1
+    downloadDisk1Btn.addEventListener('click', function() {
+      const size = Module._romwbw_get_disk_size(1);
+      const ptr = Module._romwbw_get_disk_data(1);
+      if (ptr && size > 0) {
+        const data = new Uint8Array(Module.HEAPU8.buffer, ptr, size);
+        const blob = new Blob([data], {type: 'application/octet-stream'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'romwbw_disk1.img';
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+    });
+
+    // Click on terminal to focus it
+    document.getElementById('terminal-container').addEventListener('click', function() {
+      term.focus();
+    });
+
+    // Wait for WASM to load
+    Module.onRuntimeInitialized = function() {
+      statusDiv.textContent = 'Ready - Load a ROM to begin';
+      term.writeln('RomWBW Emulator ready.');
+      term.writeln('Load a ROM image and click Start to boot.');
+      term.writeln('');
+    };
+  </script>
+</body>
+</html>
