@@ -20,14 +20,6 @@
 using cpm_mem = banked_mem;
 
 //=============================================================================
-// JavaScript Status Callback (for status messages)
-//=============================================================================
-
-EM_JS(void, js_status, (const char* msg), {
-  if (Module.onStatus) Module.onStatus(UTF8ToString(msg));
-});
-
-//=============================================================================
 // Global State
 //=============================================================================
 
@@ -118,7 +110,7 @@ static void run_batch() {
 
     // Handle HLT
     if (opcode == 0x76) {
-      js_status("HLT instruction - emulation stopped");
+      emu_status("HLT instruction - emulation stopped");
       running = false;
       break;
     }
@@ -234,7 +226,7 @@ int romwbw_load_rom(const uint8_t* data, int size) {
 
   char msg[64];
   snprintf(msg, sizeof(msg), "ROM loaded: %d bytes", copy_size);
-  js_status(msg);
+  emu_status(msg);
   return 0;
 }
 
@@ -249,7 +241,7 @@ int romwbw_load_disk(int unit, const uint8_t* data, int size) {
 
   char msg[64];
   snprintf(msg, sizeof(msg), "Disk %d loaded: %d bytes", unit, size);
-  js_status(msg);
+  emu_status(msg);
   return 0;
 }
 
@@ -312,7 +304,7 @@ void romwbw_start() {
   waiting_for_input = false;
   instruction_count = 0;
 
-  js_status("RomWBW starting...");
+  emu_status("RomWBW starting...");
 }
 
 // Stop emulation
@@ -353,7 +345,7 @@ int romwbw_autostart() {
   // Load ROM from virtual filesystem
   FILE* f = fopen("/romwbw.rom", "rb");
   if (!f) {
-    js_status("Error: romwbw.rom not found");
+    emu_status("Error: romwbw.rom not found");
     return -1;
   }
 
@@ -412,7 +404,7 @@ int main() {
   hbios.setMemory(&memory);
   hbios.reset();
 
-  js_status("RomWBW Emulator ready");
+  emu_status("RomWBW Emulator ready");
   emscripten_set_main_loop(main_loop, 0, 0);
   return 0;
 }
