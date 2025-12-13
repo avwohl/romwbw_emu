@@ -95,9 +95,8 @@
       <label>ROM:</label>
       <select id="romSelect" style="margin-right:4px;">
         <option value="">-- Select ROM --</option>
-        <option value="SBC_std.rom">SBC_std.rom (DS1302 RTC, NVRAM)</option>
-        <option value="SBC_simh_std.rom">SBC_simh_std.rom (SimH)</option>
-        <option value="RCZ80_std.rom">RCZ80_std.rom (RC2014)</option>
+        <option value="emu_romwbw.rom">emu_romwbw.rom (EMU build)</option>
+        <option value="SBC_simh_std.rom">SBC_simh_std.rom (SIMH)</option>
       </select>
       <input type="file" id="romFile" accept=".rom,.bin" style="width:180px;">
       <label style="margin-left:12px;">Boot:</label><input type="text" id="bootString" placeholder="e.g., 0, C" style="width:80px;">
@@ -193,41 +192,6 @@
     Module.onStatus = function(msg) {
       statusDiv.textContent = msg;
     };
-
-    // NVRAM persistence via localStorage
-    const NVRAM_KEY = 'romwbw_nvram';
-
-    Module.onNvramSave = function(data) {
-      // Save NVRAM to localStorage as base64
-      let binary = '';
-      for (let i = 0; i < data.length; i++) {
-        binary += String.fromCharCode(data[i]);
-      }
-      localStorage.setItem(NVRAM_KEY, btoa(binary));
-      console.log('NVRAM saved to localStorage');
-    };
-
-    function loadNvramFromStorage() {
-      const saved = localStorage.getItem(NVRAM_KEY);
-      if (saved && Module._romwbw_load_nvram) {
-        try {
-          const binary = atob(saved);
-          const data = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) {
-            data[i] = binary.charCodeAt(i);
-          }
-          const ptr = Module._malloc(data.length);
-          Module.HEAPU8.set(data, ptr);
-          Module._romwbw_load_nvram(ptr, data.length);
-          Module._free(ptr);
-          console.log('NVRAM loaded from localStorage');
-          return true;
-        } catch (e) {
-          console.log('Error loading NVRAM:', e);
-        }
-      }
-      return false;
-    }
 
     //=========================================================================
     // VDA (Video Display Adapter) callbacks
@@ -515,7 +479,7 @@
 
       // Auto-load default ROM if none loaded
       if (!romLoaded) {
-        const defaultRom = 'SBC_std.rom';  // Has DS1302 RTC with NVRAM
+        const defaultRom = 'SBC_simh_std.rom';
         statusDiv.textContent = 'Loading default ROM...';
         try {
           const response = await fetch(defaultRom);
@@ -544,9 +508,6 @@
         }
       }
 
-      // Load NVRAM settings from localStorage
-      loadNvramFromStorage();
-
       // Set boot string if provided
       const bootStr = document.getElementById('bootString').value.trim();
       if (bootStr && Module._romwbw_set_boot_string) {
@@ -563,7 +524,6 @@
       }
 
       Module._romwbw_start();
-      statusDiv.textContent = 'Running';
       stopBtn.disabled = false;
       term.focus();
     });

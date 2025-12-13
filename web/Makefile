@@ -15,7 +15,7 @@ LDFLAGS = -s WASM=1 \
 # RomWBW WebAssembly build flags
 ROMWBW_CFLAGS = -O2 -std=c++11 -I$(QKZ80_SRC)
 ROMWBW_LDFLAGS = -s WASM=1 \
-          -s EXPORTED_FUNCTIONS='["_main","_romwbw_key_input","_romwbw_set_boot_string","_romwbw_load_rom","_romwbw_load_disk","_romwbw_get_disk_data","_romwbw_get_disk_size","_romwbw_load_nvram","_romwbw_get_nvram_data","_romwbw_get_nvram_size","_romwbw_start","_romwbw_stop","_romwbw_is_running","_romwbw_get_instruction_count","_romwbw_get_pc","_romwbw_set_debug","_romwbw_autostart","_malloc","_free"]' \
+          -s EXPORTED_FUNCTIONS='["_main","_romwbw_key_input","_romwbw_set_boot_string","_romwbw_load_rom","_romwbw_load_disk","_romwbw_get_disk_data","_romwbw_get_disk_size","_romwbw_start","_romwbw_stop","_romwbw_is_running","_romwbw_get_instruction_count","_romwbw_get_pc","_romwbw_set_debug","_romwbw_autostart","_malloc","_free"]' \
           -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS","HEAPU8"]' \
           -s ALLOW_MEMORY_GROWTH=1 \
           -s INITIAL_MEMORY=67108864
@@ -88,13 +88,4 @@ deploy-romwbw: romwbw.js
 	sed "s/@VERSION@/$$(cat ../VERSION)/" romwbw.html > ~/www/romwbw/index.html
 	cp romwbw.js romwbw.wasm ~/www/romwbw/
 
-# Test deployment (romwbw1) - for testing before production
-deploy-test: romwbw.js
-	mkdir -p ~/www/romwbw1
-	sed "s/@VERSION@/$$(cat ../VERSION)-test/" romwbw.html > ~/www/romwbw1/index.html
-	cp romwbw.js romwbw.wasm ~/www/romwbw1/
-	cp ~/www/romwbw/*.rom ~/www/romwbw1/ 2>/dev/null || true
-	cp ~/www/romwbw/*.img ~/www/romwbw1/ 2>/dev/null || true
-	@echo "Test deployment at https://www.awohl.com/romwbw1"
-
-.PHONY: all clean serve serve-romwbw deploy deploy-romwbw deploy-test
+.PHONY: all clean serve serve-romwbw deploy deploy-romwbw

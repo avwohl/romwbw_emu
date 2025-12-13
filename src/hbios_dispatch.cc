@@ -54,33 +54,6 @@ void HBIOSDispatch::reset() {
     snd_period[i] = 0;
   }
   snd_duration = 100;
-
-  // Initialize NVRAM with valid RomWBW header if empty
-  // First byte 'W' indicates NVRAM is initialized
-  if (nvram[0] != 'W') {
-    nvram[0] = 'W';
-  }
-}
-
-//=============================================================================
-// NVRAM Management
-//=============================================================================
-
-void HBIOSDispatch::loadNvram(const uint8_t* data, int size) {
-  if (!data || size <= 0) {
-    // Initialize with valid RomWBW NVRAM header if no data provided
-    // First byte 'W' indicates NVRAM is initialized
-    nvram[0] = 'W';
-    if (debug) {
-      emu_log("[HBIOS] NVRAM initialized with default header\n");
-    }
-    return;
-  }
-  int copy_size = (size < NVRAM_SIZE) ? size : NVRAM_SIZE;
-  memcpy(nvram, data, copy_size);
-  if (debug) {
-    emu_log("[HBIOS] NVRAM loaded: %d bytes\n", copy_size);
-  }
 }
 
 //=============================================================================
@@ -189,20 +162,32 @@ int HBIOSDispatch::findRomApp(char key) const {
 
 void HBIOSDispatch::handleSignalPort(uint8_t value) {
   // Supports two protocols:
-  // Protocol 1 (simple status, used by altair_emu):
+  //
+  // Protocol 1 (simple status):
   //   0x01 = HBIOS starting
   //   0xFE = PREINIT point
   //   0xFF = Init complete, enable trapping
   //
-  // Protocol 2 (address registration, used by romwbw_web):
-  //   State machine: 1/2=CIO, 3/4=DIO, 5/6=RTC, 7/8=SYS, 9/10=VDA, 11/12=SND
-  //   First value sets state, then low byte, then high byte
+  // Protocol 2 (sequential address registration, used by emu_hbios):
+  //   0x02 = Start sequential registration
+  //   Then sends: CIO_L, CIO_H, DIO_L, DIO_H, RTC_L, RTC_H, SYS_L, SYS_H
+  //   State counts from 1-8 for these bytes
+  //
+  // Protocol 3 (prefixed registration):
+  //   0x10-0x15 = Start registration for specific handler
+  //   Then low byte, then high byte
 
   if (signal_state == 0) {
-    // Check for special signals (Protocol 1)
+    // Check for special signals
     switch (value) {
       case 0x01:  // HBIOS starting
         if (debug) emu_log("[HBIOS] Boot code starting...\n");
+        return;
+
+      case 0x02:  // Protocol 2: Start sequential registration
+        signal_state = 1;  // Will receive CIO low next
+        signal_addr = 0;
+        if (debug) emu_log("[HBIOS] Sequential dispatch registration starting\n");
         return;
 
       case 0xFE:  // PREINIT point (test mode)
@@ -216,15 +201,14 @@ void HBIOSDispatch::handleSignalPort(uint8_t value) {
         }
         return;
 
-      // Protocol 2: Start address registration (0x10-0x15 range)
-      // These don't conflict with Protocol 1 signals
+      // Protocol 3: Start address registration (0x10-0x15 range)
       case 0x10:  // Start CIO registration
       case 0x11:  // Start DIO registration
       case 0x12:  // Start RTC registration
       case 0x13:  // Start SYS registration
       case 0x14:  // Start VDA registration
       case 0x15:  // Start SND registration
-        signal_state = value;
+        signal_state = 0x80 | (value - 0x10);  // Use high bit to distinguish protocol 3
         signal_addr = 0;
         return;
 
@@ -234,46 +218,53 @@ void HBIOSDispatch::handleSignalPort(uint8_t value) {
     }
   }
 
-  // Protocol 2: Address registration state machine (0x10-0x15 + low/high bytes)
-  // Each registration starts with 0x1X, then expects low byte, then high byte
-  uint8_t handler_type = signal_state;
-  bool is_low_byte = (signal_addr == 0);
-
-  if (is_low_byte) {
-    // Receiving low byte
-    signal_addr = value;
-  } else {
-    // Receiving high byte - complete registration
-    uint16_t addr = signal_addr | (value << 8);
-
-    switch (handler_type) {
-      case 0x10:
-        cio_dispatch = addr;
-        if (debug) emu_log("[HBIOS] CIO dispatch at 0x%04X\n", cio_dispatch);
-        break;
-      case 0x11:
-        dio_dispatch = addr;
-        if (debug) emu_log("[HBIOS] DIO dispatch at 0x%04X\n", dio_dispatch);
-        break;
-      case 0x12:
-        rtc_dispatch = addr;
-        if (debug) emu_log("[HBIOS] RTC dispatch at 0x%04X\n", rtc_dispatch);
-        break;
-      case 0x13:
-        sys_dispatch = addr;
-        if (debug) emu_log("[HBIOS] SYS dispatch at 0x%04X\n", sys_dispatch);
-        break;
-      case 0x14:
-        vda_dispatch = addr;
-        if (debug) emu_log("[HBIOS] VDA dispatch at 0x%04X\n", vda_dispatch);
-        break;
-      case 0x15:
-        snd_dispatch = addr;
-        if (debug) emu_log("[HBIOS] SND dispatch at 0x%04X\n", snd_dispatch);
-        break;
+  // Protocol 3: Prefixed registration (state has high bit set)
+  if (signal_state & 0x80) {
+    uint8_t handler_idx = signal_state & 0x0F;
+    if (signal_addr == 0) {
+      // Receiving low byte
+      signal_addr = value;
+    } else {
+      // Receiving high byte - complete registration
+      uint16_t addr = signal_addr | (value << 8);
+      switch (handler_idx) {
+        case 0: cio_dispatch = addr; if (debug) emu_log("[HBIOS] CIO dispatch at 0x%04X\n", addr); break;
+        case 1: dio_dispatch = addr; if (debug) emu_log("[HBIOS] DIO dispatch at 0x%04X\n", addr); break;
+        case 2: rtc_dispatch = addr; if (debug) emu_log("[HBIOS] RTC dispatch at 0x%04X\n", addr); break;
+        case 3: sys_dispatch = addr; if (debug) emu_log("[HBIOS] SYS dispatch at 0x%04X\n", addr); break;
+        case 4: vda_dispatch = addr; if (debug) emu_log("[HBIOS] VDA dispatch at 0x%04X\n", addr); break;
+        case 5: snd_dispatch = addr; if (debug) emu_log("[HBIOS] SND dispatch at 0x%04X\n", addr); break;
+      }
+      signal_state = 0;
+      signal_addr = 0;
     }
-    signal_state = 0;
-    signal_addr = 0;
+    return;
+  }
+
+  // Protocol 2: Sequential registration (state 1-8)
+  // State 1=CIO_L, 2=CIO_H, 3=DIO_L, 4=DIO_H, 5=RTC_L, 6=RTC_H, 7=SYS_L, 8=SYS_H
+  if (signal_state >= 1 && signal_state <= 8) {
+    bool is_low = (signal_state & 1) == 1;  // Odd states are low bytes
+    int handler_idx = (signal_state - 1) / 2;  // 0=CIO, 1=DIO, 2=RTC, 3=SYS
+
+    if (is_low) {
+      signal_addr = value;
+      signal_state++;
+    } else {
+      uint16_t addr = signal_addr | (value << 8);
+      switch (handler_idx) {
+        case 0: cio_dispatch = addr; if (debug) emu_log("[HBIOS] CIO dispatch at 0x%04X\n", addr); break;
+        case 1: dio_dispatch = addr; if (debug) emu_log("[HBIOS] DIO dispatch at 0x%04X\n", addr); break;
+        case 2: rtc_dispatch = addr; if (debug) emu_log("[HBIOS] RTC dispatch at 0x%04X\n", addr); break;
+        case 3: sys_dispatch = addr; if (debug) emu_log("[HBIOS] SYS dispatch at 0x%04X\n", addr); break;
+      }
+      signal_addr = 0;
+      if (signal_state < 8) {
+        signal_state++;
+      } else {
+        signal_state = 0;  // Done with all 4 handlers
+      }
+    }
   }
 }
 
@@ -536,6 +527,22 @@ void HBIOSDispatch::handleDIO() {
 
       uint8_t blocks_read = 0;
 
+      // Helper lambda to write byte to correct bank
+      auto write_to_bank = [&](uint16_t addr, uint8_t byte) {
+        if (buffer_bank & 0x80) {
+          // Bank-aware write
+          if (addr >= 0x8000) {
+            // Common area - write to bank 0x8F
+            memory->write_bank(0x8F, addr - 0x8000, byte);
+          } else {
+            memory->write_bank(buffer_bank, addr, byte);
+          }
+        } else {
+          // Use current bank
+          memory->store_mem(addr, byte);
+        }
+      };
+
       if (disks[unit].file_backed && disks[unit].handle) {
         // Read from file
         uint8_t sector_buf[512];
@@ -546,9 +553,9 @@ void HBIOSDispatch::handleDIO() {
           if (read == 0) {
             break;
           }
-          // Copy to Z80 memory
+          // Copy to Z80 memory (bank-aware)
           for (size_t i = 0; i < 512; i++) {
-            memory->store_mem(buffer + s * 512 + i, sector_buf[i]);
+            write_to_bank(buffer + s * 512 + i, sector_buf[i]);
           }
           blocks_read++;
         }
@@ -560,7 +567,7 @@ void HBIOSDispatch::handleDIO() {
             break;
           }
           for (size_t i = 0; i < 512; i++) {
-            memory->store_mem(buffer + s * 512 + i, disks[unit].data[offset + i]);
+            write_to_bank(buffer + s * 512 + i, disks[unit].data[offset + i]);
           }
           blocks_read++;
         }
@@ -598,12 +605,28 @@ void HBIOSDispatch::handleDIO() {
 
       uint8_t blocks_written = 0;
 
+      // Helper lambda to read byte from correct bank
+      auto read_from_bank = [&](uint16_t addr) -> uint8_t {
+        if (buffer_bank & 0x80) {
+          // Bank-aware read
+          if (addr >= 0x8000) {
+            // Common area - read from bank 0x8F
+            return memory->read_bank(0x8F, addr - 0x8000);
+          } else {
+            return memory->read_bank(buffer_bank, addr);
+          }
+        } else {
+          // Use current bank
+          return memory->fetch_mem(addr);
+        }
+      };
+
       if (disks[unit].file_backed && disks[unit].handle) {
         uint8_t sector_buf[512];
         for (int s = 0; s < count; s++) {
           size_t offset = (lba + s) * 512;
           for (size_t i = 0; i < 512; i++) {
-            sector_buf[i] = memory->fetch_mem(buffer + s * 512 + i);
+            sector_buf[i] = read_from_bank(buffer + s * 512 + i);
           }
           emu_disk_write((emu_disk_handle)disks[unit].handle, offset, sector_buf, 512);
           blocks_written++;
@@ -616,7 +639,7 @@ void HBIOSDispatch::handleDIO() {
             disks[unit].data.resize(offset + 512);
           }
           for (size_t i = 0; i < 512; i++) {
-            disks[unit].data[offset + i] = memory->fetch_mem(buffer + s * 512 + i);
+            disks[unit].data[offset + i] = read_from_bank(buffer + s * 512 + i);
           }
           blocks_written++;
         }
@@ -731,83 +754,6 @@ void HBIOSDispatch::handleRTC() {
       // Set time - ignored in emulator
       break;
 
-    case HBF_RTCGETBYT: {
-      // Get NVRAM byte by index
-      // C = index, returns E = value
-      uint8_t index = cpu->regs.BC.get_low();
-      if (index < NVRAM_SIZE) {
-        cpu->regs.DE.set_low(nvram[index]);
-        if (debug) {
-          emu_log("[HBIOS RTC] GETBYT index=%d value=0x%02X\n", index, nvram[index]);
-        }
-      } else {
-        cpu->regs.DE.set_low(0);
-        result = HBR_RANGE;
-      }
-      break;
-    }
-
-    case HBF_RTCSETBYT: {
-      // Set NVRAM byte by index
-      // C = index, E = value
-      uint8_t index = cpu->regs.BC.get_low();
-      uint8_t value = cpu->regs.DE.get_low();
-      if (index < NVRAM_SIZE) {
-        nvram[index] = value;
-        if (debug) {
-          emu_log("[HBIOS RTC] SETBYT index=%d value=0x%02X\n", index, value);
-        }
-        // Notify save callback
-        if (nvram_save_callback) {
-          nvram_save_callback(nvram, NVRAM_SIZE);
-        }
-      } else {
-        result = HBR_RANGE;
-      }
-      break;
-    }
-
-    case HBF_RTCGETBLK: {
-      // Get NVRAM data block
-      // HL = buffer address, returns buffer filled with NVRAM contents
-      uint16_t buffer = cpu->regs.HL.get_pair16();
-      for (int i = 0; i < NVRAM_SIZE && memory; i++) {
-        memory->store_mem(buffer + i, nvram[i]);
-      }
-      cpu->regs.DE.set_low(NVRAM_SIZE);  // Return size in E
-      if (debug) {
-        emu_log("[HBIOS RTC] GETBLK buffer=0x%04X size=%d\n", buffer, NVRAM_SIZE);
-      }
-      break;
-    }
-
-    case HBF_RTCSETBLK: {
-      // Set NVRAM data block
-      // HL = buffer address, C = count
-      uint16_t buffer = cpu->regs.HL.get_pair16();
-      uint8_t count = cpu->regs.BC.get_low();
-      if (count > NVRAM_SIZE) count = NVRAM_SIZE;
-      for (int i = 0; i < count && memory; i++) {
-        nvram[i] = memory->fetch_mem(buffer + i);
-      }
-      if (debug) {
-        emu_log("[HBIOS RTC] SETBLK buffer=0x%04X count=%d\n", buffer, count);
-      }
-      // Notify save callback
-      if (nvram_save_callback) {
-        nvram_save_callback(nvram, NVRAM_SIZE);
-      }
-      break;
-    }
-
-    case HBF_RTCDEVICE: {
-      // RTC device info
-      // Return device type in D, attributes in E
-      cpu->regs.DE.set_high(0x01);  // Device type: DS1302/generic RTC
-      cpu->regs.DE.set_low(0x01);   // Attributes: has NVRAM
-      break;
-    }
-
     default:
       if (debug) {
         emu_log("[HBIOS RTC] Unhandled function 0x%02X\n", func);
@@ -860,8 +806,8 @@ void HBIOSDispatch::handleSYS() {
 
     case HBF_SYSSETBNK: {
       // Set current bank
-      // Input: L = bank ID to set
-      uint8_t bank = cpu->regs.HL.get_low();
+      // Input: C = bank ID to set
+      uint8_t bank = cpu->regs.BC.get_low();
       if (memory) {
         memory->select_bank(bank);
       }
@@ -918,6 +864,11 @@ void HBIOSDispatch::handleSYS() {
           // Bank info: D = BIOS bank, E = user bank
           cpu->regs.DE.set_high(0x80);  // BIOS in bank 0
           cpu->regs.DE.set_low(0x8E);   // User in bank 14
+          break;
+
+        case SYSGET_PANEL:
+          // Front panel switches - no physical panel in emulator
+          cpu->regs.HL.set_low(0x00);
           break;
 
         case SYSGET_DEVLIST: {

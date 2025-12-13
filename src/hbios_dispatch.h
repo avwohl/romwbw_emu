@@ -306,14 +306,6 @@ public:
   using ResetCallback = std::function<void(uint8_t reset_type)>;
   void setResetCallback(ResetCallback cb) { reset_callback = cb; }
 
-  // NVRAM support (64 bytes, persisted via callback)
-  static const int NVRAM_SIZE = 64;
-  using NvramCallback = std::function<void(const uint8_t* data, int size)>;
-  void setNvramSaveCallback(NvramCallback cb) { nvram_save_callback = cb; }
-  void loadNvram(const uint8_t* data, int size);
-  const uint8_t* getNvram() const { return nvram; }
-  int getNvramSize() const { return NVRAM_SIZE; }
-
   // Main entry point address (default 0xFFF0)
   void setMainEntry(uint16_t addr) { main_entry = addr; }
   uint16_t getMainEntry() const { return main_entry; }
@@ -375,10 +367,6 @@ private:
 
   // Reset callback for SYSRESET
   ResetCallback reset_callback = nullptr;
-
-  // NVRAM storage (64 bytes like DS1302/DS1307 RTC chips)
-  uint8_t nvram[64] = {0};
-  NvramCallback nvram_save_callback = nullptr;
 
   // Disks
   HBDisk disks[16];

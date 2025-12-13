@@ -288,42 +288,6 @@ int romwbw_get_disk_size(int unit) {
   return hbios.getDisk(unit).data.size();
 }
 
-// Load NVRAM data (from localStorage)
-EMSCRIPTEN_KEEPALIVE
-void romwbw_load_nvram(const uint8_t* data, int size) {
-  hbios.loadNvram(data, size);
-}
-
-// Get NVRAM data pointer (for saving to localStorage)
-EMSCRIPTEN_KEEPALIVE
-const uint8_t* romwbw_get_nvram_data() {
-  return hbios.getNvram();
-}
-
-// Get NVRAM size
-EMSCRIPTEN_KEEPALIVE
-int romwbw_get_nvram_size() {
-  return hbios.getNvramSize();
-}
-
-// JavaScript callback for NVRAM save (defined in Module.onNvramSave)
-EM_JS(void, js_nvram_save, (), {
-  if (Module.onNvramSave) {
-    var size = Module._romwbw_get_nvram_size();
-    var ptr = Module._romwbw_get_nvram_data();
-    if (ptr && size > 0) {
-      var data = new Uint8Array(Module.HEAPU8.buffer, ptr, size);
-      // Make a copy since the buffer may change
-      Module.onNvramSave(new Uint8Array(data));
-    }
-  }
-});
-
-// NVRAM save callback (called from C++ when NVRAM changes)
-static void handle_nvram_save(const uint8_t* data, int size) {
-  js_nvram_save();
-}
-
 // Reset callback for SYSRESET
 static void handle_sysreset(uint8_t reset_type) {
   if (debug) {
@@ -354,9 +318,6 @@ void romwbw_start() {
 
   // Register reset callback for SYSRESET (REBOOT command)
   hbios.setResetCallback(handle_sysreset);
-
-  // Register NVRAM save callback for localStorage persistence
-  hbios.setNvramSaveCallback(handle_nvram_save);
 
   // Reset CPU
   cpu.regs.AF.set_pair16(0);

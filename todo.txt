@@ -1,0 +1,46 @@
+RomWBW Emulator - Remaining Tasks
+==================================
+
+Status: CLI and WebAssembly versions both build and run.
+
+Completed:
+----------
+- Split off from ~/src/cpmemu - DONE
+- CLI version builds and runs using installed qkz80 library
+- Updated web/Makefile to use qkz80 sources from cpmemu for WASM build
+- Fixed web/Makefile QKZ80_SRC to use relative path (../../cpmemu/src)
+- Fixed duplicate js_status symbol in romwbw_web.cc (now uses emu_status)
+- WebAssembly version builds successfully with emscripten
+- Removed legacy CP/M BIOS mode code (~560 lines removed)
+  - Removed CPMDisk class, BiosEntry enum, handle_bios_call()
+  - Removed --cpm and --disk-a/b/c/d options
+  - Updated to version 2.0.0, focused purely on RomWBW/HBIOS
+- Fixed debug output appearing by default (now requires --debug flag)
+- Web files installed to ~/www/romwbw/
+- Fixed HBIOS function codes to match official RomWBW hbios.inc
+  - Consolidated HBiosFunc enum to hbios_dispatch.h (single source of truth)
+  - Both CLI and web versions now use shared header
+  - Fixed DIO: added DIOSEEK handler, DIOREAD/DIOWRITE now use current_lba
+  - Fixed VDA/DSKY/SND function names to match official codes
+
+Remaining Tasks:
+----------------
+
+1. TEST WEBASSEMBLY VERSION IN BROWSER
+   - Test with: cd web && make serve-romwbw (opens http://localhost:8080)
+   - Load romwbw.html and test with emu_romwbw.rom or SBC_simh_std.rom
+   - Verify boot prompt and OS boot options work
+
+2. VERIFY ALL OSes BOOT
+   - At boot prompt, test each OS option:
+     - 0 (ROM disk boot)
+     - C (CP/M)
+     - Z (ZSDOS)
+   - Ensure boot ROM prompt works in both CLI and WebAssembly
+
+Notes:
+------
+- CLI emulator: ./src/romwbw_emu --romwbw roms/emu_romwbw.rom
+- Console escape: Ctrl+E
+- Boot help: press H at boot prompt
+- Version: 2.0.0 (2025-12-13)
