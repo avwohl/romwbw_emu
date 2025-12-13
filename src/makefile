@@ -3,10 +3,10 @@ all: romwbw_emu
 # Include local.mk if it exists (for machine-specific settings like PKG_CONFIG_PATH)
 -include local.mk
 
-# Use pkg-config to find qkz80 library
-# Set PKG_CONFIG_PATH in local.mk if qkz80 is installed in a non-standard location
-QKZ80_CFLAGS := $(shell pkg-config --cflags qkz80 2>/dev/null || echo "-I/usr/local/include/qkz80")
-QKZ80_LIBS := $(shell pkg-config --libs qkz80 2>/dev/null || echo "-L/usr/local/lib -lqkz80")
+# Use pkg-config to find qkz80 library, unless overridden in local.mk
+# Set QKZ80_CFLAGS and QKZ80_LIBS in local.mk if qkz80 is not installed system-wide
+QKZ80_CFLAGS ?= $(shell pkg-config --cflags qkz80 2>/dev/null || echo "-I/usr/local/include/qkz80")
+QKZ80_LIBS ?= $(shell pkg-config --libs qkz80 2>/dev/null || echo "-L/usr/local/lib -lqkz80")
 
 CXXFLAGS = -std=c++11 -Wall -O2 -I. $(QKZ80_CFLAGS)
 LDFLAGS ?=

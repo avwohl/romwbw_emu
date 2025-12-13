@@ -4438,25 +4438,27 @@ int main(int argc, char** argv) {
     }
 
     // Debug: trace PC every 10M instructions to see where stuck
-    static bool dumped_loop = false;
-    if (instruction_count > 0 && instruction_count % 10000000 == 0) {
-      uint16_t loop_pc = cpu.regs.PC.get_pair16();
-      fprintf(stderr, "[%lldM] PC=0x%04X A=0x%02X BC=0x%04X HL=0x%04X\n",
-              instruction_count / 1000000,
-              loop_pc,
-              cpu.get_reg8(qkz80::reg_A),
-              cpu.regs.BC.get_pair16(),
-              cpu.regs.HL.get_pair16());
-      // Dump code around the loop once
-      if (!dumped_loop && loop_pc >= 0x4D00 && loop_pc < 0x4E00) {
-        dumped_loop = true;
-        banked_mem* bmem = dynamic_cast<banked_mem*>(&memory);
-        uint8_t cur_bank = bmem ? bmem->get_current_bank() : 0;
-        fprintf(stderr, "Current bank: 0x%02X\n", cur_bank);
-        fprintf(stderr, "Code dump 0x4D50-0x4D90:\n");
-        for (int i = 0; i < 64; i++) {
-          fprintf(stderr, "%02X ", memory.fetch_mem(0x4D50 + i));
-          if ((i + 1) % 16 == 0) fprintf(stderr, "\n");
+    if (debug) {
+      static bool dumped_loop = false;
+      if (instruction_count > 0 && instruction_count % 10000000 == 0) {
+        uint16_t loop_pc = cpu.regs.PC.get_pair16();
+        fprintf(stderr, "[%lldM] PC=0x%04X A=0x%02X BC=0x%04X HL=0x%04X\n",
+                instruction_count / 1000000,
+                loop_pc,
+                cpu.get_reg8(qkz80::reg_A),
+                cpu.regs.BC.get_pair16(),
+                cpu.regs.HL.get_pair16());
+        // Dump code around the loop once
+        if (!dumped_loop && loop_pc >= 0x4D00 && loop_pc < 0x4E00) {
+          dumped_loop = true;
+          banked_mem* bmem = dynamic_cast<banked_mem*>(&memory);
+          uint8_t cur_bank = bmem ? bmem->get_current_bank() : 0;
+          fprintf(stderr, "Current bank: 0x%02X\n", cur_bank);
+          fprintf(stderr, "Code dump 0x4D50-0x4D90:\n");
+          for (int i = 0; i < 64; i++) {
+            fprintf(stderr, "%02X ", memory.fetch_mem(0x4D50 + i));
+            if ((i + 1) % 16 == 0) fprintf(stderr, "\n");
+          }
         }
       }
     }
