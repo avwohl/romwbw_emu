@@ -55,6 +55,15 @@ void HBIOSDispatch::reset() {
     snd_period[i] = 0;
   }
   snd_duration = 100;
+
+  // Reset memory disks
+  for (int i = 0; i < 2; i++) {
+    md_disks[i].current_lba = 0;
+    md_disks[i].start_bank = 0;
+    md_disks[i].num_banks = 0;
+    md_disks[i].is_rom = false;
+    md_disks[i].is_enabled = false;
+  }
 }
 
 //=============================================================================
@@ -128,6 +137,54 @@ const HBDisk& HBIOSDispatch::getDisk(int unit) const {
   static HBDisk empty;
   if (unit < 0 || unit >= 16) return empty;
   return disks[unit];
+}
+
+//=============================================================================
+// Memory Disk Initialization
+//=============================================================================
+
+void HBIOSDispatch::initMemoryDisks() {
+  if (!memory) {
+    if (debug) emu_log("[MD] Warning: memory not available, memory disks disabled\n");
+    return;
+  }
+
+  // HCB (HBIOS Configuration Block) is at 0x0100 in ROM bank 0
+  // Memory disk configuration is at:
+  // CB_BIDRAMD0 = HCB + 0xDC = 0x1DC (RAM disk start bank)
+  // CB_RAMD_BNKS = HCB + 0xDD = 0x1DD (RAM disk bank count)
+  // CB_BIDROMD0 = HCB + 0xDE = 0x1DE (ROM disk start bank)
+  // CB_ROMD_BNKS = HCB + 0xDF = 0x1DF (ROM disk bank count)
+  const uint16_t HCB_BASE = 0x0100;
+
+  uint8_t ramd_start = memory->read_bank(0x00, HCB_BASE + 0xDC);
+  uint8_t ramd_banks = memory->read_bank(0x00, HCB_BASE + 0xDD);
+  uint8_t romd_start = memory->read_bank(0x00, HCB_BASE + 0xDE);
+  uint8_t romd_banks = memory->read_bank(0x00, HCB_BASE + 0xDF);
+
+  // MD0 = RAM disk
+  if (ramd_banks > 0) {
+    md_disks[0].start_bank = ramd_start;
+    md_disks[0].num_banks = ramd_banks;
+    md_disks[0].is_rom = false;
+    md_disks[0].is_enabled = true;
+    md_disks[0].current_lba = 0;
+    uint32_t size_kb = (uint32_t)ramd_banks * 32;
+    emu_log("[MD] MD0 (RAM disk): banks 0x%02X-0x%02X, %uKB, %u sectors\n",
+            ramd_start, ramd_start + ramd_banks - 1, size_kb, md_disks[0].total_sectors());
+  }
+
+  // MD1 = ROM disk
+  if (romd_banks > 0) {
+    md_disks[1].start_bank = romd_start;
+    md_disks[1].num_banks = romd_banks;
+    md_disks[1].is_rom = true;
+    md_disks[1].is_enabled = true;
+    md_disks[1].current_lba = 0;
+    uint32_t size_kb = (uint32_t)romd_banks * 32;
+    emu_log("[MD] MD1 (ROM disk): banks 0x%02X-0x%02X, %uKB, %u sectors\n",
+            romd_start, romd_start + romd_banks - 1, size_kb, md_disks[1].total_sectors());
+  }
 }
 
 //=============================================================================
@@ -462,12 +519,12 @@ void HBIOSDispatch::handleCIO() {
 // Disk I/O (DIO)
 //=============================================================================
 
-// Map RomWBW unit numbers to disk array indices
+// Map RomWBW HD unit numbers to disk array indices
 // RomWBW convention: Units 0-1 = MD (memory disk), Units 2+ = HD (hard disk)
-// Since we don't have MD support, we map HD units (2+) to our disk array (0+)
-static uint8_t map_disk_unit(uint8_t unit) {
-  // Units 0-1 are memory disks (not supported)
-  if (unit < 2) return 0xFF;  // Invalid
+// This function only maps HD units - MD units are handled separately
+static uint8_t map_hd_unit(uint8_t unit) {
+  // Units 0-1 are memory disks - handled separately, not via this function
+  if (unit < 2) return 0xFF;
   // Units 2+ are hard disks, map to 0+
   if (unit >= 2 && unit < 18) return unit - 2;
   // Special units (0x90-0x9F = HDSK) - map to disk 0+
@@ -476,18 +533,27 @@ static uint8_t map_disk_unit(uint8_t unit) {
   return 0xFF;
 }
 
+// Check if unit is a memory disk and if it's enabled
+static bool is_md_unit(uint8_t unit, const MemDiskState* md_disks) {
+  return (unit < 2) && md_disks[unit].is_enabled;
+}
+
 void HBIOSDispatch::handleDIO() {
   if (!cpu || !memory) return;
 
   uint8_t func = cpu->regs.BC.get_high();  // B = function
   uint8_t raw_unit = cpu->regs.BC.get_low();   // C = unit
-  uint8_t unit = map_disk_unit(raw_unit);  // Map to disk array index
   uint8_t result = HBR_SUCCESS;
+
+  // Check if this is a memory disk (MD) or hard disk (HD)
+  bool is_memdisk = is_md_unit(raw_unit, md_disks);
+  uint8_t hd_unit = map_hd_unit(raw_unit);  // Map to disk array index (for HD)
+  bool is_harddisk = (hd_unit != 0xFF && hd_unit < 16 && disks[hd_unit].is_open);
 
   switch (func) {
     case HBF_DIOSTATUS: {
       // Get status
-      if (unit != 0xFF && unit < 16 && disks[unit].is_open) {
+      if (is_memdisk || is_harddisk) {
         cpu->regs.DE.set_low(0x00);  // Ready
       } else {
         result = HBR_FAILED;
@@ -497,8 +563,10 @@ void HBIOSDispatch::handleDIO() {
 
     case HBF_DIORESET:
       // Reset - nothing to do
-      if (unit != 0xFF && unit < 16) {
-        disks[unit].current_lba = 0;
+      if (is_memdisk) {
+        md_disks[raw_unit].current_lba = 0;
+      } else if (is_harddisk) {
+        disks[hd_unit].current_lba = 0;
       }
       break;
 
@@ -510,10 +578,15 @@ void HBIOSDispatch::handleDIO() {
       uint16_t hl_reg = cpu->regs.HL.get_pair16();
       uint32_t lba = (((uint32_t)(de_reg & 0x7FFF) << 16) | hl_reg);
 
-      if (unit != 0xFF && unit < 16 && disks[unit].is_open) {
-        disks[unit].current_lba = lba;
+      if (is_memdisk) {
+        md_disks[raw_unit].current_lba = lba;
         if (debug) {
-          emu_log("[HBIOS DIO SEEK] unit=%d (raw=%d) lba=%u\n", unit, raw_unit, lba);
+          emu_log("[HBIOS DIO SEEK] MD%d lba=%u\n", raw_unit, lba);
+        }
+      } else if (is_harddisk) {
+        disks[hd_unit].current_lba = lba;
+        if (debug) {
+          emu_log("[HBIOS DIO SEEK] HD%d (raw=%d) lba=%u\n", hd_unit, raw_unit, lba);
         }
       } else {
         result = HBR_FAILED;
@@ -525,9 +598,8 @@ void HBIOSDispatch::handleDIO() {
       // Read sectors using current_lba (set by DIOSEEK)
       // Input: BC=Function/Unit, HL=Buffer Address, D=Buffer Bank (0x80=use current), E=Block Count
       // Output: A=Result, E=Blocks Read
-      // LBA comes from current_lba set by prior DIOSEEK call
 
-      if (unit == 0xFF || unit >= 16 || !disks[unit].is_open) {
+      if (!is_memdisk && !is_harddisk) {
         result = HBR_FAILED;
         cpu->regs.DE.set_low(0);
         break;
@@ -536,13 +608,6 @@ void HBIOSDispatch::handleDIO() {
       uint16_t buffer = cpu->regs.HL.get_pair16();
       uint8_t buffer_bank = cpu->regs.DE.get_high();
       uint8_t count = cpu->regs.DE.get_low();
-      uint32_t lba = disks[unit].current_lba;
-
-      if (debug) {
-        emu_log("[HBIOS DIO READ] unit=%d lba=%u count=%d buf=0x%04X bank=0x%02X\n",
-                unit, lba, count, buffer, buffer_bank);
-      }
-
       uint8_t blocks_read = 0;
 
       // Helper lambda to write byte to correct bank
@@ -561,40 +626,83 @@ void HBIOSDispatch::handleDIO() {
         }
       };
 
-      if (disks[unit].file_backed && disks[unit].handle) {
-        // Read from file
-        uint8_t sector_buf[512];
-        for (int s = 0; s < count; s++) {
-          size_t offset = (lba + s) * 512;
-          size_t read = emu_disk_read((emu_disk_handle)disks[unit].handle,
-                                      offset, sector_buf, 512);
-          if (read == 0) {
-            break;
-          }
-          // Copy to Z80 memory (bank-aware)
-          for (size_t i = 0; i < 512; i++) {
-            write_to_bank(buffer + s * 512 + i, sector_buf[i]);
-          }
-          blocks_read++;
+      if (is_memdisk) {
+        // Memory disk read - read from ROM/RAM bank memory
+        MemDiskState& md = md_disks[raw_unit];
+        uint32_t lba = md.current_lba;
+
+        if (debug) {
+          emu_log("[HBIOS MD READ] MD%d lba=%u count=%d buf=0x%04X bank=0x%02X\n",
+                  raw_unit, lba, count, buffer, buffer_bank);
         }
-      } else if (!disks[unit].data.empty()) {
-        // Read from memory buffer
+
+        // 64 sectors per 32KB bank (512 bytes per sector)
+        const uint32_t sectors_per_bank = 64;
+
         for (int s = 0; s < count; s++) {
-          size_t offset = (lba + s) * 512;
-          if (offset + 512 > disks[unit].data.size()) {
+          if (md.current_lba >= md.total_sectors()) {
+            if (debug) emu_log("[HBIOS MD READ] Hit end of disk at LBA %u\n", md.current_lba);
             break;
           }
-          for (size_t i = 0; i < 512; i++) {
-            write_to_bank(buffer + s * 512 + i, disks[unit].data[offset + i]);
+
+          uint32_t bank_offset = md.current_lba / sectors_per_bank;
+          uint32_t sector_in_bank = md.current_lba % sectors_per_bank;
+          uint8_t src_bank = md.start_bank + bank_offset;
+          uint16_t src_offset = sector_in_bank * 512;
+
+          // Copy 512 bytes from bank memory to buffer
+          for (int j = 0; j < 512; j++) {
+            uint8_t byte = memory->read_bank(src_bank, src_offset + j);
+            write_to_bank(buffer + s * 512 + j, byte);
           }
+
+          md.current_lba++;
           blocks_read++;
         }
       } else {
-        result = HBR_FAILED;
+        // Hard disk read - existing code
+        uint32_t lba = disks[hd_unit].current_lba;
+
+        if (debug) {
+          emu_log("[HBIOS DIO READ] HD%d lba=%u count=%d buf=0x%04X bank=0x%02X\n",
+                  hd_unit, lba, count, buffer, buffer_bank);
+        }
+
+        if (disks[hd_unit].file_backed && disks[hd_unit].handle) {
+          // Read from file
+          uint8_t sector_buf[512];
+          for (int s = 0; s < count; s++) {
+            size_t offset = (lba + s) * 512;
+            size_t read = emu_disk_read((emu_disk_handle)disks[hd_unit].handle,
+                                        offset, sector_buf, 512);
+            if (read == 0) {
+              break;
+            }
+            for (size_t i = 0; i < 512; i++) {
+              write_to_bank(buffer + s * 512 + i, sector_buf[i]);
+            }
+            blocks_read++;
+          }
+        } else if (!disks[hd_unit].data.empty()) {
+          // Read from memory buffer
+          for (int s = 0; s < count; s++) {
+            size_t offset = (lba + s) * 512;
+            if (offset + 512 > disks[hd_unit].data.size()) {
+              break;
+            }
+            for (size_t i = 0; i < 512; i++) {
+              write_to_bank(buffer + s * 512 + i, disks[hd_unit].data[offset + i]);
+            }
+            blocks_read++;
+          }
+        } else {
+          result = HBR_FAILED;
+        }
+
+        // Update current_lba for next sequential access
+        disks[hd_unit].current_lba += blocks_read;
       }
 
-      // Update current_lba for next sequential access
-      disks[unit].current_lba += blocks_read;
       cpu->regs.DE.set_low(blocks_read);
       break;
     }
@@ -603,9 +711,8 @@ void HBIOSDispatch::handleDIO() {
       // Write sectors using current_lba (set by DIOSEEK)
       // Input: BC=Function/Unit, HL=Buffer Address, D=Buffer Bank (0x80=use current), E=Block Count
       // Output: A=Result, E=Blocks Written
-      // LBA comes from current_lba set by prior DIOSEEK call
 
-      if (unit == 0xFF || unit >= 16 || !disks[unit].is_open) {
+      if (!is_memdisk && !is_harddisk) {
         result = HBR_FAILED;
         cpu->regs.DE.set_low(0);
         break;
@@ -614,13 +721,6 @@ void HBIOSDispatch::handleDIO() {
       uint16_t buffer = cpu->regs.HL.get_pair16();
       uint8_t buffer_bank = cpu->regs.DE.get_high();
       uint8_t count = cpu->regs.DE.get_low();
-      uint32_t lba = disks[unit].current_lba;
-
-      if (debug) {
-        emu_log("[HBIOS DIO WRITE] unit=%d lba=%u count=%d buf=0x%04X bank=0x%02X\n",
-                unit, lba, count, buffer, buffer_bank);
-      }
-
       uint8_t blocks_written = 0;
 
       // Helper lambda to read byte from correct bank
@@ -639,34 +739,83 @@ void HBIOSDispatch::handleDIO() {
         }
       };
 
-      if (disks[unit].file_backed && disks[unit].handle) {
-        uint8_t sector_buf[512];
-        for (int s = 0; s < count; s++) {
-          size_t offset = (lba + s) * 512;
-          for (size_t i = 0; i < 512; i++) {
-            sector_buf[i] = read_from_bank(buffer + s * 512 + i);
-          }
-          emu_disk_write((emu_disk_handle)disks[unit].handle, offset, sector_buf, 512);
-          blocks_written++;
+      if (is_memdisk) {
+        // Memory disk write - write to RAM bank memory
+        MemDiskState& md = md_disks[raw_unit];
+
+        if (debug) {
+          emu_log("[HBIOS MD WRITE] MD%d lba=%u count=%d buf=0x%04X bank=0x%02X\n",
+                  raw_unit, md.current_lba, count, buffer, buffer_bank);
         }
-        emu_disk_flush((emu_disk_handle)disks[unit].handle);
-      } else if (!disks[unit].data.empty()) {
+
+        // Check if ROM disk (read-only)
+        if (md.is_rom) {
+          if (debug) emu_log("[HBIOS MD WRITE] MD%d is ROM disk, write protected\n", raw_unit);
+          result = HBR_READONLY;
+          cpu->regs.DE.set_low(0);
+          break;
+        }
+
+        const uint32_t sectors_per_bank = 64;
+
         for (int s = 0; s < count; s++) {
-          size_t offset = (lba + s) * 512;
-          if (offset + 512 > disks[unit].data.size()) {
-            disks[unit].data.resize(offset + 512);
+          if (md.current_lba >= md.total_sectors()) {
+            break;
           }
-          for (size_t i = 0; i < 512; i++) {
-            disks[unit].data[offset + i] = read_from_bank(buffer + s * 512 + i);
+
+          uint32_t bank_offset = md.current_lba / sectors_per_bank;
+          uint32_t sector_in_bank = md.current_lba % sectors_per_bank;
+          uint8_t dst_bank = md.start_bank + bank_offset;
+          uint16_t dst_offset = sector_in_bank * 512;
+
+          // Copy 512 bytes from buffer to bank memory
+          for (int j = 0; j < 512; j++) {
+            uint8_t byte = read_from_bank(buffer + s * 512 + j);
+            memory->write_bank(dst_bank, dst_offset + j, byte);
           }
+
+          md.current_lba++;
           blocks_written++;
         }
       } else {
-        result = HBR_FAILED;
+        // Hard disk write - existing code
+        uint32_t lba = disks[hd_unit].current_lba;
+
+        if (debug) {
+          emu_log("[HBIOS DIO WRITE] HD%d lba=%u count=%d buf=0x%04X bank=0x%02X\n",
+                  hd_unit, lba, count, buffer, buffer_bank);
+        }
+
+        if (disks[hd_unit].file_backed && disks[hd_unit].handle) {
+          uint8_t sector_buf[512];
+          for (int s = 0; s < count; s++) {
+            size_t offset = (lba + s) * 512;
+            for (size_t i = 0; i < 512; i++) {
+              sector_buf[i] = read_from_bank(buffer + s * 512 + i);
+            }
+            emu_disk_write((emu_disk_handle)disks[hd_unit].handle, offset, sector_buf, 512);
+            blocks_written++;
+          }
+          emu_disk_flush((emu_disk_handle)disks[hd_unit].handle);
+        } else if (!disks[hd_unit].data.empty()) {
+          for (int s = 0; s < count; s++) {
+            size_t offset = (lba + s) * 512;
+            if (offset + 512 > disks[hd_unit].data.size()) {
+              disks[hd_unit].data.resize(offset + 512);
+            }
+            for (size_t i = 0; i < 512; i++) {
+              disks[hd_unit].data[offset + i] = read_from_bank(buffer + s * 512 + i);
+            }
+            blocks_written++;
+          }
+        } else {
+          result = HBR_FAILED;
+        }
+
+        // Update current_lba for next sequential access
+        disks[hd_unit].current_lba += blocks_written;
       }
 
-      // Update current_lba for next sequential access
-      disks[unit].current_lba += blocks_written;
       cpu->regs.DE.set_low(blocks_written);
       break;
     }
@@ -679,7 +828,10 @@ void HBIOSDispatch::handleDIO() {
     case HBF_DIODEVICE: {
       // Disk device info report
       // Returns device type and attributes
-      if (unit < 16 && disks[unit].is_open) {
+      if (is_memdisk) {
+        cpu->regs.DE.set_high(0x00);  // DIODEV_MD (memory disk)
+        cpu->regs.DE.set_low(0x00);   // Subtype
+      } else if (is_harddisk) {
         cpu->regs.DE.set_high(0x03);  // DIODEV_IDE (hard disk type)
         cpu->regs.DE.set_low(0x00);   // Subtype
       } else {
@@ -690,7 +842,9 @@ void HBIOSDispatch::handleDIO() {
 
     case HBF_DIOMEDIA: {
       // Disk media report - return media type
-      if (unit < 16 && disks[unit].is_open) {
+      if (is_memdisk) {
+        cpu->regs.DE.set_low(md_disks[raw_unit].is_rom ? MID_MDROM : MID_MDRAM);
+      } else if (is_harddisk) {
         cpu->regs.DE.set_low(MID_HD);  // Hard disk media
       } else {
         result = HBR_FAILED;
@@ -704,9 +858,13 @@ void HBIOSDispatch::handleDIO() {
       break;
 
     case HBF_DIOCAP: {
-      // Get capacity
-      if (unit < 16 && disks[unit].is_open) {
-        uint32_t sectors = disks[unit].size / 512;
+      // Get capacity (in sectors)
+      if (is_memdisk) {
+        uint32_t sectors = md_disks[raw_unit].total_sectors();
+        cpu->regs.DE.set_pair16(sectors & 0xFFFF);
+        cpu->regs.HL.set_pair16((sectors >> 16) & 0xFFFF);
+      } else if (is_harddisk) {
+        uint32_t sectors = disks[hd_unit].size / 512;
         cpu->regs.DE.set_pair16(sectors & 0xFFFF);
         cpu->regs.HL.set_pair16((sectors >> 16) & 0xFFFF);
       } else {
@@ -886,8 +1044,13 @@ void HBIOSDispatch::handleSYS() {
           break;
 
         case SYSGET_DIOCNT: {
-          // Number of DIO devices
+          // Number of DIO devices (MD + HD)
           int count = 0;
+          // Count memory disks (MD0, MD1)
+          for (int i = 0; i < 2; i++) {
+            if (md_disks[i].is_enabled) count++;
+          }
+          // Count hard disks
           for (int i = 0; i < 16; i++) {
             if (disks[i].is_open) count++;
           }

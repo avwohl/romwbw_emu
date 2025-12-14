@@ -210,6 +210,23 @@ enum HBiosMediaId {
 };
 
 //=============================================================================
+// Memory Disk (MD) State
+//=============================================================================
+
+struct MemDiskState {
+  uint32_t current_lba = 0;     // Current LBA position
+  uint8_t start_bank = 0;       // Starting bank number
+  uint8_t num_banks = 0;        // Number of banks
+  bool is_rom = false;          // True if ROM disk (read-only)
+  bool is_enabled = false;      // True if this MD unit exists
+
+  // Calculate total sectors (512 bytes per sector, 64 sectors per 32KB bank)
+  uint32_t total_sectors() const {
+    return (uint32_t)num_banks * 64;
+  }
+};
+
+//=============================================================================
 // Disk Structure
 //=============================================================================
 
@@ -264,6 +281,9 @@ public:
   void closeDisk(int unit);
   bool isDiskLoaded(int unit) const;
   const HBDisk& getDisk(int unit) const;
+
+  // Memory disk initialization (call after ROM is loaded)
+  void initMemoryDisks();
 
   // ROM application management
   void addRomApp(const std::string& name, const std::string& path, char key);
@@ -373,6 +393,9 @@ private:
 
   // Disks
   HBDisk disks[16];
+
+  // Memory disks (MD0=RAM, MD1=ROM)
+  MemDiskState md_disks[2];
 
   // ROM applications
   std::vector<HBRomApp> rom_apps;
