@@ -20,36 +20,42 @@
 using cpm_mem = banked_mem;
 
 //=============================================================================
-// Global State
+// Emulator State - all state in one struct for clean reset
 //=============================================================================
 
-static cpm_mem memory;
-static qkz80 cpu(&memory);
-static HBIOSDispatch hbios;
-static bool running = false;
-static bool waiting_for_input = false;
-static bool debug = false;
+struct EmulatorState {
+  cpm_mem memory;
+  qkz80 cpu;
+  HBIOSDispatch hbios;
 
-// Boot string for auto-boot feature
-static std::string boot_string;
-static size_t boot_string_pos = 0;
+  bool running = false;
+  bool waiting_for_input = false;
+  bool debug = false;
 
-// Instruction counter
-static long long instruction_count = 0;
+  // Counters
+  long long instruction_count = 0;
+  int batch_count = 0;
+  int io_in_count = 0;
+  int io_out_count = 0;
 
-//=============================================================================
-// Signal Port Handler (0xEE)
-//=============================================================================
+  EmulatorState() : cpu(&memory) {
+    memory.enable_banking();
+    hbios.setCPU(&cpu);
+    hbios.setMemory(&memory);
+  }
+};
 
-static void handle_emu_signal(uint8_t value) {
-  hbios.handleSignalPort(value);
+// Single global - assign new instance to reset everything
+static EmulatorState* emu = nullptr;
+
+// Ensure emulator exists
+static void ensure_emu() {
+  if (!emu) emu = new EmulatorState();
 }
 
 //=============================================================================
 // I/O Port Handling
 //=============================================================================
-
-static int io_in_count = 0;
 
 static uint8_t handle_in(uint8_t port) {
   uint8_t result = 0xFF;
@@ -70,7 +76,7 @@ static uint8_t handle_in(uint8_t port) {
 
     case 0x78:  // Bank register
     case 0x7C:
-      result = memory.get_current_bank();
+      result = emu->memory.get_current_bank();
       break;
 
     default:
@@ -78,21 +84,19 @@ static uint8_t handle_in(uint8_t port) {
       break;
   }
 
-  if (debug && io_in_count < 50 && port != 0x6D) {  // Skip 0x6D (polled often)
+  if (emu->debug && emu->io_in_count < 50 && port != 0x6D) {
     emu_log("[IN] port=0x%02X -> 0x%02X\n", port, result);
-    io_in_count++;
+    emu->io_in_count++;
   }
 
   return result;
 }
 
-static int io_out_count = 0;
-
 static void handle_out(uint8_t port, uint8_t value) {
-  if (debug && io_out_count < 100) {
+  if (emu->debug && emu->io_out_count < 100) {
     emu_log("[OUT] port=0x%02X value=0x%02X (%c)\n", port, value,
             (value >= 32 && value < 127) ? value : '.');
-    io_out_count++;
+    emu->io_out_count++;
   }
   switch (port) {
     case 0x68:  // UART data
@@ -101,11 +105,11 @@ static void handle_out(uint8_t port, uint8_t value) {
 
     case 0x78:  // RAM bank
     case 0x7C:  // ROM bank
-      memory.select_bank(value);
+      emu->memory.select_bank(value);
       break;
 
     case 0xEE:  // EMU signal port
-      handle_emu_signal(value);
+      emu->hbios.handleSignalPort(value);
       break;
   }
 }
@@ -114,74 +118,65 @@ static void handle_out(uint8_t port, uint8_t value) {
 // Main Execution Loop
 //=============================================================================
 
-static int batch_count = 0;
-
 static void run_batch() {
-  if (!running || waiting_for_input) return;
+  if (!emu->running || emu->waiting_for_input) return;
 
-  batch_count++;
+  emu->batch_count++;
   // Log first few batches and then every 100th batch (only in debug mode)
-  if (debug && (batch_count <= 5 || batch_count % 100 == 0)) {
+  if (emu->debug && (emu->batch_count <= 5 || emu->batch_count % 100 == 0)) {
     emu_log("[BATCH] #%d starting, PC=0x%04X, instr=%lld\n",
-            batch_count, cpu.regs.PC.get_pair16(), instruction_count);
+            emu->batch_count, emu->cpu.regs.PC.get_pair16(), emu->instruction_count);
   }
 
-  for (int i = 0; i < 50000 && running && !waiting_for_input; i++) {
-    uint16_t pc = cpu.regs.PC.get_pair16();
-    uint8_t opcode = memory.fetch_mem(pc) & 0xFF;
-
-    // Log when PC is near HBIOS entry
-    static int near_fff0_count = 0;
-    if (debug && pc >= 0xFFF0 && pc <= 0xFFFF && near_fff0_count < 10) {
-      emu_log("[PC] at 0x%04X, opcode=0x%02X\n", pc, opcode);
-      near_fff0_count++;
-    }
+  for (int i = 0; i < 50000 && emu->running && !emu->waiting_for_input; i++) {
+    uint16_t pc = emu->cpu.regs.PC.get_pair16();
+    uint8_t opcode = emu->memory.fetch_mem(pc) & 0xFF;
 
     // Check for HBIOS trap
-    if (hbios.checkTrap(pc)) {
-      int trap_type = hbios.getTrapType(pc);
-      if (!hbios.handleCall(trap_type)) {
+    if (emu->hbios.checkTrap(pc)) {
+      int trap_type = emu->hbios.getTrapType(pc);
+      if (!emu->hbios.handleCall(trap_type)) {
         emu_error("[HBIOS] Failed to handle trap at 0x%04X\n", pc);
       }
-      instruction_count++;
+      emu->instruction_count++;
       continue;
     }
 
     // Handle HLT
     if (opcode == 0x76) {
       emu_status("HLT instruction - emulation stopped");
-      running = false;
+      emu->running = false;
       break;
     }
 
     // Handle IN instruction (0xDB)
     if (opcode == 0xDB) {
-      uint8_t port = memory.fetch_mem(pc + 1) & 0xFF;
+      uint8_t port = emu->memory.fetch_mem(pc + 1) & 0xFF;
       uint8_t value = handle_in(port);
-      cpu.set_reg8(value, qkz80::reg_A);
-      cpu.regs.PC.set_pair16(pc + 2);
-      instruction_count++;
+      emu->cpu.set_reg8(value, qkz80::reg_A);
+      emu->cpu.regs.PC.set_pair16(pc + 2);
+      emu->instruction_count++;
       continue;
     }
 
     // Handle OUT instruction (0xD3)
     if (opcode == 0xD3) {
-      uint8_t port = memory.fetch_mem(pc + 1) & 0xFF;
-      uint8_t value = cpu.get_reg8(qkz80::reg_A);
+      uint8_t port = emu->memory.fetch_mem(pc + 1) & 0xFF;
+      uint8_t value = emu->cpu.get_reg8(qkz80::reg_A);
       handle_out(port, value);
-      cpu.regs.PC.set_pair16(pc + 2);
-      instruction_count++;
+      emu->cpu.regs.PC.set_pair16(pc + 2);
+      emu->instruction_count++;
       continue;
     }
 
     // Execute normal instruction
-    cpu.execute();
-    instruction_count++;
+    emu->cpu.execute();
+    emu->instruction_count++;
   }
 }
 
 static void main_loop() {
-  run_batch();
+  if (emu) run_batch();
 }
 
 //=============================================================================
@@ -195,7 +190,7 @@ EMSCRIPTEN_KEEPALIVE
 void romwbw_key_input(int ch) {
   if (ch == '\n') ch = '\r';  // LF -> CR for CP/M
   emu_console_queue_char(ch);
-  waiting_for_input = false;
+  if (emu) emu->waiting_for_input = false;
 }
 
 // Set boot string for auto-boot feature
@@ -204,10 +199,9 @@ void romwbw_key_input(int ch) {
 EMSCRIPTEN_KEEPALIVE
 void romwbw_set_boot_string(const char* str) {
   if (str) {
-    boot_string = str;
     // Queue boot string to console input
-    for (size_t i = 0; i < boot_string.size(); i++) {
-      emu_console_queue_char(boot_string[i] & 0xFF);
+    for (size_t i = 0; str[i]; i++) {
+      emu_console_queue_char(str[i] & 0xFF);
     }
     emu_console_queue_char('\r');  // Add CR to submit
   }
@@ -216,7 +210,8 @@ void romwbw_set_boot_string(const char* str) {
 // Helper: Set up HBIOS ident signatures in RAM common area
 // This is required for REBOOT and other utilities to recognize the system
 static void setup_hbios_ident() {
-  uint8_t* ram = memory.get_ram();
+  if (!emu) return;
+  uint8_t* ram = emu->memory.get_ram();
   if (!ram) return;
 
   // Common area 0x8000-0xFFFF maps to bank 0x8F (index 15 = 0x0F)
@@ -241,10 +236,14 @@ static void setup_hbios_ident() {
   ram[ptr_phys + 1] = 0xFF;        // High byte of 0xFF00
 }
 
-// Load ROM image
+// Load ROM image - creates fresh emulator state
 EMSCRIPTEN_KEEPALIVE
 int romwbw_load_rom(const uint8_t* data, int size) {
-  uint8_t* rom = memory.get_rom();
+  // Create fresh emulator state when loading new ROM
+  delete emu;
+  emu = new EmulatorState();
+
+  uint8_t* rom = emu->memory.get_rom();
   if (!rom) return -1;
 
   int copy_size = (size < 512 * 1024) ? size : 512 * 1024;
@@ -255,7 +254,7 @@ int romwbw_load_rom(const uint8_t* data, int size) {
   rom[0x0112] = 0x00;  // CB_APITYPE = HBIOS
 
   // Copy HCB to RAM bank 0x80
-  uint8_t* ram = memory.get_ram();
+  uint8_t* ram = emu->memory.get_ram();
   if (ram) {
     memcpy(ram, rom, 512);
   }
@@ -272,9 +271,10 @@ int romwbw_load_rom(const uint8_t* data, int size) {
 // Load disk image to unit
 EMSCRIPTEN_KEEPALIVE
 int romwbw_load_disk(int unit, const uint8_t* data, int size) {
+  ensure_emu();
   if (unit < 0 || unit >= 16) return -1;
 
-  if (!hbios.loadDisk(unit, data, size)) {
+  if (!emu->hbios.loadDisk(unit, data, size)) {
     return -1;
   }
 
@@ -287,63 +287,57 @@ int romwbw_load_disk(int unit, const uint8_t* data, int size) {
 // Get disk data for saving
 EMSCRIPTEN_KEEPALIVE
 const uint8_t* romwbw_get_disk_data(int unit) {
-  if (unit < 0 || unit >= 16 || !hbios.isDiskLoaded(unit)) return nullptr;
-  return hbios.getDisk(unit).data.data();
+  if (!emu || unit < 0 || unit >= 16 || !emu->hbios.isDiskLoaded(unit)) return nullptr;
+  return emu->hbios.getDisk(unit).data.data();
 }
 
 EMSCRIPTEN_KEEPALIVE
 int romwbw_get_disk_size(int unit) {
-  if (unit < 0 || unit >= 16 || !hbios.isDiskLoaded(unit)) return 0;
-  return hbios.getDisk(unit).data.size();
+  if (!emu || unit < 0 || unit >= 16 || !emu->hbios.isDiskLoaded(unit)) return 0;
+  return emu->hbios.getDisk(unit).data.size();
 }
 
 // Reset callback for SYSRESET
 static void handle_sysreset(uint8_t reset_type) {
-  if (debug) {
+  if (!emu) return;
+  if (emu->debug) {
     emu_log("[SYSRESET] %s boot - restarting\n",
             reset_type == 0x01 ? "Warm" : "Cold");
   }
   // Switch to ROM bank 0
-  memory.select_bank(0x00);
-  // Clear any pending input
-  // (emu_io_wasm clears automatically on next queue)
+  emu->memory.select_bank(0x00);
   // Set PC to 0 to restart from ROM
-  cpu.regs.PC.set_pair16(0x0000);
+  emu->cpu.regs.PC.set_pair16(0x0000);
 }
 
 // Start emulation
 EMSCRIPTEN_KEEPALIVE
 void romwbw_start() {
+  ensure_emu();
+
   // Set Z80 mode
-  cpu.set_cpu_mode(qkz80::MODE_Z80);
-
-  // Enable banking
-  memory.enable_banking();
-
-  // Set up HBIOS dispatch with CPU and memory
-  hbios.setCPU(&cpu);
-  hbios.setMemory(&memory);
-  hbios.setDebug(debug);
-  hbios.reset();  // Reset HBIOS state for new ROM
+  emu->cpu.set_cpu_mode(qkz80::MODE_Z80);
 
   // Register reset callback for SYSRESET (REBOOT command)
-  hbios.setResetCallback(handle_sysreset);
+  emu->hbios.setResetCallback(handle_sysreset);
 
-  // Reset CPU
-  cpu.regs.AF.set_pair16(0);
-  cpu.regs.BC.set_pair16(0);
-  cpu.regs.DE.set_pair16(0);
-  cpu.regs.HL.set_pair16(0);
-  cpu.regs.PC.set_pair16(0x0000);  // Start at ROM address 0
-  cpu.regs.SP.set_pair16(0x0000);
+  // Reset CPU and start at ROM address 0
+  emu->cpu.regs.AF.set_pair16(0);
+  emu->cpu.regs.BC.set_pair16(0);
+  emu->cpu.regs.DE.set_pair16(0);
+  emu->cpu.regs.HL.set_pair16(0);
+  emu->cpu.regs.PC.set_pair16(0x0000);
+  emu->cpu.regs.SP.set_pair16(0x0000);
+  emu->memory.select_bank(0);
 
-  // Select ROM bank 0
-  memory.select_bank(0);
+  // Reset counters
+  emu->instruction_count = 0;
+  emu->batch_count = 0;
+  emu->io_in_count = 0;
+  emu->io_out_count = 0;
 
-  running = true;
-  waiting_for_input = false;
-  instruction_count = 0;
-  batch_count = 0;
+  emu->running = true;
+  emu->waiting_for_input = false;
 
   emu_status("RomWBW starting...");
 }
@@ -351,52 +345,58 @@ void romwbw_start() {
 // Stop emulation
 EMSCRIPTEN_KEEPALIVE
 void romwbw_stop() {
-  running = false;
+  if (emu) emu->running = false;
 }
 
 // Check if running
 EMSCRIPTEN_KEEPALIVE
 int romwbw_is_running() {
-  return running ? 1 : 0;
+  return (emu && emu->running) ? 1 : 0;
 }
 
 // Check if waiting for input
 EMSCRIPTEN_KEEPALIVE
 int romwbw_is_waiting() {
-  return waiting_for_input ? 1 : 0;
+  return (emu && emu->waiting_for_input) ? 1 : 0;
 }
 
 // Get instruction count
 EMSCRIPTEN_KEEPALIVE
 double romwbw_get_instruction_count() {
-  return (double)instruction_count;
+  return emu ? (double)emu->instruction_count : 0;
 }
 
 // Get current PC
 EMSCRIPTEN_KEEPALIVE
 int romwbw_get_pc() {
-  return cpu.regs.PC.get_pair16();
+  return emu ? emu->cpu.regs.PC.get_pair16() : 0;
 }
 
 // Set debug mode
 EMSCRIPTEN_KEEPALIVE
 void romwbw_set_debug(int enable) {
-  debug = (enable != 0);
-  memory.set_debug(debug);
-  hbios.setDebug(debug);
+  if (emu) {
+    emu->debug = (enable != 0);
+    emu->memory.set_debug(emu->debug);
+    emu->hbios.setDebug(emu->debug);
+  }
 }
 
 // Run a single batch of instructions (for testing)
 EMSCRIPTEN_KEEPALIVE
 int romwbw_run_batch() {
-  if (!running) return 0;
+  if (!emu || !emu->running) return 0;
   run_batch();
-  return running ? 1 : 0;
+  return emu->running ? 1 : 0;
 }
 
 // Auto-start with preloaded files
 EMSCRIPTEN_KEEPALIVE
 int romwbw_autostart() {
+  // Create fresh emulator state
+  delete emu;
+  emu = new EmulatorState();
+
   // Load ROM from virtual filesystem
   FILE* f = fopen("/romwbw.rom", "rb");
   if (!f) {
@@ -408,7 +408,7 @@ int romwbw_autostart() {
   long size = ftell(f);
   fseek(f, 0, SEEK_SET);
 
-  uint8_t* rom = memory.get_rom();
+  uint8_t* rom = emu->memory.get_rom();
   if (!rom) {
     fclose(f);
     return -1;
@@ -421,7 +421,7 @@ int romwbw_autostart() {
   rom[0x0112] = 0x00;  // CB_APITYPE = HBIOS
 
   // Copy HCB to RAM
-  uint8_t* ram = memory.get_ram();
+  uint8_t* ram = emu->memory.get_ram();
   if (ram) {
     memcpy(ram, rom, 512);
   }
@@ -438,7 +438,7 @@ int romwbw_autostart() {
     std::vector<uint8_t> disk_data(size);
     fread(disk_data.data(), 1, size, f);
     fclose(f);
-    hbios.loadDisk(0, disk_data.data(), disk_data.size());
+    emu->hbios.loadDisk(0, disk_data.data(), disk_data.size());
   }
 
   romwbw_start();
@@ -450,14 +450,6 @@ int romwbw_autostart() {
 int main() {
   // Initialize I/O layer
   emu_io_init();
-
-  // Initialize memory
-  memory.enable_banking();
-
-  // Initialize HBIOS dispatch
-  hbios.setCPU(&cpu);
-  hbios.setMemory(&memory);
-  hbios.reset();
 
   emu_status("RomWBW Emulator ready");
   emscripten_set_main_loop(main_loop, 0, 0);

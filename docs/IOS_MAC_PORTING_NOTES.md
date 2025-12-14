@@ -28,51 +28,53 @@ See `docs/ARCHITECTURE.md` for full details.
 
 ## Stop/Start Implementation
 
-**Important:** To ensure stop/start behaves identically to a fresh app launch, you must create new instances of the emulator components on restart.
+**Important:** To ensure stop/start behaves identically to a fresh app launch, put all emulator state in a single struct and recreate it when loading a new ROM.
 
-### Recommended Pattern
+### Recommended Pattern: Single Global Struct
 
 ```cpp
-// Global pointers (not static objects)
-banked_mem* memory = nullptr;
-qkz80* cpu = nullptr;
-HBIOSDispatch* hbios = nullptr;
+// All emulator state in one struct
+struct EmulatorState {
+    banked_mem memory;
+    qkz80 cpu;
+    HBIOSDispatch hbios;
 
-// Call this on start AND on restart after stop
-void create_emulator() {
-    // Delete old instances
-    delete cpu;
-    delete memory;
-    delete hbios;
+    bool running = false;
+    long long instruction_count = 0;
+    int batch_count = 0;
+    // ... any other state
 
-    // Create fresh instances
-    memory = new banked_mem();
-    cpu = new qkz80(memory);
-    hbios = new HBIOSDispatch();
+    EmulatorState() : cpu(&memory) {
+        memory.enable_banking();
+        hbios.setCPU(&cpu);
+        hbios.setMemory(&memory);
+    }
+};
 
-    // Initialize
-    memory->enable_banking();
-    hbios->setCPU(cpu);
-    hbios->setMemory(memory);
+// Single global pointer - delete and recreate for clean reset
+static EmulatorState* emu = nullptr;
+
+// Called when loading a new ROM - creates fresh state
+void load_rom(const uint8_t* data, int size) {
+    delete emu;
+    emu = new EmulatorState();
+
+    memcpy(emu->memory.get_rom(), data, size);
+    // ... other ROM setup
 }
 
+// Called to start/restart emulation
 void start_emulation() {
-    create_emulator();  // Fresh state every time
+    if (!emu) return;
 
-    // Load ROM into memory->get_rom()
-    // Load disk into hbios->loadDisk()
-
-    cpu->set_cpu_mode(qkz80::MODE_Z80);
-    hbios->reset();
-    memory->select_bank(0);
-    cpu->regs.PC.set_pair16(0x0000);
-
-    running = true;
+    emu->cpu.set_cpu_mode(qkz80::MODE_Z80);
+    emu->cpu.regs.PC.set_pair16(0x0000);
+    emu->memory.select_bank(0);
+    emu->running = true;
 }
 
 void stop_emulation() {
-    running = false;
-    // Don't delete here - wait until next start
+    if (emu) emu->running = false;
 }
 ```
 
@@ -84,6 +86,12 @@ Simply resetting registers and calling `hbios->reset()` is not sufficient becaus
 2. **Memory contents**: RAM banks contain data from previous execution
 3. **Static variables**: Debug counters, trace state, etc.
 4. **Input queue**: Characters typed during previous session
+
+### Key Insight
+
+Reset state when **loading a new ROM**, not when clicking Start. This way:
+- Loading ROM 1, Start, Stop, Start → works (same ROM, just restart)
+- Loading ROM 1, Start, Stop, Load ROM 2, Start → works (fresh state for new ROM)
 
 Creating new instances guarantees the same state as a fresh app launch.
 
