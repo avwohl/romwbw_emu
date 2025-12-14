@@ -319,6 +319,11 @@ public:
   // Dispatches based on function code in B register
   bool handleMainEntry();
 
+  // Handle HBIOS dispatch triggered by OUT to port 0xEF
+  // This is the unified entry point for all platforms (CLI, web, iOS, Mac)
+  // Sets skip_ret=true since Z80 proxy has its own RET instruction
+  void handlePortDispatch();
+
   // Check if trapping is enabled
   bool isTrappingEnabled() const { return trapping_enabled; }
   void setTrappingEnabled(bool enable) { trapping_enabled = enable; }
@@ -326,6 +331,10 @@ public:
   // Check if waiting for console input (CIOIN/VDAKRD called with no data)
   bool isWaitingForInput() const { return waiting_for_input; }
   void clearWaitingForInput() { waiting_for_input = false; }
+
+  // Set whether blocking I/O is allowed (false for web/WASM)
+  void setBlockingAllowed(bool allowed) { blocking_allowed = allowed; }
+  bool isBlockingAllowed() const { return blocking_allowed; }
 
   // Control whether handlers do a synthetic RET
   // Set to true for I/O port dispatch (Z80 proxy has its own RET)
@@ -370,6 +379,7 @@ private:
   bool trapping_enabled = false;
   bool waiting_for_input = false;  // Set when CIOIN/VDAKRD needs input
   bool skip_ret = false;           // Skip synthetic RET (for I/O port dispatch)
+  bool blocking_allowed = true;    // Can we block for I/O? (false for web/WASM)
   uint16_t main_entry = 0xFFF0;  // Main HBIOS entry point
 
   // Dispatch addresses (set via signal port, optional)

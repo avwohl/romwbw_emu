@@ -42,6 +42,7 @@ struct EmulatorState {
     memory.enable_banking();
     hbios.setCPU(&cpu);
     hbios.setMemory(&memory);
+    hbios.setBlockingAllowed(false);  // Web/WASM cannot block
   }
 };
 
@@ -110,6 +111,10 @@ static void handle_out(uint8_t port, uint8_t value) {
 
     case 0xEE:  // EMU signal port
       emu->hbios.handleSignalPort(value);
+      break;
+
+    case 0xEF:  // HBIOS dispatch port
+      emu->hbios.handlePortDispatch();
       break;
   }
 }

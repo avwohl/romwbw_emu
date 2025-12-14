@@ -12,6 +12,7 @@
 #include <cstring>
 #include <cctype>
 #include <cmath>
+#include <unistd.h>
 
 //=============================================================================
 // Constructor/Destructor
@@ -425,6 +426,18 @@ bool HBIOSDispatch::handleMainEntry() {
 }
 
 //=============================================================================
+// Port 0xEF Dispatch (unified entry for all platforms)
+//=============================================================================
+
+void HBIOSDispatch::handlePortDispatch() {
+  // Port-based dispatch: Z80 proxy does OUT (0xEF), A; RET
+  // We handle the HBIOS call here, then Z80 continues with RET
+  skip_ret = true;
+  handleMainEntry();
+  skip_ret = false;
+}
+
+//=============================================================================
 // Helper Functions
 //=============================================================================
 
@@ -461,15 +474,25 @@ void HBIOSDispatch::handleCIO() {
 
   switch (func) {
     case HBF_CIOIN: {
-      // Read character - if none available, wait
-      if (!emu_console_has_input()) {
-        // No input - set waiting flag and DON'T call doRet()
-        // This keeps PC at the trap address so it will retry
+      // Read character - behavior depends on dispatch mode and platform
+      if (skip_ret && blocking_allowed) {
+        // Port-based dispatch on CLI - can block until input available
+        while (!emu_console_has_input()) {
+          usleep(1000);  // Sleep 1ms to avoid busy-waiting
+        }
+      } else if (!emu_console_has_input()) {
+        // No input available - set waiting flag
+        // For web: caller must check isWaitingForInput() and retry later
+        // For PC-trapping: keeps PC at trap address to retry
         waiting_for_input = true;
-        return;  // Don't fall through to doRet()
+        if (!skip_ret) return;  // PC-trapping: don't fall through to doRet()
+        // Port-based non-blocking: return 0 and let caller handle retry
+        cpu->regs.DE.set_low(0);
+        break;
       }
       int ch = emu_console_read_char();
       cpu->regs.DE.set_low(ch & 0xFF);
+      waiting_for_input = false;
       break;
     }
 

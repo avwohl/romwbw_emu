@@ -1255,6 +1255,7 @@ public:
     if (romwbw_mode) {
       switch (port) {
         case 0x68:  // UART data register - output character
+          if (debug) fprintf(stderr, "[UART OUT] 0x%02X '%c'\n", value, (value >= 32 && value < 127) ? value : '.');
           emu_console_write_char(value);
           return;
 
@@ -3085,6 +3086,49 @@ public:
         break;
       }
 
+      case HBF_DIOCAP: {  // 0x1A - Get disk capacity
+        // Returns: DE:HL = total sectors (32-bit)
+        uint32_t total_sectors = 0;
+
+        if (unit < 2 && md_disks[unit].is_enabled) {
+          // Memory disk: sectors = banks * 64 (32KB/512 = 64 sectors per bank)
+          total_sectors = md_disks[unit].num_banks * 64;
+        } else if (unit >= 2 && unit < 18 && hb_disks[unit - 2].is_open) {
+          // Hard disk: get file size
+          FILE* f = hb_disks[unit - 2].image_file;
+          if (f) {
+            long cur_pos = ftell(f);
+            fseek(f, 0, SEEK_END);
+            long file_size = ftell(f);
+            fseek(f, cur_pos, SEEK_SET);  // Restore position
+            total_sectors = file_size / 512;
+          }
+        } else {
+          result = HBR_NOTREADY;
+        }
+
+        cpu->regs.DE.set_pair16((total_sectors >> 16) & 0xFFFF);  // High word
+        cpu->regs.HL.set_pair16(total_sectors & 0xFFFF);          // Low word
+        if (debug) {
+          fprintf(stderr, "[HBIOS DIOCAP] Unit %d: %u sectors (%u MB)\n",
+                  unit, total_sectors, total_sectors / 2048);
+        }
+        break;
+      }
+
+      case HBF_DIOGEOM: {  // 0x1B - Get disk geometry
+        // Returns: C=sectors/track, D=heads, E=tracks
+        // For LBA-only disks, return simulated CHS geometry
+        // hd1k format: 16 sectors/track, 16 heads, 64 cylinders per slice
+        cpu->regs.BC.set_low(16);    // C = 16 sectors per track
+        cpu->regs.DE.set_high(16);   // D = 16 heads
+        cpu->regs.DE.set_low(64);    // E = 64 tracks (cylinders)
+        if (debug) {
+          fprintf(stderr, "[HBIOS DIOGEOM] Unit %d: 16/16/64 (s/h/t)\n", unit);
+        }
+        break;
+      }
+
       case HBF_SYSGET: {  // Get system info (subfunctions in C register)
         // Subfunction in C register (which is 'unit' in our parsing)
         uint8_t subfunc = unit;
@@ -3884,8 +3928,8 @@ int main(int argc, char** argv) {
         }
       }
 
-      // Update device count in HCB
-      rom[0x0C + 0x100] = (uint8_t)disk_idx;  // CB_DEVCNT at HCB+0x0C
+      // Note: CB_DEVCNT will be updated after drive map is populated
+      // to reflect the number of logical drives, not physical devices
 
       // Debug: show what we wrote to the disk table
       fprintf(stderr, "[HCB] Writing disk unit table:\n");
@@ -3897,9 +3941,68 @@ int main(int argc, char** argv) {
                 rom[DISKUT_BASE + i * 4 + 3]);
       }
 
+      // Populate drive map at HCB+0x20 (0x120)
+      // Format: each byte = (slice << 4) | unit
+      // Drive letters A-P map to bytes 0x120-0x12F
+      const uint16_t DRVMAP_BASE = 0x120;  // HCB+0x20
+      int drive_letter = 0;  // 0=A, 1=B, etc.
+
+      // First assign memory disks
+      // A: = MD0 (RAM disk) if enabled
+      if (ramd_banks > 0 && drive_letter < 16) {
+        rom[DRVMAP_BASE + drive_letter] = 0x00;  // Unit 0, slice 0
+        drive_letter++;
+      }
+      // B: = MD1 (ROM disk) if enabled
+      if (romd_banks > 0 && drive_letter < 16) {
+        rom[DRVMAP_BASE + drive_letter] = 0x01;  // Unit 1, slice 0
+        drive_letter++;
+      }
+
+      // Then assign hard disk slices
+      // For each attached disk, calculate number of slices from file size
+      for (int hd = 0; hd < 16 && drive_letter < 16; hd++) {
+        if (!hbios_disks[hd].empty()) {
+          // Get file size to determine number of slices
+          FILE* f = fopen(hbios_disks[hd].c_str(), "rb");
+          if (f) {
+            fseek(f, 0, SEEK_END);
+            size_t file_size = ftell(f);
+            fclose(f);
+
+            // hd1k format: 1MB prefix + 8MB per slice
+            // hd512 format: 8.3MB per slice, no prefix
+            // Single 8MB images are treated as 1 slice
+            int num_slices = 1;
+            if (file_size > 9 * 1024 * 1024) {
+              // Multi-slice: assume hd1k format (1MB prefix + 8MB slices)
+              num_slices = (file_size - 1024 * 1024) / (8 * 1024 * 1024);
+              if (num_slices < 1) num_slices = 1;
+              if (num_slices > 16) num_slices = 16;
+            }
+
+            // Unit number: HD0 = unit 2, HD1 = unit 3, etc.
+            int unit = hd + 2;
+
+            // Assign each slice to a drive letter
+            for (int slice = 0; slice < num_slices && drive_letter < 16; slice++) {
+              rom[DRVMAP_BASE + drive_letter] = ((slice & 0x0F) << 4) | (unit & 0x0F);
+              drive_letter++;
+            }
+          }
+        }
+      }
+
+      fprintf(stderr, "[HCB] Drive map: assigned %d drive letters\n", drive_letter);
+
+      // Update device count in HCB to match number of logical drives
+      // The CBIOS uses this to determine how many drives to configure
+      rom[0x0C + 0x100] = (uint8_t)drive_letter;  // CB_DEVCNT at HCB+0x0C
+
       // Re-copy the updated HCB to RAM
       memcpy(ram, rom, 512);
-      fprintf(stderr, "[HCB] Populated disk unit table with %d devices\n", disk_idx);
+      fprintf(stderr, "[HCB] Populated disk unit table with %d devices, %d logical drives\n",
+              disk_idx, drive_letter);
     }
 
     // NOW initialize memory disks from HCB (after ROM is loaded)
@@ -4155,6 +4258,7 @@ int main(int argc, char** argv) {
   }
 
   fprintf(stderr, "\nTotal instructions executed: %lld\n", instruction_count);
+  emu.print_port_stats();
 
   // Write trace file if tracing was enabled
   if (!trace_file.empty()) {
