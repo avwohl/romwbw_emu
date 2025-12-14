@@ -519,13 +519,32 @@ void HBIOSDispatch::handleCIO() {
 // Disk I/O (DIO)
 //=============================================================================
 
+// Map RomWBW unit numbers to memory disk index (0=MD0, 1=MD1, 0xFF=not MD)
+// RomWBW uses multiple unit encoding schemes:
+// - Units 0-1: Direct MD0/MD1
+// - Units 0x80-0x8F: MD units (low nibble 0-1 = MD0/MD1)
+// - Units 0xC0-0xCF: Boot-related, map to MD1 (ROM disk)
+static uint8_t map_md_unit(uint8_t unit) {
+  // Direct MD units
+  if (unit < 2) return unit;
+  // 0x80-0x8F: MD units encoded with high bit
+  if (unit >= 0x80 && unit <= 0x8F) {
+    uint8_t idx = unit & 0x0F;
+    return (idx < 2) ? idx : 1;  // Cap at MD1
+  }
+  // 0xC0-0xCF: Boot-related units, map to MD1 (ROM disk)
+  if (unit >= 0xC0 && unit <= 0xCF) {
+    return 1;  // MD1
+  }
+  return 0xFF;  // Not a memory disk
+}
+
 // Map RomWBW HD unit numbers to disk array indices
-// RomWBW convention: Units 0-1 = MD (memory disk), Units 2+ = HD (hard disk)
-// This function only maps HD units - MD units are handled separately
+// RomWBW convention: Units 2+ = HD (hard disk)
 static uint8_t map_hd_unit(uint8_t unit) {
-  // Units 0-1 are memory disks - handled separately, not via this function
+  // Units 0-1 are memory disks - handled separately
   if (unit < 2) return 0xFF;
-  // Units 2+ are hard disks, map to 0+
+  // Units 2-17 are hard disks, map to 0-15
   if (unit >= 2 && unit < 18) return unit - 2;
   // Special units (0x90-0x9F = HDSK) - map to disk 0+
   if (unit >= 0x90 && unit <= 0x9F) return unit & 0x0F;
@@ -535,7 +554,13 @@ static uint8_t map_hd_unit(uint8_t unit) {
 
 // Check if unit is a memory disk and if it's enabled
 static bool is_md_unit(uint8_t unit, const MemDiskState* md_disks) {
-  return (unit < 2) && md_disks[unit].is_enabled;
+  uint8_t md_idx = map_md_unit(unit);
+  return (md_idx != 0xFF) && md_disks[md_idx].is_enabled;
+}
+
+// Get memory disk index for a unit (assumes is_md_unit returned true)
+static uint8_t get_md_index(uint8_t unit) {
+  return map_md_unit(unit);
 }
 
 void HBIOSDispatch::handleDIO() {
@@ -547,6 +572,7 @@ void HBIOSDispatch::handleDIO() {
 
   // Check if this is a memory disk (MD) or hard disk (HD)
   bool is_memdisk = is_md_unit(raw_unit, md_disks);
+  uint8_t md_unit = get_md_index(raw_unit);  // Map to MD index (0=MD0, 1=MD1)
   uint8_t hd_unit = map_hd_unit(raw_unit);  // Map to disk array index (for HD)
   bool is_harddisk = (hd_unit != 0xFF && hd_unit < 16 && disks[hd_unit].is_open);
 
@@ -564,7 +590,7 @@ void HBIOSDispatch::handleDIO() {
     case HBF_DIORESET:
       // Reset - nothing to do
       if (is_memdisk) {
-        md_disks[raw_unit].current_lba = 0;
+        md_disks[md_unit].current_lba = 0;
       } else if (is_harddisk) {
         disks[hd_unit].current_lba = 0;
       }
@@ -579,9 +605,9 @@ void HBIOSDispatch::handleDIO() {
       uint32_t lba = (((uint32_t)(de_reg & 0x7FFF) << 16) | hl_reg);
 
       if (is_memdisk) {
-        md_disks[raw_unit].current_lba = lba;
+        md_disks[md_unit].current_lba = lba;
         if (debug) {
-          emu_log("[HBIOS DIO SEEK] MD%d lba=%u\n", raw_unit, lba);
+          emu_log("[HBIOS DIO SEEK] MD%d lba=%u\n", md_unit, lba);
         }
       } else if (is_harddisk) {
         disks[hd_unit].current_lba = lba;
@@ -628,12 +654,12 @@ void HBIOSDispatch::handleDIO() {
 
       if (is_memdisk) {
         // Memory disk read - read from ROM/RAM bank memory
-        MemDiskState& md = md_disks[raw_unit];
+        MemDiskState& md = md_disks[md_unit];
         uint32_t lba = md.current_lba;
 
         if (debug) {
           emu_log("[HBIOS MD READ] MD%d lba=%u count=%d buf=0x%04X bank=0x%02X\n",
-                  raw_unit, lba, count, buffer, buffer_bank);
+                  md_unit, lba, count, buffer, buffer_bank);
         }
 
         // 64 sectors per 32KB bank (512 bytes per sector)
@@ -741,16 +767,16 @@ void HBIOSDispatch::handleDIO() {
 
       if (is_memdisk) {
         // Memory disk write - write to RAM bank memory
-        MemDiskState& md = md_disks[raw_unit];
+        MemDiskState& md = md_disks[md_unit];
 
         if (debug) {
           emu_log("[HBIOS MD WRITE] MD%d lba=%u count=%d buf=0x%04X bank=0x%02X\n",
-                  raw_unit, md.current_lba, count, buffer, buffer_bank);
+                  md_unit, md.current_lba, count, buffer, buffer_bank);
         }
 
         // Check if ROM disk (read-only)
         if (md.is_rom) {
-          if (debug) emu_log("[HBIOS MD WRITE] MD%d is ROM disk, write protected\n", raw_unit);
+          if (debug) emu_log("[HBIOS MD WRITE] MD%d is ROM disk, write protected\n", md_unit);
           result = HBR_READONLY;
           cpu->regs.DE.set_low(0);
           break;
@@ -843,7 +869,7 @@ void HBIOSDispatch::handleDIO() {
     case HBF_DIOMEDIA: {
       // Disk media report - return media type
       if (is_memdisk) {
-        cpu->regs.DE.set_low(md_disks[raw_unit].is_rom ? MID_MDROM : MID_MDRAM);
+        cpu->regs.DE.set_low(md_disks[md_unit].is_rom ? MID_MDROM : MID_MDRAM);
       } else if (is_harddisk) {
         cpu->regs.DE.set_low(MID_HD);  // Hard disk media
       } else {
@@ -860,7 +886,7 @@ void HBIOSDispatch::handleDIO() {
     case HBF_DIOCAP: {
       // Get capacity (in sectors)
       if (is_memdisk) {
-        uint32_t sectors = md_disks[raw_unit].total_sectors();
+        uint32_t sectors = md_disks[md_unit].total_sectors();
         cpu->regs.DE.set_pair16(sectors & 0xFFFF);
         cpu->regs.HL.set_pair16((sectors >> 16) & 0xFFFF);
       } else if (is_harddisk) {
