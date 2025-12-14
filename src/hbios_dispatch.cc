@@ -42,6 +42,9 @@ void HBIOSDispatch::reset() {
   signal_state = 0;
   signal_addr = 0;
   cur_bank = 0;
+  bnkcpy_src_bank = 0x8E;
+  bnkcpy_dst_bank = 0x8E;
+  bnkcpy_count = 0;
   initialized_ram_banks = 0;  // Reset RAM bank initialization tracking
 
   vda_rows = 25;
@@ -1058,6 +1061,60 @@ void HBIOSDispatch::handleSYS() {
         bank = memory->get_current_bank();
       }
       cpu->regs.HL.set_low(bank);
+      break;
+    }
+
+    case HBF_SYSSETCPY: {
+      // Set bank copy parameters (for subsequent SYSBNKCPY call)
+      // Input: D = destination bank, E = source bank, HL = byte count
+      // This just stores parameters, actual copy happens in SYSBNKCPY
+      bnkcpy_dst_bank = cpu->regs.DE.get_high();
+      bnkcpy_src_bank = cpu->regs.DE.get_low();
+      bnkcpy_count = cpu->regs.HL.get_pair16();
+      if (debug) {
+        emu_log("[HBIOS SYSSETCPY] src=0x%02X dst=0x%02X count=%u\n",
+                bnkcpy_src_bank, bnkcpy_dst_bank, bnkcpy_count);
+      }
+      break;
+    }
+
+    case HBF_SYSBNKCPY: {
+      // Execute bank-to-bank memory copy using params from SYSSETCPY
+      // Input: HL = source address, DE = destination address
+      // Uses: bnkcpy_src_bank, bnkcpy_dst_bank, bnkcpy_count from SYSSETCPY
+      uint16_t src_addr = cpu->regs.HL.get_pair16();
+      uint16_t dst_addr = cpu->regs.DE.get_pair16();
+      uint16_t count = bnkcpy_count;
+
+      if (debug) {
+        emu_log("[HBIOS SYSBNKCPY] src=%02X:%04X dst=%02X:%04X count=%u\n",
+                bnkcpy_src_bank, src_addr, bnkcpy_dst_bank, dst_addr, count);
+      }
+
+      if (memory && count > 0) {
+        for (uint16_t i = 0; i < count; i++) {
+          // Handle common area (0x8000-0xFFFF) - always bank 0x8F
+          uint8_t actual_src_bank = bnkcpy_src_bank;
+          uint8_t actual_dst_bank = bnkcpy_dst_bank;
+          uint16_t actual_src_addr = src_addr + i;
+          uint16_t actual_dst_addr = dst_addr + i;
+
+          // Source address in common area?
+          if (actual_src_addr >= 0x8000) {
+            actual_src_bank = 0x8F;
+            actual_src_addr -= 0x8000;
+          }
+
+          // Destination address in common area?
+          if (actual_dst_addr >= 0x8000) {
+            actual_dst_bank = 0x8F;
+            actual_dst_addr -= 0x8000;
+          }
+
+          uint8_t byte = memory->read_bank(actual_src_bank, actual_src_addr);
+          memory->write_bank(actual_dst_bank, actual_dst_addr, byte);
+        }
+      }
       break;
     }
 

@@ -373,6 +373,11 @@ private:
   // Bank for PEEK/POKE
   uint8_t cur_bank = 0;
 
+  // Bank copy state (SYSSETCPY/SYSBNKCPY)
+  uint8_t bnkcpy_src_bank = 0x8E;
+  uint8_t bnkcpy_dst_bank = 0x8E;
+  uint16_t bnkcpy_count = 0;
+
   // Bitmap tracking which RAM banks (0x80-0x8F) have been initialized
   uint16_t initialized_ram_banks = 0;
 
