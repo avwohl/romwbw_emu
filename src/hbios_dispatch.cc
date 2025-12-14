@@ -461,17 +461,32 @@ void HBIOSDispatch::handleCIO() {
 // Disk I/O (DIO)
 //=============================================================================
 
+// Map RomWBW unit numbers to disk array indices
+// RomWBW convention: Units 0-1 = MD (memory disk), Units 2+ = HD (hard disk)
+// Since we don't have MD support, we map HD units (2+) to our disk array (0+)
+static uint8_t map_disk_unit(uint8_t unit) {
+  // Units 0-1 are memory disks (not supported)
+  if (unit < 2) return 0xFF;  // Invalid
+  // Units 2+ are hard disks, map to 0+
+  if (unit >= 2 && unit < 18) return unit - 2;
+  // Special units (0x90-0x9F = HDSK) - map to disk 0+
+  if (unit >= 0x90 && unit <= 0x9F) return unit & 0x0F;
+  // Other special units - return invalid
+  return 0xFF;
+}
+
 void HBIOSDispatch::handleDIO() {
   if (!cpu || !memory) return;
 
   uint8_t func = cpu->regs.BC.get_high();  // B = function
-  uint8_t unit = cpu->regs.BC.get_low();   // C = unit
+  uint8_t raw_unit = cpu->regs.BC.get_low();   // C = unit
+  uint8_t unit = map_disk_unit(raw_unit);  // Map to disk array index
   uint8_t result = HBR_SUCCESS;
 
   switch (func) {
     case HBF_DIOSTATUS: {
       // Get status
-      if (unit < 16 && disks[unit].is_open) {
+      if (unit != 0xFF && unit < 16 && disks[unit].is_open) {
         cpu->regs.DE.set_low(0x00);  // Ready
       } else {
         result = HBR_FAILED;
@@ -481,7 +496,9 @@ void HBIOSDispatch::handleDIO() {
 
     case HBF_DIORESET:
       // Reset - nothing to do
-      disks[unit].current_lba = 0;
+      if (unit != 0xFF && unit < 16) {
+        disks[unit].current_lba = 0;
+      }
       break;
 
     case HBF_DIOSEEK: {
@@ -492,10 +509,10 @@ void HBIOSDispatch::handleDIO() {
       uint16_t hl_reg = cpu->regs.HL.get_pair16();
       uint32_t lba = (((uint32_t)(de_reg & 0x7FFF) << 16) | hl_reg);
 
-      if (unit < 16 && disks[unit].is_open) {
+      if (unit != 0xFF && unit < 16 && disks[unit].is_open) {
         disks[unit].current_lba = lba;
         if (debug) {
-          emu_log("[HBIOS DIO SEEK] unit=%d lba=%u\n", unit, lba);
+          emu_log("[HBIOS DIO SEEK] unit=%d (raw=%d) lba=%u\n", unit, raw_unit, lba);
         }
       } else {
         result = HBR_FAILED;
@@ -509,7 +526,7 @@ void HBIOSDispatch::handleDIO() {
       // Output: A=Result, E=Blocks Read
       // LBA comes from current_lba set by prior DIOSEEK call
 
-      if (unit >= 16 || !disks[unit].is_open) {
+      if (unit == 0xFF || unit >= 16 || !disks[unit].is_open) {
         result = HBR_FAILED;
         cpu->regs.DE.set_low(0);
         break;
@@ -587,7 +604,7 @@ void HBIOSDispatch::handleDIO() {
       // Output: A=Result, E=Blocks Written
       // LBA comes from current_lba set by prior DIOSEEK call
 
-      if (unit >= 16 || !disks[unit].is_open) {
+      if (unit == 0xFF || unit >= 16 || !disks[unit].is_open) {
         result = HBR_FAILED;
         cpu->regs.DE.set_low(0);
         break;
