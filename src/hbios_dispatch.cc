@@ -42,6 +42,7 @@ void HBIOSDispatch::reset() {
   signal_state = 0;
   signal_addr = 0;
   cur_bank = 0;
+  initialized_ram_banks = 0;  // Reset RAM bank initialization tracking
 
   vda_rows = 25;
   vda_cols = 80;
@@ -824,13 +825,43 @@ void HBIOSDispatch::handleSYS() {
     case HBF_SYSSETBNK: {
       // Set current bank
       // Input: C = bank ID to set
-      uint8_t bank = cpu->regs.BC.get_low();
+      // Output: C = previous bank ID
+      uint8_t new_bank = cpu->regs.BC.get_low();
+      uint8_t prev_bank = cur_bank;
       if (memory) {
-        memory->select_bank(bank);
+        prev_bank = memory->get_current_bank();
+
+        // When switching to a RAM bank for the first time, copy page zero and HCB
+        // from ROM bank 0. This ensures romldr can read HCB values like CB_APP_BNKS.
+        if ((new_bank & 0x80) && !(new_bank & 0x70)) {  // RAM bank 0x80-0x8F
+          uint8_t bank_idx = new_bank & 0x0F;
+          if (!(initialized_ram_banks & (1 << bank_idx))) {
+            // First time accessing this RAM bank - copy page zero and HCB
+            if (debug) {
+              emu_log("[HBIOS] SYSSETBNK initializing RAM bank 0x%02X\n", new_bank);
+            }
+            // Copy page zero (0x0000-0x0100) - contains RST vectors
+            for (uint16_t addr = 0x0000; addr < 0x0100; addr++) {
+              uint8_t byte = memory->read_bank(0x00, addr);
+              memory->write_bank(new_bank, addr, byte);
+            }
+            // Copy HCB (0x0100-0x0200) - system configuration
+            for (uint16_t addr = 0x0100; addr < 0x0200; addr++) {
+              uint8_t byte = memory->read_bank(0x00, addr);
+              memory->write_bank(new_bank, addr, byte);
+            }
+            // Patch APITYPE to HBIOS (0x00) instead of UNA (0xFF)
+            memory->write_bank(new_bank, 0x0112, 0x00);
+            initialized_ram_banks |= (1 << bank_idx);
+          }
+        }
+
+        memory->select_bank(new_bank);
       }
-      cur_bank = bank;
+      cur_bank = new_bank;
+      cpu->regs.BC.set_low(prev_bank);  // Return previous bank in C
       if (debug) {
-        emu_log("[HBIOS] SYSSETBNK bank=0x%02X\n", bank);
+        emu_log("[HBIOS] SYSSETBNK bank=0x%02X (prev=0x%02X)\n", new_bank, prev_bank);
       }
       break;
     }
