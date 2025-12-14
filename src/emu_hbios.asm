@@ -4,11 +4,25 @@
 ; EMU_HBIOS.ASM - Minimal HBIOS for cpmemu emulator
 ;==================================================================================================
 ;
-; This is a minimal replacement HBIOS that provides entry points for the emulator to trap.
-; No actual hardware I/O is performed - the emulator intercepts at specific PC addresses
-; and handles all HBIOS functions in C++.
+; This is a minimal replacement HBIOS that provides HBIOS services via emulator I/O ports.
+; No actual hardware I/O is performed - HBIOS calls are handled by the emulator.
 ;
-; Signal port: OUT to port 0xEE tells emulator HBIOS is ready and provides trap addresses
+; I/O Ports:
+;   0xEE - Signal port (init/status signaling)
+;   0xEF - HBIOS dispatch trigger (OUT triggers emulator to handle HBIOS call)
+;
+; Call Flow:
+;   1. Caller sets up B=function, C=unit, other regs as needed
+;   2. Caller executes RST 08 (or CALL 0xFFF0)
+;   3. RST 08 vector at 0x0008 is JP 0xFFF0
+;   4. At 0xFFF0: OUT (0xEF),A triggers emulator dispatch
+;   5. Emulator reads B,C,D,E,H,L, performs operation, sets A=result
+;   6. RET instruction returns to caller
+;
+; This approach is robust because:
+;   - RST vectors have normal C3 (JP) instructions that code can inspect
+;   - I/O port trap works regardless of memory bank configuration
+;   - No PC-based trapping that can break during bank switches
 ;
 ; Memory Layout:
 ;   0x0000-0x00FF  Page zero (RST vectors, etc.)
@@ -16,11 +30,12 @@
 ;   0x0400-0x05FF  Proxy image (copied to 0xFE00 at startup)
 ;   0xFE00-0xFFFF  HBIOS proxy (in upper RAM after copy)
 ;
-; Assemble with: pasmo emu_hbios.asm emu_hbios.bin
+; Assemble with: um80 -g emu_hbios.asm; ul80 -o emu_hbios.bin -p 0000 emu_hbios.rel
 ;
 ;==================================================================================================
 
-EMU_SIGNAL_PORT	equ	0EEh		; Port to signal emulator
+EMU_SIGNAL_PORT	equ	0EEh		; Port to signal emulator (init/status)
+EMU_DISPATCH_PORT equ	0EFh		; Port to trigger HBIOS dispatch
 HBX_LOC		equ	0FE00h		; Target location of proxy
 HBX_SIZ		equ	0200h		; Size of proxy (512 bytes)
 
@@ -244,44 +259,38 @@ HB_INVOKE:
 
 ;==================================================================================================
 ; CIO_DISPATCH - Character I/O dispatch
-; Emulator traps at this PC and handles in C++
+; Uses I/O port 0xEF to trigger emulator dispatch
 ;==================================================================================================
 
 CIO_DISPATCH:
-	; Emulator intercepts at this PC
 	; B = function (0x00-0x0F)
 	; C = unit
 	; E = character (for output)
 	; Returns: A = status, E = character (for input)
-	nop				; Placeholder - emulator handles before this runs
-	nop
-	ret
+	out	(EMU_DISPATCH_PORT), a	; Trigger emulator dispatch
+	ret				; Emulator has set A with result
 
 ;==================================================================================================
 ; DIO_DISPATCH - Disk I/O dispatch
-; Emulator traps at this PC and handles in C++
+; Uses I/O port 0xEF to trigger emulator dispatch
 ;==================================================================================================
 
 DIO_DISPATCH:
-	; Emulator intercepts at this PC
 	; B = function (0x10-0x1F)
 	; C = unit
 	; DE:HL = LBA (for seek)
 	; HL = buffer, DE = count (for read/write)
 	; Returns: A = status, E = sectors read/written
-	nop				; Placeholder - emulator handles
-	nop
-	ret
+	out	(EMU_DISPATCH_PORT), a	; Trigger emulator dispatch
+	ret				; Emulator has set A with result
 
 ;==================================================================================================
 ; RTC_DISPATCH - Real-time clock dispatch
 ;==================================================================================================
 
 RTC_DISPATCH:
-	; Emulator intercepts at this PC
 	; B = function (0x20-0x2F)
-	nop
-	nop
+	out	(EMU_DISPATCH_PORT), a	; Trigger emulator dispatch
 	ret
 
 ;==================================================================================================
@@ -289,11 +298,9 @@ RTC_DISPATCH:
 ;==================================================================================================
 
 SYS_DISPATCH:
-	; Emulator intercepts at this PC
 	; B = function (0xF0-0xFF)
 	; Handles: SYSRESET, SYSVER, SYSSETBNK, SYSGETBNK, etc.
-	nop
-	nop
+	out	(EMU_DISPATCH_PORT), a	; Trigger emulator dispatch
 	ret
 
 ;==================================================================================================
@@ -341,7 +348,8 @@ PMGMT_RTCLATCH:	db	0		; RTC latch shadow
 PMGMT_LOCK:	db	0FEh		; Mutex lock
 
 ; Offset 0x1F0: Fixed address entry points (at 0xFFF0 when installed)
-	jp	HB_INVOKE		; 0xFFF0: HBIOS invoke
+	out	(EMU_DISPATCH_PORT), a	; 0xFFF0: HBIOS invoke (triggers emulator)
+	ret				; 0xFFF2: Return to caller
 	jp	HBX_LOC + HBX_BNKSEL_START ; 0xFFF3: Bank select (in proxy)
 	ret				; 0xFFF6: Bank copy (stub)
 	nop

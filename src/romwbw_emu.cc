@@ -885,6 +885,7 @@ private:
   uint16_t rtc_dispatch_addr = 0;  // RTC_DISPATCH trap address
   uint16_t sys_dispatch_addr = 0;  // SYS_DISPATCH trap address
   bool hbios_trapping_enabled = false;  // True after init complete signal
+  bool skip_synthetic_ret = false;       // Skip RET in handle_hbios_call (for I/O port dispatch)
 
   // RomWBW romldr support - load real boot menu from RomWBW ROM
   std::string romldr_path;             // Path to romldr.bin or .rom file
@@ -1314,6 +1315,10 @@ public:
           handle_emu_signal(value);
           return;
 
+        case 0xEF:  // HBIOS dispatch trigger port
+          handle_hbios_dispatch();
+          return;
+
         case 0xFD:  // SIMH HDSK port - receive parameter byte
           hdsk_write(value);
           return;
@@ -1542,6 +1547,30 @@ private:
         if (debug) fprintf(stderr, "[EMU HBIOS: Unknown signal 0x%02X]\n", value);
         break;
     }
+  }
+
+  // Handle HBIOS dispatch via I/O port 0xEF
+  // Called when Z80 code executes: OUT (0xEF), A
+  // The proxy code at 0xFFF0 should be:
+  //   OUT (0xEF), A   ; Trigger dispatch (we handle HBIOS call here)
+  //   RET             ; Return to caller (Z80 executes this normally)
+  // Unlike PC-based trapping, we do NOT do a synthetic RET here.
+  void handle_hbios_dispatch() {
+    if (debug) {
+      uint8_t func = cpu->regs.BC.get_high();
+      uint8_t unit = cpu->regs.BC.get_low();
+      fprintf(stderr, "[HBIOS dispatch via port 0xEF] func=0x%02X unit=0x%02X DE=0x%04X HL=0x%04X\n",
+              func, unit, cpu->regs.DE.get_pair16(), cpu->regs.HL.get_pair16());
+    }
+
+    // Set flag to skip synthetic RET (Z80 proxy has its own RET instruction)
+    skip_synthetic_ret = true;
+
+    // Use existing HBIOS handler
+    handle_hbios_call(cpu->regs.PC.get_pair16());
+
+    // Restore flag for PC-based trapping
+    skip_synthetic_ret = false;
   }
 
 public:
@@ -3385,28 +3414,29 @@ public:
     }
 
     // Return to caller:
-    // Since we only trap at dispatch addresses (via check_hbios_trap), the call chain was:
-    //   RST 08 -> HB_INVOKE -> jp DISPATCH
-    // RST 08 pushed the return address, so we pop it from the stack.
-    uint16_t sp = cpu->regs.SP.get_pair16();
-    uint16_t ret_addr = memory->fetch_mem(sp) | (memory->fetch_mem(sp + 1) << 8);
-    cpu->regs.SP.set_pair16(sp + 2);  // Pop return address
-    cpu->regs.PC.set_pair16(ret_addr);
+    // For PC-based trapping, RST 08 pushed the return address, so we pop it from the stack.
+    // For I/O port dispatch, the Z80 proxy code has its own RET instruction, so skip this.
+    if (!skip_synthetic_ret) {
+      uint16_t sp = cpu->regs.SP.get_pair16();
+      uint16_t ret_addr = memory->fetch_mem(sp) | (memory->fetch_mem(sp + 1) << 8);
+      cpu->regs.SP.set_pair16(sp + 2);  // Pop return address
+      cpu->regs.PC.set_pair16(ret_addr);
 
-    // Debug: trace CIOIN return (only when debug is enabled)
-    if (debug && func == HBF_CIOIN) {
-      fprintf(stderr, "[CIOIN return] A=0x%02X E=0x%02X F=0x%02X ret=0x%04X SP=0x%04X\n",
-              cpu->regs.AF.get_high(), cpu->regs.DE.get_low(),
-              cpu->regs.AF.get_low(), ret_addr, cpu->regs.SP.get_pair16());
-      // Show bytes at return address
-      fprintf(stderr, "        Code at 0x%04X: %02X %02X %02X %02X %02X\n",
-              ret_addr,
-              memory->fetch_mem(ret_addr),
-              memory->fetch_mem(ret_addr + 1),
-              memory->fetch_mem(ret_addr + 2),
-              memory->fetch_mem(ret_addr + 3),
-              memory->fetch_mem(ret_addr + 4));
-      cioin_trace_count = 20;  // Trace next 20 instructions
+      // Debug: trace CIOIN return (only when debug is enabled)
+      if (debug && func == HBF_CIOIN) {
+        fprintf(stderr, "[CIOIN return] A=0x%02X E=0x%02X F=0x%02X ret=0x%04X SP=0x%04X\n",
+                cpu->regs.AF.get_high(), cpu->regs.DE.get_low(),
+                cpu->regs.AF.get_low(), ret_addr, cpu->regs.SP.get_pair16());
+        // Show bytes at return address
+        fprintf(stderr, "        Code at 0x%04X: %02X %02X %02X %02X %02X\n",
+                ret_addr,
+                memory->fetch_mem(ret_addr),
+                memory->fetch_mem(ret_addr + 1),
+                memory->fetch_mem(ret_addr + 2),
+                memory->fetch_mem(ret_addr + 3),
+                memory->fetch_mem(ret_addr + 4));
+        cioin_trace_count = 20;  // Trace next 20 instructions
+      }
     }
 
     return true;

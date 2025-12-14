@@ -429,6 +429,10 @@ bool HBIOSDispatch::handleMainEntry() {
 //=============================================================================
 
 void HBIOSDispatch::doRet() {
+  // Skip synthetic RET when using I/O port dispatch
+  // (Z80 proxy code has its own RET instruction)
+  if (skip_ret) return;
+
   if (!cpu || !memory) return;
 
   uint16_t sp = cpu->regs.SP.get_pair16();
@@ -1644,24 +1648,95 @@ void HBIOSDispatch::handleEXT() {
 
   switch (func) {
     case HBF_EXTSLICE: {
-      // Calculate slice starting LBA
-      // Input: B=0xE0, C=unit, D=device info, E=slice index
-      // Output: A=result, DE:HL=starting LBA of slice
-      uint8_t slice_index = cpu->regs.DE.get_low();  // Slice is in E register only
+      // EXTSLICE - Get extended disk media information and slice offset
+      // Input: B=0xE0, D=disk unit, E=slice number
+      // Output: A=result, B=device attrs, C=media ID, DE:HL=LBA offset
+      uint8_t disk_unit = cpu->regs.DE.get_high();  // D = disk unit
+      uint8_t slice = cpu->regs.DE.get_low();       // E = slice number
 
-      // Standard RomWBW slice size is 8MB = 16384 sectors (at 512 bytes/sector)
-      const uint32_t SLICE_SECTORS = 16384;
+      uint8_t dev_attrs = 0x00;  // LBA mode (bit 7 clear)
+      uint8_t media_id = 0x04;   // MID_HD (default)
+      uint32_t slice_lba = 0;
 
-      // Calculate starting LBA for this slice
-      uint32_t start_lba = (uint32_t)slice_index * SLICE_SECTORS;
+      // Map unit number to internal disk unit
+      int internal_unit = -1;
+      if (disk_unit >= 0x90 && disk_unit <= 0x9F) {
+        internal_unit = disk_unit & 0x0F;  // HDSK units 0x90-0x9F -> 0-15
+      } else if (disk_unit < 16) {
+        internal_unit = disk_unit;
+      }
 
-      // Return 32-bit LBA in DE:HL (DE = high 16 bits, HL = low 16 bits)
-      cpu->regs.DE.set_pair16((start_lba >> 16) & 0xFFFF);
-      cpu->regs.HL.set_pair16(start_lba & 0xFFFF);
+      // Handle hard disk units
+      if (internal_unit >= 0 && internal_unit < 16 && disks[internal_unit].is_open) {
+        HBDisk& disk = disks[internal_unit];
 
-      emu_log("[HBIOS EXTSLICE] unit=%d slice=%d -> LBA=%u (DE=0x%04X HL=0x%04X)\n",
-              unit, slice_index, start_lba,
-              cpu->regs.DE.get_pair16(), cpu->regs.HL.get_pair16());
+        // Probe MBR if not yet done
+        if (!disk.partition_probed) {
+          disk.partition_probed = true;
+          disk.partition_base_lba = 0;
+          disk.slice_size = 16640;  // Default: hd512 format
+          disk.is_hd1k = false;
+
+          bool detected_format = false;
+
+          // Read MBR (first 512 bytes)
+          if (disk.data.size() >= 512) {
+            uint8_t* mbr = disk.data.data();
+
+            // Check for valid MBR signature
+            if (mbr[510] == 0x55 && mbr[511] == 0xAA) {
+              // Check partition table for type 0x2E (RomWBW hd1k partition)
+              for (int p = 0; p < 4; p++) {
+                int offset = 0x1BE + (p * 16);
+                uint8_t ptype = mbr[offset + 4];
+                if (ptype == 0x2E) {
+                  // Found RomWBW partition (hd1k format)
+                  uint32_t part_lba = mbr[offset + 8] |
+                                      (mbr[offset + 9] << 8) |
+                                      (mbr[offset + 10] << 16) |
+                                      (mbr[offset + 11] << 24);
+                  disk.partition_base_lba = part_lba;
+                  disk.slice_size = 16384;  // hd1k: 8MB slices
+                  disk.is_hd1k = true;
+                  detected_format = true;
+                  emu_log("[HBIOS EXTSLICE] Detected hd1k format (0x2E partition), LBA %u\n", part_lba);
+                  break;
+                }
+              }
+            }
+
+            // If no 0x2E partition, check if single-slice hd1k image (exactly 8MB)
+            if (!detected_format && disk.data.size() == 8388608) {
+              disk.partition_base_lba = 0;
+              disk.slice_size = 16384;
+              disk.is_hd1k = true;
+              detected_format = true;
+              emu_log("[HBIOS EXTSLICE] Detected hd1k format (8MB single slice)\n");
+            }
+
+            if (!detected_format) {
+              emu_log("[HBIOS EXTSLICE] Using hd512 format (size=%zu)\n", disk.data.size());
+            }
+          }
+        }
+
+        // Calculate slice LBA offset
+        slice_lba = disk.partition_base_lba + ((uint32_t)slice * disk.slice_size);
+
+        // Set media ID based on detected format
+        if (disk.is_hd1k) {
+          media_id = 0x0A;  // MID_HDNEW (hd1k format)
+        }
+      }
+
+      // Set return values
+      cpu->regs.BC.set_high(dev_attrs);  // B = device attributes
+      cpu->regs.BC.set_low(media_id);    // C = media ID
+      cpu->regs.DE.set_pair16((slice_lba >> 16) & 0xFFFF);
+      cpu->regs.HL.set_pair16(slice_lba & 0xFFFF);
+
+      emu_log("[HBIOS EXTSLICE] unit=0x%02X slice=%d -> media=0x%02X LBA=%u\n",
+              disk_unit, slice, media_id, slice_lba);
       break;
     }
 

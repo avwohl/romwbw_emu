@@ -238,6 +238,12 @@ struct HBDisk {
   bool file_backed = false;
   size_t size = 0;
   uint32_t current_lba = 0;   // Current LBA position (set by DIOSEEK)
+
+  // Partition/slice info (detected from MBR on first EXTSLICE call)
+  bool partition_probed = false;     // True if MBR has been parsed
+  uint32_t partition_base_lba = 0;   // Start of RomWBW partition (2048 for hd1k, 0 for hd512)
+  uint32_t slice_size = 16640;       // Sectors per slice (16384 for hd1k, 16640 for hd512)
+  bool is_hd1k = false;              // True for hd1k format (MID_HDNEW=10), false for hd512 (MID_HD=4)
 };
 
 //=============================================================================
@@ -321,6 +327,12 @@ public:
   bool isWaitingForInput() const { return waiting_for_input; }
   void clearWaitingForInput() { waiting_for_input = false; }
 
+  // Control whether handlers do a synthetic RET
+  // Set to true for I/O port dispatch (Z80 proxy has its own RET)
+  // Set to false for PC-based trapping (we need to do the RET)
+  void setSkipRet(bool skip) { skip_ret = skip; }
+  bool getSkipRet() const { return skip_ret; }
+
   // Set reset callback for SYSRESET function
   // The callback should perform: switch to ROM bank 0, clear input, set PC to 0
   using ResetCallback = std::function<void(uint8_t reset_type)>;
@@ -357,6 +369,7 @@ private:
   // Trapping control
   bool trapping_enabled = false;
   bool waiting_for_input = false;  // Set when CIOIN/VDAKRD needs input
+  bool skip_ret = false;           // Skip synthetic RET (for I/O port dispatch)
   uint16_t main_entry = 0xFFF0;  // Main HBIOS entry point
 
   // Dispatch addresses (set via signal port, optional)
