@@ -1009,8 +1009,20 @@ public:
       uint8_t b1 = bmem->read_bank(0x00, addr + 1);
       uint8_t b2 = bmem->read_bank(0x00, addr + 2);
       uint8_t b3 = bmem->read_bank(0x00, addr + 3);
-      if (b0 != 0xFF && b0 != 0x00) {  // Skip empty entries
-        fprintf(stderr, "  [%d] %02X %02X %02X %02X\n", i, b0, b1, b2, b3);
+      if (b0 != 0xFF) {  // Skip only 0xFF entries (show MD=0x00 entries too)
+        fprintf(stderr, "  [%d] %02X %02X %02X %02X (ROM)\n", i, b0, b1, b2, b3);
+      }
+    }
+    // Also dump from RAM bank 0x80 (where boot loader reads)
+    fprintf(stderr, "[HCB] Disk unit table in RAM bank 0x80:\n");
+    for (int i = 0; i < 16; i++) {
+      uint16_t addr = HCB_BASE + 0x60 + (i * 4);
+      uint8_t b0 = bmem->read_bank(0x80, addr);
+      uint8_t b1 = bmem->read_bank(0x80, addr + 1);
+      uint8_t b2 = bmem->read_bank(0x80, addr + 2);
+      uint8_t b3 = bmem->read_bank(0x80, addr + 3);
+      if (b0 != 0xFF) {  // Skip only 0xFF entries
+        fprintf(stderr, "  [%d] %02X %02X %02X %02X (RAM)\n", i, b0, b1, b2, b3);
       }
     }
   }
@@ -1659,6 +1671,38 @@ public:
 
       case HBF_CIOOST: {  // Console output status - return space available in A
         result = 255;  // Lots of space available in output buffer
+        break;
+      }
+
+      case HBF_CIOINIT: {  // 0x04 - Init/reset device/line config
+        // Just return success - we don't actually configure anything
+        if (debug) {
+          fprintf(stderr, "[HBIOS CIOINIT] Unit %d init\n", unit);
+        }
+        break;
+      }
+
+      case HBF_CIOQUERY: {  // 0x05 - Report device/line config
+        // Returns DE = line characteristics (baud, parity, etc.)
+        // We return a reasonable default: 9600 baud, 8N1
+        cpu->regs.DE.set_pair16(0x0000);  // Default config
+        if (debug) {
+          fprintf(stderr, "[HBIOS CIOQUERY] Unit %d query\n", unit);
+        }
+        break;
+      }
+
+      case HBF_CIODEVICE: {  // 0x06 - Report device info
+        // Returns: D = device type, E = physical unit number, C = device attributes
+        // Device types from hbios.inc: CIODEV_*
+        // 0x00 = UART, 0x10 = ASCI, 0x20 = TERM (terminal), 0x30 = PRPCON, etc.
+        // We report as TERM (terminal emulator)
+        cpu->regs.DE.set_high(0x20);   // D = CIODEV_TERM (terminal)
+        cpu->regs.DE.set_low(0);       // E = physical unit 0
+        cpu->regs.BC.set_low(0x03);    // C = attributes: input + output capable
+        if (debug) {
+          fprintf(stderr, "[HBIOS CIODEVICE] Unit %d: type=0x20 (TERM)\n", unit);
+        }
         break;
       }
 
@@ -3792,6 +3836,70 @@ int main(int argc, char** argv) {
       ram[ptr_phys + 0] = 0x00;        // Low byte of 0xFF00
       ram[ptr_phys + 1] = 0xFF;        // High byte of 0xFF00
 
+      // Populate disk unit table in HCB for boot loader device inventory
+      // The disk unit table is at HCB+0x60 (address 0x160), 16 entries of 4 bytes each
+      // Format per entry:
+      //   Byte 0: Device type (DIODEV_*): 0x00=MD, 0x09=HDSK, 0x03=IDE, 0x06=SD, 0xFF=empty
+      //   Byte 1: Unit number within device type
+      //   Byte 2: Mode/attributes (0x80 = removable, etc.)
+      //   Byte 3: Reserved/LU
+      const uint16_t DISKUT_BASE = 0x160;  // HCB+0x60
+
+      // First, mark all entries as empty (0xFF)
+      for (int i = 0; i < 16; i++) {
+        rom[DISKUT_BASE + i * 4 + 0] = 0xFF;
+        rom[DISKUT_BASE + i * 4 + 1] = 0xFF;
+        rom[DISKUT_BASE + i * 4 + 2] = 0xFF;
+        rom[DISKUT_BASE + i * 4 + 3] = 0xFF;
+      }
+
+      int disk_idx = 0;
+
+      // Add memory disks (MD0=RAM, MD1=ROM) - read from HCB config
+      uint8_t ramd_banks = rom[0x1DD];  // CB_RAMD_BNKS
+      uint8_t romd_banks = rom[0x1DF];  // CB_ROMD_BNKS
+      if (ramd_banks > 0 && disk_idx < 16) {
+        rom[DISKUT_BASE + disk_idx * 4 + 0] = 0x00;  // DIODEV_MD
+        rom[DISKUT_BASE + disk_idx * 4 + 1] = 0x00;  // Unit 0 (RAM disk)
+        rom[DISKUT_BASE + disk_idx * 4 + 2] = 0x00;  // No special attributes
+        rom[DISKUT_BASE + disk_idx * 4 + 3] = 0x00;
+        disk_idx++;
+      }
+      if (romd_banks > 0 && disk_idx < 16) {
+        rom[DISKUT_BASE + disk_idx * 4 + 0] = 0x00;  // DIODEV_MD
+        rom[DISKUT_BASE + disk_idx * 4 + 1] = 0x01;  // Unit 1 (ROM disk)
+        rom[DISKUT_BASE + disk_idx * 4 + 2] = 0x00;  // No special attributes
+        rom[DISKUT_BASE + disk_idx * 4 + 3] = 0x00;
+        disk_idx++;
+      }
+
+      // Add hard disks from hbios_disks array
+      for (int i = 0; i < 16 && disk_idx < 16; i++) {
+        if (!hbios_disks[i].empty()) {
+          rom[DISKUT_BASE + disk_idx * 4 + 0] = 0x09;  // DIODEV_HDSK
+          rom[DISKUT_BASE + disk_idx * 4 + 1] = (uint8_t)i;  // HDSK unit number
+          rom[DISKUT_BASE + disk_idx * 4 + 2] = 0x00;  // No special attributes
+          rom[DISKUT_BASE + disk_idx * 4 + 3] = 0x00;
+          disk_idx++;
+        }
+      }
+
+      // Update device count in HCB
+      rom[0x0C + 0x100] = (uint8_t)disk_idx;  // CB_DEVCNT at HCB+0x0C
+
+      // Debug: show what we wrote to the disk table
+      fprintf(stderr, "[HCB] Writing disk unit table:\n");
+      for (int i = 0; i < disk_idx; i++) {
+        fprintf(stderr, "  [%d] %02X %02X %02X %02X\n", i,
+                rom[DISKUT_BASE + i * 4 + 0],
+                rom[DISKUT_BASE + i * 4 + 1],
+                rom[DISKUT_BASE + i * 4 + 2],
+                rom[DISKUT_BASE + i * 4 + 3]);
+      }
+
+      // Re-copy the updated HCB to RAM
+      memcpy(ram, rom, 512);
+      fprintf(stderr, "[HCB] Populated disk unit table with %d devices\n", disk_idx);
     }
 
     // NOW initialize memory disks from HCB (after ROM is loaded)
