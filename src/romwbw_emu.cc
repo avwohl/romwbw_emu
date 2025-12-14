@@ -829,7 +829,14 @@ private:
     std::string image_path; // Path to disk image
     bool is_open;
 
-    HBDiskState() : current_lba(0), image_file(nullptr), is_open(false) {}
+    // Partition/slice info (detected from MBR)
+    bool partition_probed;     // True if we've already parsed MBR
+    uint32_t partition_base_lba;  // Starting LBA of RomWBW partition (2048 for hd1k, 0 for hd512)
+    uint32_t slice_size;       // Sectors per slice (16384 for hd1k, 16640 for hd512)
+    bool is_hd1k;              // True if hd1k format (use MID_HDNEW), false for hd512 (MID_HD)
+
+    HBDiskState() : current_lba(0), image_file(nullptr), is_open(false),
+                    partition_probed(false), partition_base_lba(0), slice_size(16640), is_hd1k(false) {}
 
     ~HBDiskState() {
       if (image_file) fclose(image_file);
@@ -890,6 +897,15 @@ private:
   uint8_t simh_rtc_cmd = 0;        // Current RTC command
   uint8_t simh_rtc_buf[6];         // Time buffer: YY MM DD HH MM SS (BCD)
   int simh_rtc_idx = 0;            // Index into buffer for reads
+
+  // SIMH HDSK state (port 0xFD)
+  // Protocol: OTIR sends 7 bytes: CMD, DRV, SEC, TRK_LO, TRK_HI, DMA_LO, DMA_HI
+  // After 7 bytes, execute command. IN returns result code.
+  uint8_t hdsk_parm[7];            // Parameter block being received
+  int hdsk_parm_idx = 0;           // Index into parameter block
+  uint8_t hdsk_result = 0;         // Last command result (0=success)
+  FILE* hdsk_files[8] = {nullptr}; // Up to 8 HDSK disk images
+  std::string hdsk_paths[8];       // Paths to HDSK disk images
 
 public:
   AltairEmulator(qkz80* acpu, cpm_mem* amem, bool adebug = false, bool aromwbw = false)
@@ -1077,6 +1093,33 @@ public:
     return true;
   }
 
+  // Attach HDSK disk image (SIMH port 0xFD protocol)
+  bool attach_hdsk_disk(int unit, const std::string& image_path) {
+    if (unit < 0 || unit >= 8) return false;
+
+    // Close any existing disk
+    if (hdsk_files[unit]) {
+      fclose(hdsk_files[unit]);
+      hdsk_files[unit] = nullptr;
+    }
+
+    // Open the disk image
+    hdsk_paths[unit] = image_path;
+    hdsk_files[unit] = fopen(image_path.c_str(), "r+b");
+    if (!hdsk_files[unit]) {
+      // Try read-only
+      hdsk_files[unit] = fopen(image_path.c_str(), "rb");
+      if (!hdsk_files[unit]) {
+        fprintf(stderr, "[HDSK] Failed to open disk image: %s\n", image_path.c_str());
+        return false;
+      }
+      fprintf(stderr, "[HDSK] Attached disk unit %d (read-only): %s\n", unit, image_path.c_str());
+    } else {
+      fprintf(stderr, "[HDSK] Attached disk unit %d: %s\n", unit, image_path.c_str());
+    }
+    return true;
+  }
+
   // Register a ROM application (OS that can be booted from "ROM")
   bool register_rom_app(char key, const std::string& name, const std::string& sys_path) {
     if (num_rom_apps >= MAX_ROM_APPS) {
@@ -1170,6 +1213,9 @@ public:
         case 0x78:  // Bank select (write-only, return current bank)
         case 0x7C:
           return memory->get_current_bank();
+
+        case 0xFD:  // SIMH HDSK port - return result code
+          return hdsk_result;
 
         case 0xFE:  // SIMH RTC port - return time data
           return simh_rtc_read();
@@ -1268,6 +1314,10 @@ public:
           handle_emu_signal(value);
           return;
 
+        case 0xFD:  // SIMH HDSK port - receive parameter byte
+          hdsk_write(value);
+          return;
+
         case 0xFE:  // SIMH RTC port - write command
           simh_rtc_write(value);
           return;
@@ -1346,6 +1396,101 @@ private:
       return simh_rtc_buf[simh_rtc_idx++];
     }
     return 0;
+  }
+
+  // SIMH HDSK write handler (port 0xFD)
+  // Protocol: OTIR sends 7 bytes: CMD, DRV, SEC, TRK_LO, TRK_HI, DMA_LO, DMA_HI
+  // Commands: 1=RESET, 2=READ, 3=WRITE
+  void hdsk_write(uint8_t value) {
+    // Store byte in parameter buffer
+    if (hdsk_parm_idx < 7) {
+      hdsk_parm[hdsk_parm_idx++] = value;
+    }
+
+    // When we have 7 bytes, execute the command
+    if (hdsk_parm_idx >= 7) {
+      hdsk_execute_command();
+      hdsk_parm_idx = 0;  // Reset for next command
+    }
+  }
+
+  // Execute HDSK command after receiving all 7 parameter bytes
+  void hdsk_execute_command() {
+    uint8_t cmd = hdsk_parm[0];
+    uint8_t drv = hdsk_parm[1];
+    uint8_t sec = hdsk_parm[2];
+    uint16_t trk = hdsk_parm[3] | (hdsk_parm[4] << 8);
+    uint16_t dma = hdsk_parm[5] | (hdsk_parm[6] << 8);
+
+    // Calculate LBA: (track * 256) + sector
+    uint32_t lba = (uint32_t)trk * 256 + sec;
+    uint32_t offset = lba * 512;
+
+    if (debug) {
+      fprintf(stderr, "[HDSK] cmd=%d drv=%d sec=%d trk=%d dma=0x%04X lba=%d offset=0x%X\n",
+              cmd, drv, sec, trk, dma, lba, offset);
+    }
+
+    // Check drive number
+    if (drv >= 8 || !hdsk_files[drv]) {
+      if (debug) fprintf(stderr, "[HDSK] Drive %d not attached\n", drv);
+      hdsk_result = 0xFF;  // Error
+      return;
+    }
+
+    FILE* f = hdsk_files[drv];
+
+    switch (cmd) {
+      case 1:  // RESET
+        hdsk_result = 0;  // Success
+        break;
+
+      case 2:  // READ - read 512 bytes from disk to memory at DMA
+        {
+          uint8_t buf[512];
+          fseek(f, offset, SEEK_SET);
+          size_t n = fread(buf, 1, 512, f);
+          if (n < 512) {
+            // Pad with zeros if reading past end of file
+            memset(buf + n, 0, 512 - n);
+          }
+          // Write to Z80 memory at DMA address
+          for (int i = 0; i < 512; i++) {
+            memory->store_mem(dma + i, buf[i]);
+          }
+          hdsk_result = 0;  // Success
+          if (debug) {
+            fprintf(stderr, "[HDSK] READ lba=%d -> dma=0x%04X (read %zu bytes)\n", lba, dma, n);
+          }
+        }
+        break;
+
+      case 3:  // WRITE - write 512 bytes from memory at DMA to disk
+        {
+          uint8_t buf[512];
+          // Read from Z80 memory at DMA address
+          for (int i = 0; i < 512; i++) {
+            buf[i] = memory->fetch_mem(dma + i);
+          }
+          fseek(f, offset, SEEK_SET);
+          size_t n = fwrite(buf, 1, 512, f);
+          if (n < 512) {
+            hdsk_result = 0xFF;  // Write error
+            fprintf(stderr, "[HDSK] WRITE error at lba=%d\n", lba);
+          } else {
+            hdsk_result = 0;  // Success
+            if (debug) {
+              fprintf(stderr, "[HDSK] WRITE lba=%d <- dma=0x%04X\n", lba, dma);
+            }
+          }
+        }
+        break;
+
+      default:
+        if (debug) fprintf(stderr, "[HDSK] Unknown command %d\n", cmd);
+        hdsk_result = 0xFF;  // Error
+        break;
+    }
   }
 
   // Handle EMU HBIOS signal port (port 0xEE)
@@ -2452,6 +2597,7 @@ public:
         // Determine device attributes and media ID based on mapped unit
         uint8_t dev_attrs = 0;
         uint8_t media_id = 0;
+        uint32_t slice_lba = 0;
 
         if (mapped_unit < 2) {
           // Memory disk (MD0=RAM, MD1=ROM)
@@ -2466,22 +2612,96 @@ public:
             dev_attrs = 0x00;  // LBA mode (bit 7 clear)
             media_id = 0x01;   // MID_MDROM
           }
+          // Memory disks don't have slices
+          slice_lba = 0;
         } else {
-          // Hard disk - also needs LBA mode
+          // Hard disk - detect partition format if not yet probed
           dev_attrs = 0x00;    // LBA mode (bit 7 clear)
-          media_id = 0x04;     // MID_HD
+          media_id = 0x04;     // MID_HD (default, will change to MID_HDNEW if hd1k)
+
+          int hd_unit = mapped_unit - 2;
+          if (hd_unit >= 0 && hd_unit < 16 && hb_disks[hd_unit].is_open) {
+            // Probe MBR if not yet done
+            if (!hb_disks[hd_unit].partition_probed) {
+              hb_disks[hd_unit].partition_probed = true;
+              hb_disks[hd_unit].partition_base_lba = 0;
+              hb_disks[hd_unit].slice_size = 16640;  // Default: hd512 format
+              hb_disks[hd_unit].is_hd1k = false;
+
+              // Read MBR (sector 0)
+              uint8_t mbr[512];
+              long saved_pos = ftell(hb_disks[hd_unit].image_file);
+              fseek(hb_disks[hd_unit].image_file, 0, SEEK_SET);
+              size_t read = fread(mbr, 1, 512, hb_disks[hd_unit].image_file);
+
+              // Also get file size to detect single-slice hd1k images
+              fseek(hb_disks[hd_unit].image_file, 0, SEEK_END);
+              long file_size = ftell(hb_disks[hd_unit].image_file);
+              fseek(hb_disks[hd_unit].image_file, saved_pos, SEEK_SET);
+
+              bool detected_format = false;
+              if (read == 512 && mbr[510] == 0x55 && mbr[511] == 0xAA) {
+                // Valid MBR signature - check partition table for type 0x2E (RomWBW)
+                for (int p = 0; p < 4; p++) {
+                  int offset = 0x1BE + (p * 16);
+                  uint8_t ptype = mbr[offset + 4];
+                  if (ptype == 0x2E) {
+                    // Found RomWBW partition (hd1k format)
+                    // LBA start is at offset 8-11 (little endian)
+                    uint32_t part_lba = mbr[offset + 8] |
+                                        (mbr[offset + 9] << 8) |
+                                        (mbr[offset + 10] << 16) |
+                                        (mbr[offset + 11] << 24);
+                    hb_disks[hd_unit].partition_base_lba = part_lba;
+                    hb_disks[hd_unit].slice_size = 16384;  // hd1k format
+                    hb_disks[hd_unit].is_hd1k = true;
+                    detected_format = true;
+                    if (debug) {
+                      fprintf(stderr, "[HBIOS EXTSLICE] Detected hd1k format (0x2E partition), LBA %u\n", part_lba);
+                    }
+                    break;
+                  }
+                }
+              }
+
+              // If no 0x2E partition found, check if single-slice hd1k image (exactly 8MB)
+              if (!detected_format && file_size == 8388608) {
+                // 8MB = exactly one hd1k slice - assume hd1k format
+                hb_disks[hd_unit].partition_base_lba = 0;
+                hb_disks[hd_unit].slice_size = 16384;
+                hb_disks[hd_unit].is_hd1k = true;
+                detected_format = true;
+                if (debug) {
+                  fprintf(stderr, "[HBIOS EXTSLICE] Detected hd1k format (8MB single slice)\n");
+                }
+              }
+
+              if (!detected_format && debug) {
+                fprintf(stderr, "[HBIOS EXTSLICE] Using hd512 format (file size=%ld)\n", file_size);
+              }
+            }
+
+            // Calculate slice LBA offset
+            slice_lba = hb_disks[hd_unit].partition_base_lba +
+                        ((uint32_t)slice * hb_disks[hd_unit].slice_size);
+
+            // Set media ID based on detected format
+            if (hb_disks[hd_unit].is_hd1k) {
+              media_id = 0x0A;  // MID_HDNEW (hd1k format with 1024 dir entries)
+            }
+          }
         }
 
         // Set return values
         cpu->regs.BC.set_high(dev_attrs);  // B = device attributes
         cpu->regs.BC.set_low(media_id);    // C = media ID
-        // DE:HL = LBA offset (0 for slice 0, we don't support slicing)
-        cpu->regs.DE.set_pair16(0);
-        cpu->regs.HL.set_pair16(0);
+        // DE:HL = LBA offset (32-bit: DE=high16, HL=low16)
+        cpu->regs.DE.set_pair16((slice_lba >> 16) & 0xFFFF);
+        cpu->regs.HL.set_pair16(slice_lba & 0xFFFF);
 
         if (debug) {
-          fprintf(stderr, "[HBIOS EXTSLICE] Unit %d (mapped=%d) slice %d: attrs=0x%02X media=0x%02X LBA=0\n",
-                  disk_unit, mapped_unit, slice, dev_attrs, media_id);
+          fprintf(stderr, "[HBIOS EXTSLICE] Unit %d (mapped=%d) slice %d: attrs=0x%02X media=0x%02X LBA=%u\n",
+                  disk_unit, mapped_unit, slice, dev_attrs, media_id, slice_lba);
         }
         break;
       }
@@ -3215,8 +3435,10 @@ void print_usage(const char* prog) {
   fprintf(stderr, "  --romwbw          Enable RomWBW mode (512KB ROM+RAM, Z80, bank switching)\n");
   fprintf(stderr, "  --strict-io       Halt on unexpected I/O ports (for debugging)\n");
   fprintf(stderr, "  --debug           Enable debug output\n");
-  fprintf(stderr, "  --hbdisk0=FILE    Attach disk image for HBIOS disk unit 0\n");
-  fprintf(stderr, "  --hbdisk1=FILE    Attach disk image for HBIOS disk unit 1\n");
+  fprintf(stderr, "  --hbdisk0=FILE    Attach disk image for HBIOS disk unit 0 (emu_hbios mode)\n");
+  fprintf(stderr, "  --hbdisk1=FILE    Attach disk image for HBIOS disk unit 1 (emu_hbios mode)\n");
+  fprintf(stderr, "  --hdsk0=FILE      Attach SIMH HDSK disk image for unit 0 (port 0xFD)\n");
+  fprintf(stderr, "  --hdsk1=FILE      Attach SIMH HDSK disk image for unit 1 (port 0xFD)\n");
   fprintf(stderr, "  --boot=STRING     Auto-boot string (e.g., '0' or 'C' for CP/M)\n");
   fprintf(stderr, "                    Automatically entered at boot prompt\n");
   fprintf(stderr, "  --escape=CHAR     Console escape char (default ^E)\n");
@@ -3248,7 +3470,8 @@ int main(int argc, char** argv) {
   bool romwbw_mode = false;
   bool strict_io_mode = false;
   int sense = -1;
-  std::string hbios_disks[16];  // For RomWBW disk images
+  std::string hbios_disks[16];  // For RomWBW disk images (HBIOS dispatch)
+  std::string hdsk_disks[8];    // For SIMH HDSK port 0xFD disk images
   std::string trace_file;
   std::string symbols_file;
   std::string romldr_path;  // RomWBW romldr boot menu
@@ -3298,6 +3521,21 @@ int main(int argc, char** argv) {
         hbios_disks[unit] = path;
       } else {
         fprintf(stderr, "Invalid --hbdisk option: %s\n", argv[i]);
+        return 1;
+      }
+    } else if (strncmp(argv[i], "--hdsk", 6) == 0) {
+      // Parse --hdsk0=file, --hdsk1=file, etc. (SIMH HDSK port 0xFD protocol)
+      const char* opt = argv[i] + 6;
+      int unit = -1;
+      const char* path = nullptr;
+      if (isdigit(opt[0]) && opt[1] == '=' && opt[2] != '\0') {
+        unit = opt[0] - '0';
+        path = opt + 2;
+      }
+      if (unit >= 0 && unit < 8 && path) {
+        hdsk_disks[unit] = path;
+      } else {
+        fprintf(stderr, "Invalid --hdsk option: %s\n", argv[i]);
         return 1;
       }
     } else if (strncmp(argv[i], "--romapp=", 9) == 0) {
@@ -3486,11 +3724,19 @@ int main(int argc, char** argv) {
   // Set up HBIOS disk images
   // NOTE: Memory disks are initialized later, after ROM is loaded
   if (romwbw_mode) {
-    // Attach any file-backed hard disk images
+    // Attach any file-backed hard disk images (HBIOS dispatch protocol)
     for (int i = 0; i < 16; i++) {
       if (!hbios_disks[i].empty()) {
         if (!emu.attach_hbios_disk(i, hbios_disks[i])) {
           fprintf(stderr, "Warning: Could not attach disk %d: %s\n", i, hbios_disks[i].c_str());
+        }
+      }
+    }
+    // Attach any HDSK disk images (SIMH port 0xFD protocol)
+    for (int i = 0; i < 8; i++) {
+      if (!hdsk_disks[i].empty()) {
+        if (!emu.attach_hdsk_disk(i, hdsk_disks[i])) {
+          fprintf(stderr, "Warning: Could not attach HDSK disk %d: %s\n", i, hdsk_disks[i].c_str());
         }
       }
     }
