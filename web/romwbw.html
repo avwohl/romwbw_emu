@@ -95,30 +95,36 @@
       <label>ROM:</label>
       <select id="romSelect" style="margin-right:4px;">
         <option value="">-- Select ROM --</option>
-        <option value="SBC_simh_std.rom" selected>SBC_simh_std.rom (SIMH)</option>
+        <option value="emu_romwbw.rom" selected>emu_romwbw.rom (Emulator HBIOS - recommended)</option>
+        <option value="SBC_simh_std.rom">SBC_simh_std.rom (SIMH hardware)</option>
       </select>
       <input type="file" id="romFile" accept=".rom,.bin" style="width:180px;">
-      <label style="margin-left:12px;">Boot:</label><input type="text" id="bootString" placeholder="e.g., 0, C" style="width:80px;">
+      <label style="margin-left:12px;">Boot:</label><input type="text" id="bootString" placeholder="2=disk, C=CPM" style="width:100px;" value="2">
     </div>
     <div class="file-input">
-      <label>Disk 0:</label>
+      <label>Disk 0 (C:):</label>
       <select id="disk0Select" style="margin-right:4px;">
-        <option value="">-- Select Disk --</option>
+        <option value="">-- Select Disk (hd1k format) --</option>
+        <option value="hd1k_games.img" selected>hd1k_games.img (Classic games: Zork, Adventure)</option>
+        <option value="hd1k_infocom.img">hd1k_infocom.img (Infocom: Zork 1-3, H2G2)</option>
         <option value="hd1k_cpm22.img">hd1k_cpm22.img (CP/M 2.2)</option>
         <option value="hd1k_zsdos.img">hd1k_zsdos.img (ZSDOS)</option>
+        <option value="hd1k_combo.img">hd1k_combo.img (49MB combo disk)</option>
       </select>
-      <input type="file" id="disk0File" accept=".img,.dsk" style="width:180px;">
-      <button id="downloadDisk0Btn" disabled>↓</button>
+      <input type="file" id="disk0File" accept=".img,.dsk" style="width:140px;">
+      <button id="downloadDisk0Btn" disabled title="Download modified disk">↓</button>
     </div>
     <div class="file-input">
-      <label>Disk 1:</label>
+      <label>Disk 1 (D:):</label>
       <select id="disk1Select" style="margin-right:4px;">
-        <option value="">-- Select Disk --</option>
+        <option value="">-- None --</option>
+        <option value="hd1k_games.img">hd1k_games.img (Classic games)</option>
+        <option value="hd1k_infocom.img">hd1k_infocom.img (Infocom games)</option>
         <option value="hd1k_cpm22.img">hd1k_cpm22.img (CP/M 2.2)</option>
         <option value="hd1k_zsdos.img">hd1k_zsdos.img (ZSDOS)</option>
       </select>
-      <input type="file" id="disk1File" accept=".img,.dsk" style="width:180px;">
-      <button id="downloadDisk1Btn" disabled>↓</button>
+      <input type="file" id="disk1File" accept=".img,.dsk" style="width:140px;">
+      <button id="downloadDisk1Btn" disabled title="Download modified disk">↓</button>
       <button id="startBtn" style="margin-left:20px;">Start</button>
       <button id="stopBtn" disabled>Stop</button>
       <label style="margin-left:20px;"><input type="checkbox" id="debugCheckbox"> Debug</label>
@@ -131,12 +137,23 @@
 
   <div class="instructions">
     <h3>Quick Start</h3>
-    <p>1. Load a RomWBW ROM image (e.g., <code>SBC_simh_std.rom</code> from the RomWBW distribution)</p>
-    <p>2. Optionally load disk images for hard disk units</p>
-    <p>3. Click <strong>Start</strong> to boot RomWBW</p>
-    <p>4. At the boot prompt, press <code>h</code> for help, or select a boot option</p>
-    <h3>Boot Loader Commands</h3>
-    <p><code>h</code> - Help | <code>l</code> - List ROM apps | <code>d</code> - List devices | <code>m</code> - Monitor | <code>z</code> - Z-System</p>
+    <p>1. Click <strong>Start</strong> to boot with games disk (default settings)</p>
+    <p>2. At <code>C&gt;</code> prompt, type <code>DIR</code> to see files, or run a game like <code>ZORK1</code></p>
+
+    <h3>ROM Types</h3>
+    <p><code>emu_romwbw.rom</code> - <strong>Recommended.</strong> Uses emulator's C++ HBIOS. Works with all hd1k disk images.</p>
+    <p><code>SBC_simh_std.rom</code> - Original SIMH ROM. Requires SIMH hardware emulation (may not boot).</p>
+
+    <h3>Disk Images (hd1k format, 8MB)</h3>
+    <p><code>hd1k_games.img</code> - Classic games: Colossal Cave Adventure, Castle, Dungeon, Hitchhiker's</p>
+    <p><code>hd1k_infocom.img</code> - Infocom text adventures: Zork 1-3, Hitchhiker's Guide, Enchanter trilogy</p>
+    <p><code>hd1k_cpm22.img</code> / <code>hd1k_zsdos.img</code> - Operating system disks</p>
+
+    <h3>Boot Options</h3>
+    <p><code>2</code> - Boot from disk (drive C:) | <code>C</code> - CP/M from ROM | <code>H</code> - Help</p>
+
+    <h3>Drive Letters</h3>
+    <p><code>A:</code> RAM disk | <code>B:</code> ROM disk | <code>C:</code> Disk 0 | <code>D:</code> Disk 1</p>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
@@ -478,7 +495,7 @@
 
       // Auto-load default ROM if none loaded
       if (!romLoaded) {
-        const defaultRom = 'SBC_simh_std.rom';
+        const defaultRom = 'emu_romwbw.rom';
         statusDiv.textContent = 'Loading default ROM...';
         try {
           const response = await fetch(defaultRom);
@@ -494,7 +511,7 @@
 
       // Auto-load default disk if none loaded
       if (!diskLoaded[0]) {
-        const defaultDisk = 'hd1k_zsdos.img';
+        const defaultDisk = 'hd1k_games.img';
         statusDiv.textContent = 'Loading default disk...';
         try {
           const response = await fetch(defaultDisk);
