@@ -867,8 +867,8 @@ void HBIOSDispatch::handleSYS() {
           break;
 
         case SYSGET_PANEL:
-          // Front panel switches - no physical panel in emulator
-          cpu->regs.HL.set_low(0x00);
+          // Front panel switches - return 0xFF (required for emu ROMs to use HBIOS)
+          cpu->regs.HL.set_low(0xFF);
           break;
 
         case SYSGET_DEVLIST: {
