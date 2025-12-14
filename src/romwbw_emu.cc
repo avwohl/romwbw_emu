@@ -73,6 +73,11 @@ static InterruptConfig maskable_int_config;
 static InterruptConfig nmi_config;
 static std::mt19937 interrupt_rng(std::random_device{}());
 
+// Normalize line ending: LF -> CR for CP/M compatibility
+static inline uint8_t normalize_eol(int ch) {
+  return (ch == '\n') ? '\r' : ch;
+}
+
 // Get next trigger cycle count (random in range)
 static unsigned long long get_next_trigger(const InterruptConfig& cfg, unsigned long long current_cycles) {
   if (cfg.cycle_min == cfg.cycle_max) {
@@ -1115,33 +1120,31 @@ public:
   // Handle IN instruction - returns value read from port
   uint8_t handle_in(uint8_t port) {
     port_in_counts[port]++;
-    uint8_t value = 0x00;
+    uint8_t value = 0xFF;  // Unknown ports return 0xFF (matches web emulator)
 
     // RomWBW UART ports (accent on 0x68-0x6F range for 16550-style UART)
     if (romwbw_mode) {
       switch (port) {
         case 0x68:  // UART data register
           if (input_char >= 0) {
-            value = input_char & 0xFF;
+            value = normalize_eol(input_char);
             input_char = -1;
           } else if (peek_char >= 0) {
             int ch = peek_char;
             peek_char = -1;
             if (check_ctrl_c_exit(ch)) {
-              
               value = 0;  // ^C consumed, return nothing
             } else {
-              value = ch & 0xFF;
+              value = normalize_eol(ch);
             }
           } else if (stdin_has_data()) {
             int ch = peek_char;
             peek_char = -1;
             if (ch == EOF) ch = 0;
             if (check_ctrl_c_exit(ch)) {
-              
               value = 0;  // ^C consumed, return nothing
             } else {
-              value = ch & 0xFF;
+              value = normalize_eol(ch);
             }
           }
           return value;
@@ -1185,18 +1188,16 @@ public:
       case 0x01:  // SIO data (alternate)
       case 0x11:  // SIO data (standard)
         if (input_char >= 0) {
-          value = input_char & 0x7F;
+          value = normalize_eol(input_char) & 0x7F;
           input_char = -1;
         } else if (peek_char >= 0) {
           // Use character already peeked by stdin_has_data() or check_console_escape_async()
           int ch = peek_char;
           peek_char = -1;
           if (check_ctrl_c_exit(ch)) {
-            
             value = 0;  // ^C consumed
           } else {
-            if (ch == '\n') ch = '\r';
-            value = ch & 0x7F;
+            value = normalize_eol(ch) & 0x7F;
           }
         } else if (stdin_has_data()) {
           // stdin_has_data() sets peek_char, so use it
@@ -1204,11 +1205,9 @@ public:
           peek_char = -1;
           if (ch == EOF) ch = 0;
           if (check_ctrl_c_exit(ch)) {
-            
             value = 0;  // ^C consumed
           } else {
-            if (ch == '\n') ch = '\r';
-            value = ch & 0x7F;
+            value = normalize_eol(ch) & 0x7F;
           }
         }
         break;
