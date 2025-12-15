@@ -114,6 +114,9 @@ static void handle_out(uint8_t port, uint8_t value) {
       break;
 
     case 0xEF:  // HBIOS dispatch port
+      // Log all dispatch calls to trace boot issues
+      emu_log("[OUT 0xEF] dispatch B=0x%02X C=%d\n",
+              emu->cpu.regs.BC.get_high(), emu->cpu.regs.BC.get_low());
       emu->hbios.handlePortDispatch();
       break;
   }
@@ -139,6 +142,7 @@ static void run_batch() {
 
     // Check for HBIOS trap
     if (emu->hbios.checkTrap(pc)) {
+      emu_log("[TRAP] PC=0x%04X B=0x%02X\n", pc, emu->cpu.regs.BC.get_high());
       int trap_type = emu->hbios.getTrapType(pc);
       if (!emu->hbios.handleCall(trap_type)) {
         emu_error("[HBIOS] Failed to handle trap at 0x%04X\n", pc);
@@ -319,6 +323,8 @@ static void handle_sysreset(uint8_t reset_type) {
 EMSCRIPTEN_KEEPALIVE
 void romwbw_start() {
   ensure_emu();
+
+  emu_log("[WASM] RomWBW Emulator built " __DATE__ " " __TIME__ " starting\n");
 
   // Set Z80 mode
   emu->cpu.set_cpu_mode(qkz80::MODE_Z80);

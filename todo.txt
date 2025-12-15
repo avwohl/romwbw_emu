@@ -1,0 +1,43 @@
+We made a z80 emulator.  To get higher level software we have been using RomWBW.
+It has system called hbios to supply drivers for things like character in/out
+and disk.  Up until now we have been taking pre build RomWBW roms and patching
+in our hbios.  It kind of sort of works.  But it has beend days of debugging.
+And still it doesn't recognize disk slices and often doesn't work or
+works intermitenty.
+
+Our z80 code, src src/*.asm. I suggest leaving it as is
+and making new files (feel free to copy the existing,
+if successful the old ones can be deleted)
+
+Input source code and binaries for the RomWBW system
+~/esrc/RomWBW-v3.5.1
+Do not do work in this tree, we need our sources in this rombwb_emu
+github
+
+** WARNING if you read the pdfs in here you will lock up
+It usually takes me telling you this 6 times. please believe me
+and dont read them directly. Convert to txt as needed.
+Manuals of how to implement a new hbios ~/esrc/RomWBW-v3.5.1/Doc/
+
+Build a rom with our drivers
+ - note that there is a portable section of our drivers that is used
+ by web assemble, ios and mac  All of which should be able to use
+ the portable code.
+ - Support simh disks
+ - Support RomWBW disks
+ - see ~/www/romwbw_disks/ for disks to test with
+ - when the rom boots the device list (d) should show the devices
+ - the existing roms mount disks and mount all thier slices, in the overlay rom
+ we could never get disk slices to work
+
+output of this work should be a .rom file to run in the emulator.
+It can attach disks (simh or romwbw) and support character io
+(each emulator (cli, webassembly, ios, mac) supplied low a level library
+to actually do the io).
+
+When RomWBW (or an OS inside it) calls to our rom it traps out to c++
+code.  There should be little of any writing of z80 code.  There
+may need to be data tables in z80 space. For example if RomWBW asks
+to enumerate the disks, then slices, or devices in general
+
+

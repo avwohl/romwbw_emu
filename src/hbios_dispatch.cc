@@ -87,9 +87,8 @@ bool HBIOSDispatch::loadDisk(int unit, const uint8_t* data, size_t size) {
   disks[unit].file_backed = false;
   disks[unit].handle = nullptr;
 
-  if (debug) {
-    emu_log("[HBIOS] Loaded disk %d: %zu bytes (in-memory)\n", unit, size);
-  }
+  // Always log disk loads to help debug disk I/O issues
+  emu_log("[HBIOS] Loaded disk %d: %zu bytes (in-memory)\n", unit, size);
   return true;
 }
 
@@ -598,6 +597,9 @@ void HBIOSDispatch::handleDIO() {
   uint8_t raw_unit = cpu->regs.BC.get_low();   // C = unit
   uint8_t result = HBR_SUCCESS;
 
+  // Log all DIO calls to trace boot issues
+  emu_log("[HBIOS DIO] func=0x%02X unit=%d\n", func, raw_unit);
+
   // Check if this is a memory disk (MD) or hard disk (HD)
   bool is_memdisk = is_md_unit(raw_unit, md_disks);
   uint8_t md_unit = get_md_index(raw_unit);  // Map to MD index (0=MD0, 1=MD1)
@@ -636,16 +638,17 @@ void HBIOSDispatch::handleDIO() {
 
       if (is_memdisk) {
         md_disks[md_unit].current_lba = lba;
-        if (debug) {
-          emu_log("[HBIOS DIO SEEK] MD%d lba=%u\n", md_unit, lba);
-        }
+        emu_log("[HBIOS DIO SEEK] MD%d lba=%u\n", md_unit, lba);
       } else if (is_harddisk) {
         disks[hd_unit].current_lba = lba;
-        if (debug) {
-          emu_log("[HBIOS DIO SEEK] HD%d (raw=%d) lba=%u\n", hd_unit, raw_unit, lba);
-        }
+        emu_log("[HBIOS DIO SEEK] HD%d (raw=%d) lba=%u\n", hd_unit, raw_unit, lba);
       } else {
         // No device at this unit - return error
+        char errmsg[128];
+        snprintf(errmsg, sizeof(errmsg),
+                 "\r\n[SEEK ERR] unit=%d hd_unit=%d is_open=%d\r\n",
+                 raw_unit, hd_unit, (hd_unit < 16) ? disks[hd_unit].is_open : -1);
+        for (const char* p = errmsg; *p; p++) emu_console_write_char(*p);
         result = HBR_NOUNIT;
       }
       break;
@@ -658,6 +661,13 @@ void HBIOSDispatch::handleDIO() {
 
       if (!is_memdisk && !is_harddisk) {
         // No device at this unit - return error with 0 blocks read
+        // Output visible error to terminal
+        char errmsg[128];
+        snprintf(errmsg, sizeof(errmsg),
+                 "\r\n[DIO ERR] unit=%d hd_unit=%d is_open=%d\r\n",
+                 raw_unit, hd_unit, (hd_unit < 16) ? disks[hd_unit].is_open : -1);
+        for (const char* p = errmsg; *p; p++) emu_console_write_char(*p);
+
         cpu->regs.DE.set_low(0);
         result = HBR_NOUNIT;
         break;
@@ -721,6 +731,10 @@ void HBIOSDispatch::handleDIO() {
         // Hard disk read - existing code
         uint32_t lba = disks[hd_unit].current_lba;
 
+        // Always log HD reads to debug boot issues
+        emu_log("[HBIOS HD READ] hd_unit=%d lba=%u count=%d buf=0x%04X bank=0x%02X data.size=%zu\n",
+                hd_unit, lba, count, buffer, buffer_bank, disks[hd_unit].data.size());
+
         if (disks[hd_unit].file_backed && disks[hd_unit].handle) {
           // Read from file
           uint8_t sector_buf[512];
@@ -755,6 +769,10 @@ void HBIOSDispatch::handleDIO() {
 
         // Update current_lba for next sequential access
         disks[hd_unit].current_lba += blocks_read;
+
+        // Log result
+        emu_log("[HBIOS HD READ] completed: blocks_read=%d new_lba=%u\n",
+                blocks_read, disks[hd_unit].current_lba);
       }
 
       cpu->regs.DE.set_low(blocks_read);
