@@ -610,8 +610,9 @@ void HBIOSDispatch::handleDIO() {
       if (is_memdisk || is_harddisk) {
         cpu->regs.DE.set_low(0x00);  // Ready
       } else {
-        emu_fatal("[HBIOS DIOSTATUS] unit %d not recognized (is_md=%d, is_hd=%d, hd_unit=%d)\n",
-                  raw_unit, is_memdisk, is_harddisk, hd_unit);
+        // No device at this unit - return not ready
+        cpu->regs.DE.set_low(0xFF);
+        result = HBR_NOUNIT;
       }
       break;
     }
@@ -644,8 +645,8 @@ void HBIOSDispatch::handleDIO() {
           emu_log("[HBIOS DIO SEEK] HD%d (raw=%d) lba=%u\n", hd_unit, raw_unit, lba);
         }
       } else {
-        emu_fatal("[HBIOS DIOSEEK] unit %d not recognized (is_md=%d, is_hd=%d, hd_unit=%d)\n",
-                  raw_unit, is_memdisk, is_harddisk, hd_unit);
+        // No device at this unit - return error
+        result = HBR_NOUNIT;
       }
       break;
     }
@@ -656,8 +657,10 @@ void HBIOSDispatch::handleDIO() {
       // Output: A=Result, E=Blocks Read
 
       if (!is_memdisk && !is_harddisk) {
-        emu_fatal("[HBIOS DIOREAD] unit %d not recognized (is_md=%d, is_hd=%d, hd_unit=%d)\n",
-                  raw_unit, is_memdisk, is_harddisk, hd_unit);
+        // No device at this unit - return error with 0 blocks read
+        cpu->regs.DE.set_low(0);
+        result = HBR_NOUNIT;
+        break;
       }
 
       uint16_t buffer = cpu->regs.HL.get_pair16();
@@ -764,8 +767,10 @@ void HBIOSDispatch::handleDIO() {
       // Output: A=Result, E=Blocks Written
 
       if (!is_memdisk && !is_harddisk) {
-        emu_fatal("[HBIOS DIOWRITE] unit %d not recognized (is_md=%d, is_hd=%d, hd_unit=%d)\n",
-                  raw_unit, is_memdisk, is_harddisk, hd_unit);
+        // No device at this unit - return error with 0 blocks written
+        cpu->regs.DE.set_low(0);
+        result = HBR_NOUNIT;
+        break;
       }
 
       uint16_t buffer = cpu->regs.HL.get_pair16();
@@ -879,7 +884,7 @@ void HBIOSDispatch::handleDIO() {
     case HBF_DIODEVICE: {
       // Disk device info report
       // Returns: D=device type, E=device number within type
-      // Device types: 0x00=MD (memory disk), 0x09=HDSK
+      // Device types: 0x00=MD (memory disk), 0x09=HDSK, 0xFF=no device
       if (is_memdisk) {
         cpu->regs.DE.set_high(0x00);  // DIODEV_MD (memory disk)
         cpu->regs.DE.set_low(md_unit); // Device number (0=MD0, 1=MD1)
@@ -887,8 +892,14 @@ void HBIOSDispatch::handleDIO() {
         cpu->regs.DE.set_high(0x09);  // DIODEV_HDSK (hard disk)
         cpu->regs.DE.set_low(hd_unit); // Device number within type
       } else {
-        emu_fatal("[HBIOS DIODEVICE] unit %d not recognized (is_md=%d, is_hd=%d, hd_unit=%d)\n",
-                  raw_unit, is_memdisk, is_harddisk, hd_unit);
+        // No device at this unit - return error, don't crash
+        cpu->regs.DE.set_high(0xFF);  // No device
+        cpu->regs.DE.set_low(0xFF);
+        result = HBR_NOUNIT;
+        if (debug) {
+          emu_log("[HBIOS DIODEVICE] Unit %d: no device found\n", raw_unit);
+        }
+        break;
       }
       if (debug) {
         emu_log("[HBIOS DIODEVICE] Unit %d: type=0x%02X num=%d\n",
@@ -904,8 +915,9 @@ void HBIOSDispatch::handleDIO() {
       } else if (is_harddisk) {
         cpu->regs.DE.set_low(MID_HD);  // Hard disk media
       } else {
-        emu_fatal("[HBIOS DIOMEDIA] unit %d not recognized (is_md=%d, is_hd=%d, hd_unit=%d)\n",
-                  raw_unit, is_memdisk, is_harddisk, hd_unit);
+        // No device at this unit - return error
+        cpu->regs.DE.set_low(0xFF);
+        result = HBR_NOUNIT;
       }
       break;
     }
@@ -926,8 +938,10 @@ void HBIOSDispatch::handleDIO() {
         cpu->regs.DE.set_pair16(sectors & 0xFFFF);
         cpu->regs.HL.set_pair16((sectors >> 16) & 0xFFFF);
       } else {
-        emu_fatal("[HBIOS DIOCAP] unit %d not recognized (is_md=%d, is_hd=%d, hd_unit=%d)\n",
-                  raw_unit, is_memdisk, is_harddisk, hd_unit);
+        // No device at this unit - return 0 capacity and error
+        cpu->regs.DE.set_pair16(0);
+        cpu->regs.HL.set_pair16(0);
+        result = HBR_NOUNIT;
       }
       break;
     }
@@ -1681,17 +1695,18 @@ void HBIOSDispatch::handleEXT() {
       uint8_t media_id = 0x04;   // MID_HD (default)
       uint32_t slice_lba = 0;
 
-      // Map unit number to internal disk unit
-      int internal_unit = -1;
-      if (disk_unit >= 0x90 && disk_unit <= 0x9F) {
-        internal_unit = disk_unit & 0x0F;  // HDSK units 0x90-0x9F -> 0-15
-      } else if (disk_unit < 16) {
-        internal_unit = disk_unit;
-      }
+      // Map unit number to internal disk index using same mapping as DIO
+      // First check if it's a memory disk
+      bool is_memdisk = is_md_unit(disk_unit, md_disks);
+      uint8_t hd_idx = map_hd_unit(disk_unit);
 
-      // Handle hard disk units
-      if (internal_unit >= 0 && internal_unit < 16 && disks[internal_unit].is_open) {
-        HBDisk& disk = disks[internal_unit];
+      if (is_memdisk) {
+        // Memory disks don't have slices - return LBA 0
+        slice_lba = 0;
+        media_id = (disk_unit == 0 || (disk_unit >= 0x80 && disk_unit < 0x82)) ? 0x01 : 0x02;
+        emu_log("[HBIOS EXTSLICE] Memory disk unit 0x%02X, no slices\n", disk_unit);
+      } else if (hd_idx != 0xFF && hd_idx < 16 && disks[hd_idx].is_open) {
+        HBDisk& disk = disks[hd_idx];
 
         // Probe MBR if not yet done
         if (!disk.partition_probed) {
@@ -1701,11 +1716,28 @@ void HBIOSDispatch::handleEXT() {
           disk.is_hd1k = false;
 
           bool detected_format = false;
+          uint8_t mbr[512];
+          bool mbr_valid = false;
+          size_t disk_size = disk.size;
 
-          // Read MBR (first 512 bytes)
-          if (disk.data.size() >= 512) {
-            uint8_t* mbr = disk.data.data();
+          // Read MBR - try file-backed first, then in-memory
+          if (disk.file_backed && disk.handle) {
+            // File-backed disk - read MBR via portable I/O
+            size_t read = emu_disk_read((emu_disk_handle)disk.handle, 0, mbr, 512);
+            mbr_valid = (read == 512);
+            if (disk_size == 0) {
+              disk_size = emu_disk_size((emu_disk_handle)disk.handle);
+            }
+          } else if (!disk.data.empty() && disk.data.size() >= 512) {
+            // In-memory disk
+            memcpy(mbr, disk.data.data(), 512);
+            mbr_valid = true;
+            if (disk_size == 0) {
+              disk_size = disk.data.size();
+            }
+          }
 
+          if (mbr_valid) {
             // Check for valid MBR signature
             if (mbr[510] == 0x55 && mbr[511] == 0xAA) {
               // Check partition table for type 0x2E (RomWBW hd1k partition)
@@ -1729,7 +1761,7 @@ void HBIOSDispatch::handleEXT() {
             }
 
             // If no 0x2E partition, check if single-slice hd1k image (exactly 8MB)
-            if (!detected_format && disk.data.size() == 8388608) {
+            if (!detected_format && disk_size == 8388608) {
               disk.partition_base_lba = 0;
               disk.slice_size = 16384;
               disk.is_hd1k = true;
@@ -1738,7 +1770,7 @@ void HBIOSDispatch::handleEXT() {
             }
 
             if (!detected_format) {
-              emu_log("[HBIOS EXTSLICE] Using hd512 format (size=%zu)\n", disk.data.size());
+              emu_log("[HBIOS EXTSLICE] Using hd512 format (size=%zu)\n", disk_size);
             }
           }
         }

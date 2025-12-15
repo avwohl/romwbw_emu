@@ -62,6 +62,7 @@ void emu_io_init() {
     // Enable raw mode
     struct termios raw = original_termios;
     raw.c_lflag &= ~(ICANON | ECHO | ISIG);
+    raw.c_oflag &= ~(OPOST);  // Disable output processing (CP/M sends \r\n already)
     raw.c_cc[VMIN] = 0;   // Non-blocking
     raw.c_cc[VTIME] = 0;
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
@@ -144,8 +145,13 @@ void emu_console_queue_char(int ch) {
 }
 
 void emu_console_write_char(uint8_t ch) {
-  putchar(ch & 0x7F);
-  fflush(stdout);
+  ch &= 0x7F;  // Strip high bit
+  // CP/M sends \r\n, but Unix terminals only need \n
+  // Skip \r to avoid double-spacing issues
+  if (ch != '\r') {
+    putchar(ch);
+    fflush(stdout);
+  }
 }
 
 bool emu_console_check_escape(char escape_char) {

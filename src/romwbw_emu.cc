@@ -982,11 +982,21 @@ public:
 
     // Dump the HCB drive map to understand what disk units the ROM expects
     // Drive map is at HCB+0x20 (CB_DRVMAP), 16 bytes for drives A:-P:
-    fprintf(stderr, "[HCB] Drive map at 0x%04X:\n", HCB_BASE + 0x20);
+    fprintf(stderr, "[HCB] Drive map from ROM bank 0x00 at 0x%04X:\n", HCB_BASE + 0x20);
     for (int i = 0; i < 16; i += 8) {
       fprintf(stderr, "  %c-%c: ", 'A' + i, 'A' + i + 7);
       for (int j = 0; j < 8; j++) {
         uint8_t unit = bmem->read_bank(0x00, HCB_BASE + 0x20 + i + j);
+        fprintf(stderr, "0x%02X ", unit);
+      }
+      fprintf(stderr, "\n");
+    }
+    // Also dump from RAM bank 0x80 (where CBIOS reads)
+    fprintf(stderr, "[HCB] Drive map from RAM bank 0x80 at 0x%04X:\n", HCB_BASE + 0x20);
+    for (int i = 0; i < 16; i += 8) {
+      fprintf(stderr, "  %c-%c: ", 'A' + i, 'A' + i + 7);
+      for (int j = 0; j < 8; j++) {
+        uint8_t unit = bmem->read_bank(0x80, HCB_BASE + 0x20 + i + j);
         fprintf(stderr, "0x%02X ", unit);
       }
       fprintf(stderr, "\n");
@@ -1552,6 +1562,21 @@ public:
   bool check_hbios_trap(uint16_t pc) {
     if (!hbios_trapping_enabled) return false;
 
+    // Trap at 0xFFF9 - HB_BNKCALL (bank call) - used by romldr for PRTSUM
+    // romldr 'd' command does: LD A,BID_BIOS / LD IX,$0406 / JP HB_BNKCALL
+    // HB_BNKCALL at 0xFFF9 should switch to bank in A and call address in IX
+    // Our proxy at 0xFFF9 is just RET, so we trap here to handle specific calls
+    if (pc == 0xFFF9) {
+      uint16_t ix = cpu->regs.IX.get_pair16();
+      if (debug) fprintf(stderr, "[HB_BNKCALL] Trap at 0xFFF9, IX=0x%04X, A=0x%02X\n",
+                         ix, cpu->regs.AF.get_high());
+      if (ix == 0x0406) {  // PRTSUM
+        return handle_prtsum();
+      }
+      // Unknown bank call - let the RET stub execute (returns to caller)
+      return false;
+    }
+
     // Trap at 0xFFF0 - the fixed HBIOS entry point
     // This is where CBIOS and user code call HBIOS (RST 08 also jumps here via proxy)
     if (pc == 0xFFF0) {
@@ -1573,6 +1598,71 @@ public:
     }
 
     return false;
+  }
+
+  // Handle PRTSUM - print device summary (called by romldr 'd' command)
+  bool handle_prtsum() {
+    // Print header
+    const char* header = "\r\nDisk Device Summary\r\n\r\n";
+    for (const char* p = header; *p; p++) {
+      emu_console_write_char(*p);
+    }
+
+    // Print header line
+    const char* hdr_line = " Unit Dev       Type    Capacity\r\n";
+    for (const char* p = hdr_line; *p; p++) {
+      emu_console_write_char(*p);
+    }
+    const char* hdr_sep = " ---- --------- ------- --------\r\n";
+    for (const char* p = hdr_sep; *p; p++) {
+      emu_console_write_char(*p);
+    }
+
+    int unit_num = 0;
+    char line[80];
+
+    // Print memory disks
+    for (int i = 0; i < 2; i++) {
+      if (md_disks[i].is_enabled) {
+        const char* type = md_disks[i].is_rom ? "ROM" : "RAM";
+        uint32_t size_kb = md_disks[i].num_banks * 32;
+        snprintf(line, sizeof(line), "   %2d MD%d       %-7s %4uKB\r\n",
+                 unit_num, i, type, size_kb);
+        for (const char* p = line; *p; p++) {
+          emu_console_write_char(*p);
+        }
+        unit_num++;
+      }
+    }
+
+    // Print hard disks
+    for (int i = 0; i < 16; i++) {
+      if (hb_disks[i].is_open) {
+        // Get file size
+        long size_mb = 0;
+        if (hb_disks[i].image_file) {
+          long cur = ftell(hb_disks[i].image_file);
+          fseek(hb_disks[i].image_file, 0, SEEK_END);
+          size_mb = ftell(hb_disks[i].image_file) / (1024 * 1024);
+          fseek(hb_disks[i].image_file, cur, SEEK_SET);
+        }
+        snprintf(line, sizeof(line), "   %2d HDSK%d     Hard    %4ldMB\r\n",
+                 unit_num, i, size_mb);
+        for (const char* p = line; *p; p++) {
+          emu_console_write_char(*p);
+        }
+        unit_num++;
+      }
+    }
+
+    // Simulate RET instruction - pop return address from stack
+    uint16_t sp = cpu->regs.SP.get_pair16();
+    uint8_t low = memory->fetch_mem(sp);
+    uint8_t high = memory->fetch_mem(sp + 1);
+    cpu->regs.SP.set_pair16(sp + 2);
+    cpu->regs.PC.set_pair16((high << 8) | low);
+
+    return true;  // Handled
   }
 
   // Handle HBIOS call - called when PC is at an HBIOS dispatch address
@@ -3040,27 +3130,33 @@ public:
 
       case HBF_DIODEVICE: {
         // Get device info for unit
-        // Returns: D=device type, E=device number within type
+        // Returns: D=device type, E=device number within type, C=attributes
         // Device types: 0x00=MD (memory disk), 0x03=IDE, 0x06=SD, 0x09=HDSK
-        uint8_t dev_type = 0;
-        uint8_t dev_num = 0;
+        // Attributes: bit 5=high capacity, bit 6=removable
+        uint8_t dev_type = 0xFF;  // Default to "no device"
+        uint8_t dev_num = 0xFF;
+        uint8_t dev_attr = 0x00;  // Device attributes
 
         if (unit < 2 && md_disks[unit].is_enabled) {
           // Memory disk (MD0=RAM, MD1=ROM)
           dev_type = 0x00;  // DIODEV_MD
           dev_num = unit;   // 0 or 1
+          dev_attr = 0x00;  // Not high capacity, not removable
         } else if (unit >= 2 && unit < 18 && hb_disks[unit - 2].is_open) {
           // Hard disk
           dev_type = 0x09;  // DIODEV_HDSK
           dev_num = unit - 2;
+          dev_attr = 0x20;  // Bit 5 = high capacity (enables multiple slices)
         } else {
           result = HBR_NOTREADY;
         }
 
         cpu->regs.DE.set_high(dev_type);
         cpu->regs.DE.set_low(dev_num);
+        cpu->regs.BC.set_low(dev_attr);  // C = device attributes
         if (debug) {
-          fprintf(stderr, "[HBIOS DIODEVICE] Unit %d: type=0x%02X num=%d\n", unit, dev_type, dev_num);
+          fprintf(stderr, "[HBIOS DIODEVICE] Unit %d: type=0x%02X num=%d attr=0x%02X result=%d\n",
+                  unit, dev_type, dev_num, dev_attr, result);
         }
         break;
       }
@@ -3151,7 +3247,11 @@ public:
               }
               cpu->regs.DE.set_low(disk_count);
               if (debug) {
-                fprintf(stderr, "[HBIOS SYSGET DIOCNT] Returning %d disks (MD + HD)\n", disk_count);
+                fprintf(stderr, "[HBIOS DIOCNT] Returning %d disks (MD:%d,%d HD:%d)\n",
+                        disk_count,
+                        md_disks[0].is_enabled ? 1 : 0,
+                        md_disks[1].is_enabled ? 1 : 0,
+                        hb_disks[0].is_open ? 1 : 0);
               }
             }
             break;
@@ -3944,10 +4044,16 @@ int main(int argc, char** argv) {
       // Populate drive map at HCB+0x20 (0x120)
       // Format: each byte = (slice << 4) | unit
       // Drive letters A-P map to bytes 0x120-0x12F
+      // Value 0xFF = no drive assigned
       const uint16_t DRVMAP_BASE = 0x120;  // HCB+0x20
       int drive_letter = 0;  // 0=A, 1=B, etc.
 
-      // First assign memory disks
+      // First, mark all drive map entries as unused (0xFF)
+      for (int i = 0; i < 16; i++) {
+        rom[DRVMAP_BASE + i] = 0xFF;
+      }
+
+      // Then assign memory disks
       // A: = MD0 (RAM disk) if enabled
       if (ramd_banks > 0 && drive_letter < 16) {
         rom[DRVMAP_BASE + drive_letter] = 0x00;  // Unit 0, slice 0
@@ -3960,35 +4066,19 @@ int main(int argc, char** argv) {
       }
 
       // Then assign hard disk slices
-      // For each attached disk, calculate number of slices from file size
+      // Assign 4 drive letters (slices) per hard disk, matching standard RomWBW behavior
       for (int hd = 0; hd < 16 && drive_letter < 16; hd++) {
         if (!hbios_disks[hd].empty()) {
-          // Get file size to determine number of slices
-          FILE* f = fopen(hbios_disks[hd].c_str(), "rb");
-          if (f) {
-            fseek(f, 0, SEEK_END);
-            size_t file_size = ftell(f);
-            fclose(f);
+          // Unit number: HD0 = unit 2, HD1 = unit 3, etc.
+          int unit = hd + 2;
 
-            // hd1k format: 1MB prefix + 8MB per slice
-            // hd512 format: 8.3MB per slice, no prefix
-            // Single 8MB images are treated as 1 slice
-            int num_slices = 1;
-            if (file_size > 9 * 1024 * 1024) {
-              // Multi-slice: assume hd1k format (1MB prefix + 8MB slices)
-              num_slices = (file_size - 1024 * 1024) / (8 * 1024 * 1024);
-              if (num_slices < 1) num_slices = 1;
-              if (num_slices > 16) num_slices = 16;
-            }
+          // Assign 4 slices per disk (standard RomWBW behavior)
+          int num_slices = 4;
 
-            // Unit number: HD0 = unit 2, HD1 = unit 3, etc.
-            int unit = hd + 2;
-
-            // Assign each slice to a drive letter
-            for (int slice = 0; slice < num_slices && drive_letter < 16; slice++) {
-              rom[DRVMAP_BASE + drive_letter] = ((slice & 0x0F) << 4) | (unit & 0x0F);
-              drive_letter++;
-            }
+          // Assign each slice to a drive letter
+          for (int slice = 0; slice < num_slices && drive_letter < 16; slice++) {
+            rom[DRVMAP_BASE + drive_letter] = ((slice & 0x0F) << 4) | (unit & 0x0F);
+            drive_letter++;
           }
         }
       }
