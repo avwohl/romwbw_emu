@@ -271,6 +271,7 @@ int romwbw_load_rom(const uint8_t* data, int size) {
 EMSCRIPTEN_KEEPALIVE
 int romwbw_load_disk(int unit, const uint8_t* data, int size) {
   ensure_emu();
+  emu_log("[WASM] romwbw_load_disk called: unit=%d size=%d\n", unit, size);
   if (unit < 0 || unit >= 16) return -1;
 
   if (!emu->hbios.loadDisk(unit, data, size)) {
@@ -280,6 +281,7 @@ int romwbw_load_disk(int unit, const uint8_t* data, int size) {
   char msg[64];
   snprintf(msg, sizeof(msg), "Disk %d loaded: %d bytes", unit, size);
   emu_status(msg);
+  emu_log("[WASM] Disk loaded into slot %d successfully\n", unit);
   return 0;
 }
 

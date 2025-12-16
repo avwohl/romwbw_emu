@@ -553,4 +553,117 @@ void emu_queue_key(int ch) {
   emu_console_queue_char(ch);
 }
 
+//=============================================================================
+// Host File Transfer Implementation
+//=============================================================================
+
+// JavaScript callbacks for host file transfer
+EM_JS(void, js_host_file_request_read, (const char* filename), {
+  if (Module.onHostFileRequestRead) Module.onHostFileRequestRead(UTF8ToString(filename));
+});
+
+EM_JS(void, js_host_file_download, (const char* filename, const uint8_t* data, int size), {
+  if (Module.onHostFileDownload) {
+    var arr = new Uint8Array(Module.HEAPU8.buffer, data, size);
+    var blob = new Blob([arr], {type: 'application/octet-stream'});
+    Module.onHostFileDownload(UTF8ToString(filename), blob);
+  }
+});
+
+// State
+static emu_host_file_state host_file_state = HOST_FILE_IDLE;
+static std::vector<uint8_t> host_read_buffer;
+static size_t host_read_pos = 0;
+static std::vector<uint8_t> host_write_buffer;
+static std::string host_write_filename;
+
+void emu_console_clear_queue() {
+  while (!input_queue.empty()) input_queue.pop();
+}
+
+emu_host_file_state emu_host_file_get_state() {
+  return host_file_state;
+}
+
+bool emu_host_file_open_read(const char* filename) {
+  // Close any existing file
+  host_read_buffer.clear();
+  host_read_pos = 0;
+
+  // Request file from JavaScript
+  host_file_state = HOST_FILE_WAITING_READ;
+  js_host_file_request_read(filename);
+  return true;
+}
+
+bool emu_host_file_open_write(const char* filename) {
+  // Close any existing write buffer
+  host_write_buffer.clear();
+  host_write_filename = filename ? filename : "download.bin";
+  host_file_state = HOST_FILE_WRITING;
+  return true;
+}
+
+int emu_host_file_read_byte() {
+  if (host_file_state != HOST_FILE_READING) return -1;
+  if (host_read_pos >= host_read_buffer.size()) return -1;
+  return host_read_buffer[host_read_pos++];
+}
+
+bool emu_host_file_write_byte(uint8_t byte) {
+  if (host_file_state != HOST_FILE_WRITING) return false;
+  host_write_buffer.push_back(byte);
+  return true;
+}
+
+void emu_host_file_close_read() {
+  host_read_buffer.clear();
+  host_read_pos = 0;
+  host_file_state = HOST_FILE_IDLE;
+}
+
+void emu_host_file_close_write() {
+  if (host_file_state == HOST_FILE_WRITING && !host_write_buffer.empty()) {
+    // Trigger download
+    js_host_file_download(host_write_filename.c_str(),
+                          host_write_buffer.data(),
+                          host_write_buffer.size());
+  }
+  host_write_buffer.clear();
+  host_write_filename.clear();
+  host_file_state = HOST_FILE_IDLE;
+}
+
+void emu_host_file_provide_data(const uint8_t* data, size_t size) {
+  host_read_buffer.assign(data, data + size);
+  host_read_pos = 0;
+  host_file_state = HOST_FILE_READING;
+}
+
+const uint8_t* emu_host_file_get_write_data() {
+  return host_write_buffer.empty() ? nullptr : host_write_buffer.data();
+}
+
+size_t emu_host_file_get_write_size() {
+  return host_write_buffer.size();
+}
+
+const char* emu_host_file_get_write_name() {
+  return host_write_filename.c_str();
+}
+
+// Exported function for JavaScript to provide file data after picker
+extern "C" EMSCRIPTEN_KEEPALIVE
+void emu_host_file_load(const uint8_t* data, int size) {
+  emu_host_file_provide_data(data, size);
+}
+
+// Exported function for JavaScript to cancel file read
+extern "C" EMSCRIPTEN_KEEPALIVE
+void emu_host_file_cancel() {
+  host_file_state = HOST_FILE_IDLE;
+  host_read_buffer.clear();
+  host_read_pos = 0;
+}
+
 #endif // __EMSCRIPTEN__

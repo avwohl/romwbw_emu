@@ -223,4 +223,52 @@ void emu_dsky_set_leds(uint8_t leds);             // Set status LEDs
 void emu_dsky_beep(int duration_ms);              // Beep
 int emu_dsky_get_key();                           // Get key (-1 if none)
 
+//=============================================================================
+// Host File Transfer - for R8/W8 utilities
+//=============================================================================
+
+// Host file state
+enum emu_host_file_state {
+  HOST_FILE_IDLE = 0,       // No operation pending
+  HOST_FILE_WAITING_READ,   // Waiting for user to pick file to read
+  HOST_FILE_READING,        // File loaded, ready to read bytes
+  HOST_FILE_WRITING,        // Accumulating bytes to write
+};
+
+// Get current host file state
+emu_host_file_state emu_host_file_get_state();
+
+// Request to open host file for reading (triggers file picker in browser)
+// filename: suggested filename (may be ignored by browser)
+// Returns: true if request was initiated (wait for state change)
+bool emu_host_file_open_read(const char* filename);
+
+// Request to open host file for writing (creates buffer)
+// filename: name to use when saving
+// Returns: true if ready to write
+bool emu_host_file_open_write(const char* filename);
+
+// Read byte from host file
+// Returns: byte value (0-255), or -1 on EOF/error
+int emu_host_file_read_byte();
+
+// Write byte to host file
+// Returns: true on success
+bool emu_host_file_write_byte(uint8_t byte);
+
+// Close host file
+// For write files, this triggers download in browser
+void emu_host_file_close_read();
+void emu_host_file_close_write();
+
+// Load host file data (called by JavaScript after file picker)
+// data: file contents
+// size: number of bytes
+void emu_host_file_provide_data(const uint8_t* data, size_t size);
+
+// Get write buffer for download (returns nullptr if not writing)
+const uint8_t* emu_host_file_get_write_data();
+size_t emu_host_file_get_write_size();
+const char* emu_host_file_get_write_name();
+
 #endif // EMU_IO_H

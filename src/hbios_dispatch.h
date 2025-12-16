@@ -446,8 +446,7 @@ private:
   uint16_t snd_duration = 100;
 
   // Host file transfer state (EMU extension 0xE1-0xE7)
-  void* host_read_file = nullptr;   // File handle for reading (FILE*)
-  void* host_write_file = nullptr;  // File handle for writing (FILE*)
+  // File handles are now managed by emu_io abstraction
   uint8_t host_transfer_mode = 0;   // 0=auto, 1=text, 2=binary
   std::string host_cmd_line;        // Original command line for GETARG
 

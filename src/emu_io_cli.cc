@@ -603,3 +603,94 @@ void emu_dsky_beep(int duration_ms) {
 int emu_dsky_get_key() {
   return -1;  // No DSKY keys in CLI
 }
+
+//=============================================================================
+// Host File Transfer Implementation (CLI - uses direct file I/O)
+//=============================================================================
+
+static FILE* cli_host_read_file = nullptr;
+static FILE* cli_host_write_file = nullptr;
+static std::string cli_host_write_filename;
+static emu_host_file_state cli_host_state = HOST_FILE_IDLE;
+
+void emu_console_clear_queue() {
+  // Clear any queued input - not much to do in CLI
+}
+
+emu_host_file_state emu_host_file_get_state() {
+  return cli_host_state;
+}
+
+bool emu_host_file_open_read(const char* filename) {
+  if (cli_host_read_file) {
+    fclose(cli_host_read_file);
+    cli_host_read_file = nullptr;
+  }
+  cli_host_read_file = fopen(filename, "rb");
+  if (cli_host_read_file) {
+    cli_host_state = HOST_FILE_READING;
+    return true;
+  }
+  cli_host_state = HOST_FILE_IDLE;
+  return false;
+}
+
+bool emu_host_file_open_write(const char* filename) {
+  if (cli_host_write_file) {
+    fclose(cli_host_write_file);
+    cli_host_write_file = nullptr;
+  }
+  cli_host_write_filename = filename ? filename : "output.bin";
+  cli_host_write_file = fopen(cli_host_write_filename.c_str(), "wb");
+  if (cli_host_write_file) {
+    cli_host_state = HOST_FILE_WRITING;
+    return true;
+  }
+  cli_host_state = HOST_FILE_IDLE;
+  return false;
+}
+
+int emu_host_file_read_byte() {
+  if (!cli_host_read_file) return -1;
+  int ch = fgetc(cli_host_read_file);
+  return (ch == EOF) ? -1 : ch;
+}
+
+bool emu_host_file_write_byte(uint8_t byte) {
+  if (!cli_host_write_file) return false;
+  return fputc(byte, cli_host_write_file) != EOF;
+}
+
+void emu_host_file_close_read() {
+  if (cli_host_read_file) {
+    fclose(cli_host_read_file);
+    cli_host_read_file = nullptr;
+  }
+  cli_host_state = HOST_FILE_IDLE;
+}
+
+void emu_host_file_close_write() {
+  if (cli_host_write_file) {
+    fclose(cli_host_write_file);
+    cli_host_write_file = nullptr;
+  }
+  cli_host_state = HOST_FILE_IDLE;
+}
+
+void emu_host_file_provide_data(const uint8_t* data, size_t size) {
+  // Not used in CLI - files are read directly
+  (void)data;
+  (void)size;
+}
+
+const uint8_t* emu_host_file_get_write_data() {
+  return nullptr;  // Not used in CLI
+}
+
+size_t emu_host_file_get_write_size() {
+  return 0;  // Not used in CLI
+}
+
+const char* emu_host_file_get_write_name() {
+  return cli_host_write_filename.c_str();
+}

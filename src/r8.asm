@@ -1,41 +1,31 @@
 ; R8.COM - Read host file to CP/M filesystem (RomWBW/HBIOS version)
 ;
-; Usage: R8 <hostpath> [cpmname]
-;   hostpath - path on host filesystem
-;   cpmname  - optional CP/M filename (defaults to host filename)
+; Usage: R8 <hostpath>
+;   Imports host file to CP/M with uppercase filename
 ;
-; Uses HBIOS extension functions 0xE1-0xE7 for host file access
-;
-	.z80		; Enable Z80 mode
+; Uses HBIOS extension functions for host file access
+
+	.z80
 
 ; CP/M addresses
 TPA	equ	0100h
-FCB	equ	005Ch	; Default FCB (second arg)
-FCB2	equ	006Ch	; Second FCB area (part of default FCB)
-CMDBUF	equ	0080h	; Command line buffer
-DMA	equ	0080h	; Default DMA address
+CMDBUF	equ	0080h	; Command line: length byte + text
+DMA	equ	0080h
 
-; BDOS function codes (still needed for CP/M file operations)
+; BDOS function codes
 BDOS	equ	0005h
-C_WRITE	equ	2	; Console output
-C_PRINT	equ	9	; Print string
-F_OPEN	equ	15	; Open file
-F_CLOSE	equ	16	; Close file
-F_SFIRST equ	17	; Search for first
-F_DELETE equ	19	; Delete file
-F_WRITE	equ	21	; Write sequential
-F_MAKE	equ	22	; Make file
-F_DMA	equ	26	; Set DMA address
+C_WRITE	equ	2
+C_PRINT	equ	9
+F_CLOSE	equ	16
+F_DELETE equ	19
+F_WRITE	equ	21
+F_MAKE	equ	22
+F_DMA	equ	26
 
 ; HBIOS extension functions for host file transfer
-; Called via RST 8 with B = function code
 H_OPEN_R equ	0E1h	; Open host file for reading (DE=path)
-H_OPEN_W equ	0E2h	; Open host file for writing (DE=path)
 H_READ	equ	0E3h	; Read byte (returns E=byte, A=status)
-H_WRITE	equ	0E4h	; Write byte (E=byte)
 H_CLOSE	equ	0E5h	; Close file (C=0 read, C=1 write)
-H_MODE	equ	0E6h	; Get/set mode (C=0 get, C=1 set)
-H_GETARG equ	0E7h	; Get arg (E=index, DE=buf)
 
 	org	TPA
 
@@ -45,13 +35,47 @@ start:
 	ld	c,C_PRINT
 	call	BDOS
 
-	; Get first argument (host path) using HBIOS GETARG
-	ld	de,hostpath
-	ld	e,0		; Arg index 0 = first argument
-	ld	b,H_GETARG
-	rst	8
+	; Get host path from command line at 0x80
+	; Format: length byte, then text (starts with space after command)
+	ld	a,(CMDBUF)
 	or	a
-	jp	nz,no_args	; No first argument
+	jp	z,no_args
+
+	; Copy command tail to hostpath, skipping leading spaces
+	ld	hl,CMDBUF+1
+	ld	de,hostpath
+	ld	b,a		; length
+
+skip_spaces:
+	ld	a,(hl)
+	cp	' '
+	jr	nz,copy_path
+	inc	hl
+	djnz	skip_spaces
+	jp	no_args		; all spaces = no argument
+
+copy_path:
+	; Copy until space or end
+	ld	a,b
+	or	a
+	jr	z,path_done
+copy_loop:
+	ld	a,(hl)
+	cp	' '
+	jr	z,path_done
+	ld	(de),a
+	inc	hl
+	inc	de
+	djnz	copy_loop
+
+path_done:
+	xor	a
+	ld	(de),a		; null terminate
+
+	; Check we got something
+	ld	a,(hostpath)
+	or	a
+	jp	z,no_args
 
 	; Display host path
 	ld	de,msg_reading
@@ -63,31 +87,8 @@ start:
 	ld	c,C_PRINT
 	call	BDOS
 
-	; Check for second argument (CP/M name)
-	ld	a,(FCB2+1)	; First char of second filename
-	cp	' '
-	jr	z,use_default
-	or	a		; Also check for zero
-	jr	z,use_default
-
-	; Use FCB2 as our FCB
-	ld	hl,FCB2
-	ld	de,cpm_fcb
-	ld	bc,12		; Copy drive + filename
-	ldir
-	jr	got_cpm_name
-
-use_default:
-	; Extract filename from host path (after last / or \)
-	call	extract_filename
-	; Convert to FCB format (8.3, uppercase)
-	call	name_to_fcb
-
-got_cpm_name:
-	; Zero extent and record fields
-	xor	a
-	ld	(cpm_fcb+12),a	; EX
-	ld	(cpm_fcb+32),a	; CR
+	; Extract filename from path and convert to FCB
+	call	path_to_fcb
 
 	; Display CP/M filename
 	ld	de,msg_creating
@@ -133,19 +134,19 @@ got_cpm_name:
 
 read_loop:
 	; Read byte from host
-	ld	a,b		; Save buffer count
+	ld	a,b
 	push	af
 	push	hl
 
 	ld	b,H_READ
 	rst	8
 	or	a
-	jr	nz,read_done_pop	; EOF or error
+	jr	nz,read_done_pop
 
 	; Got byte in E
 	pop	hl
 	pop	af
-	ld	b,a		; Restore buffer count
+	ld	b,a
 
 	; Store byte in buffer
 	ld	(hl),e
@@ -203,7 +204,7 @@ read_done:
 pad_loop:
 	cp	128
 	jr	nc,write_final
-	ld	(hl),1Ah	; ^Z
+	ld	(hl),1Ah
 	inc	hl
 	inc	a
 	jr	pad_loop
@@ -216,7 +217,7 @@ write_final:
 close_files:
 	; Close host file
 	ld	b,H_CLOSE
-	ld	c,0		; Close read file
+	ld	c,0
 	rst	8
 
 	; Close CP/M file
@@ -237,61 +238,11 @@ close_files:
 	ld	c,C_PRINT
 	call	BDOS
 
-	; Exit
 	rst	0
 
-; Extract filename from host path (after last / or \)
-; Input: hostpath contains full path
-; Output: filename buffer has just the filename part
-extract_filename:
-	ld	hl,hostpath
-	ld	de,filename
-	ld	bc,0		; BC = position of last separator + 1
-
-extract_loop:
-	ld	a,(hl)
-	or	a
-	jr	z,extract_done
-	cp	'/'
-	jr	z,found_sep
-	cp	'\'
-	jr	z,found_sep
-	inc	hl
-	jr	extract_loop
-
-found_sep:
-	inc	hl
-	push	hl
-	pop	bc		; BC = position after separator
-	jr	extract_loop
-
-extract_done:
-	; BC points to start of filename (or hostpath if no separator)
-	ld	a,b
-	or	c
-	jr	nz,copy_from_bc
-	ld	bc,hostpath
-
-copy_from_bc:
-	ld	hl,filename
-copy_fn_loop:
-	ld	a,(bc)
-	or	a
-	jr	z,copy_fn_done
-	ld	(hl),a
-	inc	hl
-	inc	bc
-	jr	copy_fn_loop
-
-copy_fn_done:
-	xor	a
-	ld	(hl),a
-	ret
-
-; Convert filename to FCB format (8.3, uppercase)
-; Input: filename buffer
-; Output: cpm_fcb filled
-name_to_fcb:
+; Extract filename from host path and convert to FCB format
+; Finds text after last / or \, converts to uppercase 8.3
+path_to_fcb:
 	; Clear FCB with spaces
 	ld	hl,cpm_fcb
 	ld	(hl),0		; Drive = default
@@ -302,49 +253,74 @@ clear_fcb:
 	inc	hl
 	djnz	clear_fcb
 
-	; Copy name part (up to 8 chars, before dot)
-	ld	hl,filename
-	ld	de,cpm_fcb+1
-	ld	b,8
+	; Zero the rest of FCB
+	ld	b,24
+clear_rest:
+	ld	(hl),0
+	inc	hl
+	djnz	clear_rest
 
-copy_name:
+	; Find last separator in hostpath
+	ld	hl,hostpath
+	ld	de,hostpath	; DE = start of filename part
+find_sep:
 	ld	a,(hl)
 	or	a
-	jr	z,name_done
+	jr	z,got_filename
+	cp	'/'
+	jr	z,found_sep
+	cp	'\'
+	jr	z,found_sep
+	inc	hl
+	jr	find_sep
+found_sep:
+	inc	hl
+	push	hl
+	pop	de		; DE = after separator
+	jr	find_sep
+
+got_filename:
+	; DE points to filename part
+	; Copy name (up to 8 chars, before dot)
+	ld	hl,cpm_fcb+1
+	ld	b,8
+copy_name:
+	ld	a,(de)
+	or	a
+	jr	z,fcb_done
 	cp	'.'
 	jr	z,do_ext
 	call	toupper
-	ld	(de),a
+	ld	(hl),a
 	inc	hl
 	inc	de
 	djnz	copy_name
 
 	; Skip to dot
 skip_to_dot:
-	ld	a,(hl)
+	ld	a,(de)
 	or	a
-	jr	z,name_done
+	jr	z,fcb_done
 	cp	'.'
 	jr	z,do_ext
-	inc	hl
+	inc	de
 	jr	skip_to_dot
 
 do_ext:
-	inc	hl		; Skip dot
-	ld	de,cpm_fcb+9
+	inc	de		; Skip dot
+	ld	hl,cpm_fcb+9
 	ld	b,3
-
 copy_ext:
-	ld	a,(hl)
+	ld	a,(de)
 	or	a
-	jr	z,name_done
+	jr	z,fcb_done
 	call	toupper
-	ld	(de),a
+	ld	(hl),a
 	inc	hl
 	inc	de
 	djnz	copy_ext
 
-name_done:
+fcb_done:
 	ret
 
 ; Convert A to uppercase
@@ -387,11 +363,10 @@ print_name:
 	inc	hl
 	djnz	print_name
 print_dot:
-	; Move to extension
 	ld	hl,cpm_fcb+9
 	ld	a,(hl)
 	cp	' '
-	ret	z		; No extension
+	ret	z
 	push	hl
 	ld	e,'.'
 	ld	c,C_WRITE
@@ -433,7 +408,7 @@ print_dec16:
 
 ; Divide HL by DE, print quotient digit, remainder in HL
 div16:
-	ld	b,0		; Quotient
+	ld	b,0
 div_loop:
 	or	a
 	sbc	hl,de
@@ -441,7 +416,7 @@ div_loop:
 	inc	b
 	jr	div_loop
 div_done:
-	add	hl,de		; Restore remainder
+	add	hl,de
 	ld	a,b
 	or	a
 	jr	z,skip_zero
@@ -480,7 +455,6 @@ host_open_error:
 	rst	0
 
 cpm_create_error:
-	; Close host file first
 	ld	b,H_CLOSE
 	ld	c,0
 	rst	8
@@ -490,7 +464,6 @@ cpm_create_error:
 	rst	0
 
 cpm_write_error:
-	; Close both files
 	ld	b,H_CLOSE
 	ld	c,0
 	rst	8
@@ -506,9 +479,7 @@ cpm_write_error:
 msg_banner:
 	db	'R8 - Read from host filesystem',0Dh,0Ah,'$'
 msg_usage:
-	db	'Usage: R8 <hostpath> [cpmname]',0Dh,0Ah
-	db	'  hostpath - path on host filesystem',0Dh,0Ah
-	db	'  cpmname  - optional CP/M filename',0Dh,0Ah,'$'
+	db	'Usage: R8 <hostpath>',0Dh,0Ah,'$'
 msg_reading:
 	db	'Reading: $'
 msg_creating:
@@ -518,7 +489,7 @@ msg_crlf:
 msg_done:
 	db	'Done: $'
 msg_bytes:
-	db	' bytes transferred',0Dh,0Ah,'$'
+	db	' bytes',0Dh,0Ah,'$'
 msg_host_err:
 	db	'Error: Cannot open host file',0Dh,0Ah,'$'
 msg_cpm_err:
@@ -528,16 +499,14 @@ msg_write_err:
 
 ; Data areas
 hostpath:
-	ds	256		; Host path buffer
-filename:
-	ds	64		; Extracted filename
+	ds	128
 cpm_fcb:
-	ds	36		; CP/M FCB
+	ds	36
 dma_buffer:
-	ds	128		; DMA buffer
+	ds	128
 byte_count:
-	dw	0,0		; 32-bit byte counter
+	dw	0,0
 print_flag:
-	db	0		; For leading zero suppression
+	db	0
 
 	end	start

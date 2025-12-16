@@ -106,6 +106,7 @@
       <select id="disk0Select" style="margin-right:4px;">
         <option value="">-- Select Disk (hd1k format) --</option>
         <option value="hd1k_combo.img" selected>hd1k_combo.img (49MB combo disk)</option>
+        <option value="z80cpm_tools.img">z80cpm_tools.img (Tools + R8/W8 file transfer)</option>
         <option value="hd1k_games.img">hd1k_games.img (Classic games: Zork, Adventure)</option>
         <option value="hd1k_cpm22.img">hd1k_cpm22.img (CP/M 2.2)</option>
         <option value="hd1k_zsdos.img">hd1k_zsdos.img (ZSDOS)</option>
@@ -118,6 +119,7 @@
       <select id="disk1Select" style="margin-right:4px;">
         <option value="">-- None --</option>
         <option value="hd1k_games.img" selected>hd1k_games.img (Classic games)</option>
+        <option value="z80cpm_tools.img">z80cpm_tools.img (Tools + R8/W8)</option>
         <option value="hd1k_cpm22.img">hd1k_cpm22.img (CP/M 2.2)</option>
         <option value="hd1k_zsdos.img">hd1k_zsdos.img (ZSDOS)</option>
       </select>
@@ -359,6 +361,66 @@
     Module.onSndVolume = function(channel, volume) {
       // Volume control (0-255) - could be used to adjust gain
       console.log('Sound volume:', channel, volume);
+    };
+
+    //=========================================================================
+    // Host File Transfer callbacks (R8/W8 utilities)
+    //=========================================================================
+
+    // R8: Request to read a file from host - opens file picker
+    Module.onHostFileRequestRead = function(suggestedName) {
+      console.log('[HOST] Read file requested:', suggestedName);
+      statusDiv.textContent = 'Select a file to upload to CP/M...';
+
+      // Create a temporary file input
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '*/*';
+
+      input.onchange = function(e) {
+        const file = e.target.files[0];
+        if (!file) {
+          console.log('[HOST] File picker cancelled');
+          Module._emu_host_file_cancel();
+          statusDiv.textContent = 'File transfer cancelled';
+          return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = function(e) {
+          const data = new Uint8Array(e.target.result);
+          const ptr = Module._malloc(data.length);
+          Module.HEAPU8.set(data, ptr);
+          Module._emu_host_file_load(ptr, data.length);
+          Module._free(ptr);
+          statusDiv.textContent = 'Uploaded: ' + file.name + ' (' + data.length + ' bytes)';
+          console.log('[HOST] File loaded:', file.name, data.length, 'bytes');
+        };
+        reader.onerror = function() {
+          console.error('[HOST] Error reading file');
+          Module._emu_host_file_cancel();
+          statusDiv.textContent = 'Error reading file';
+        };
+        reader.readAsArrayBuffer(file);
+      };
+
+      // Trigger the file picker
+      input.click();
+    };
+
+    // W8: Download a file from CP/M
+    Module.onHostFileDownload = function(filename, blob) {
+      console.log('[HOST] Download file:', filename, blob.size, 'bytes');
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      statusDiv.textContent = 'Downloaded: ' + filename + ' (' + blob.size + ' bytes)';
     };
 
     // Keyboard input to emulator

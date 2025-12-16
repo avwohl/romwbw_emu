@@ -28,15 +28,9 @@ HBIOSDispatch::~HBIOSDispatch() {
   for (int i = 0; i < 16; i++) {
     closeDisk(i);
   }
-  // Close any open host files
-  if (host_read_file) {
-    fclose((FILE*)host_read_file);
-    host_read_file = nullptr;
-  }
-  if (host_write_file) {
-    fclose((FILE*)host_write_file);
-    host_write_file = nullptr;
-  }
+  // Close any open host files (managed by emu_io)
+  emu_host_file_close_read();
+  emu_host_file_close_write();
 }
 
 void HBIOSDispatch::reset() {
@@ -72,15 +66,9 @@ void HBIOSDispatch::reset() {
   }
   snd_duration = 100;
 
-  // Close any open host files
-  if (host_read_file) {
-    fclose((FILE*)host_read_file);
-    host_read_file = nullptr;
-  }
-  if (host_write_file) {
-    fclose((FILE*)host_write_file);
-    host_write_file = nullptr;
-  }
+  // Close any open host files (managed by emu_io)
+  emu_host_file_close_read();
+  emu_host_file_close_write();
   host_transfer_mode = 0;  // Auto mode
   host_cmd_line.clear();
 
@@ -259,7 +247,9 @@ void HBIOSDispatch::populateDiskUnitTable() {
   }
 
   // Add hard disks from disks[] array
+  emu_log("[DISKUT] Scanning disks array for loaded disks...\n");
   for (int i = 0; i < 16 && disk_idx < 16; i++) {
+    emu_log("[DISKUT] disks[%d].is_open = %d\n", i, disks[i].is_open ? 1 : 0);
     if (disks[i].is_open) {
       memory->write_bank(0x00, DISKUT_BASE + disk_idx * 4 + 0, 0x09);  // DIODEV_HDSK
       memory->write_bank(0x00, DISKUT_BASE + disk_idx * 4 + 1, i);     // HDSK unit number
@@ -531,7 +521,6 @@ bool HBIOSDispatch::handleMainEntry() {
   if (!cpu) return false;
 
   uint8_t func = cpu->regs.BC.get_high();
-  uint8_t unit = cpu->regs.BC.get_low();
   int trap_type = getTrapTypeFromFunc(func);
 
   switch (trap_type) {
@@ -904,7 +893,6 @@ void HBIOSDispatch::handleDIO() {
       if (is_memdisk) {
         // Memory disk read - read from ROM/RAM bank memory
         MemDiskState& md = md_disks[md_unit];
-        uint32_t lba = md.current_lba;
 
         // 64 sectors per 32KB bank (512 bytes per sector)
         const uint32_t sectors_per_bank = 64;
@@ -1885,7 +1873,6 @@ void HBIOSDispatch::handleEXT() {
   if (!cpu || !memory) return;
 
   uint8_t func = cpu->regs.BC.get_high();
-  uint8_t unit = cpu->regs.BC.get_low();
   uint8_t result = HBR_SUCCESS;
 
   switch (func) {
@@ -2012,13 +1999,7 @@ void HBIOSDispatch::handleEXT() {
         path += (char)ch;
       }
 
-      if (host_read_file) {
-        fclose((FILE*)host_read_file);
-        host_read_file = nullptr;
-      }
-
-      host_read_file = fopen(path.c_str(), "rb");
-      if (host_read_file) {
+      if (emu_host_file_open_read(path.c_str())) {
         if (debug) emu_log("[HOST] Opened for read: %s\n", path.c_str());
         result = HBR_SUCCESS;
       } else {
@@ -2040,13 +2021,7 @@ void HBIOSDispatch::handleEXT() {
         path += (char)ch;
       }
 
-      if (host_write_file) {
-        fclose((FILE*)host_write_file);
-        host_write_file = nullptr;
-      }
-
-      host_write_file = fopen(path.c_str(), "wb");
-      if (host_write_file) {
+      if (emu_host_file_open_write(path.c_str())) {
         if (debug) emu_log("[HOST] Opened for write: %s\n", path.c_str());
         result = HBR_SUCCESS;
       } else {
@@ -2059,13 +2034,8 @@ void HBIOSDispatch::handleEXT() {
     case HBF_HOST_READ: {
       // Read byte from host file
       // Output: A = 0 success (E = byte), A = 0xFF EOF or error
-      if (!host_read_file) {
-        result = HBR_FAILED;
-        break;
-      }
-
-      int ch = fgetc((FILE*)host_read_file);
-      if (ch == EOF) {
+      int ch = emu_host_file_read_byte();
+      if (ch < 0) {
         result = HBR_FAILED;  // EOF or error
       } else {
         cpu->regs.DE.set_low((uint8_t)ch);
@@ -2078,16 +2048,11 @@ void HBIOSDispatch::handleEXT() {
       // Write byte to host file
       // Input: E = byte to write
       // Output: A = 0 success, 0xFF failure
-      if (!host_write_file) {
-        result = HBR_FAILED;
-        break;
-      }
-
       uint8_t byte = cpu->regs.DE.get_low();
-      if (fputc(byte, (FILE*)host_write_file) == EOF) {
-        result = HBR_FAILED;
-      } else {
+      if (emu_host_file_write_byte(byte)) {
         result = HBR_SUCCESS;
+      } else {
+        result = HBR_FAILED;
       }
       break;
     }
@@ -2099,16 +2064,10 @@ void HBIOSDispatch::handleEXT() {
       uint8_t which = cpu->regs.BC.get_low();
       if (which == 0) {
         // Close read file
-        if (host_read_file) {
-          fclose((FILE*)host_read_file);
-          host_read_file = nullptr;
-        }
+        emu_host_file_close_read();
       } else {
-        // Close write file
-        if (host_write_file) {
-          fclose((FILE*)host_write_file);
-          host_write_file = nullptr;
-        }
+        // Close write file (triggers download in web)
+        emu_host_file_close_write();
       }
       result = HBR_SUCCESS;
       break;
@@ -2132,9 +2091,9 @@ void HBIOSDispatch::handleEXT() {
 
     case HBF_HOST_GETARG: {
       // Get command line argument by index
-      // Input: E = argument index (0 = first arg after command), DE = buffer address
+      // Input: C = argument index (0 = first arg after command), DE = buffer address
       // Output: A = 0 success (buffer filled), A = 0xFF no such argument
-      uint8_t arg_idx = cpu->regs.DE.get_low();
+      uint8_t arg_idx = cpu->regs.BC.get_low();
       uint16_t buf_addr = cpu->regs.DE.get_pair16();
 
       // Parse host_cmd_line to find the requested argument
