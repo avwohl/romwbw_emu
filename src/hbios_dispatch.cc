@@ -12,6 +12,7 @@
 #include <cstring>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <unistd.h>
 
 //=============================================================================
@@ -26,6 +27,15 @@ HBIOSDispatch::~HBIOSDispatch() {
   // Close any open disk handles
   for (int i = 0; i < 16; i++) {
     closeDisk(i);
+  }
+  // Close any open host files
+  if (host_read_file) {
+    fclose((FILE*)host_read_file);
+    host_read_file = nullptr;
+  }
+  if (host_write_file) {
+    fclose((FILE*)host_write_file);
+    host_write_file = nullptr;
   }
 }
 
@@ -61,6 +71,18 @@ void HBIOSDispatch::reset() {
     snd_period[i] = 0;
   }
   snd_duration = 100;
+
+  // Close any open host files
+  if (host_read_file) {
+    fclose((FILE*)host_read_file);
+    host_read_file = nullptr;
+  }
+  if (host_write_file) {
+    fclose((FILE*)host_write_file);
+    host_write_file = nullptr;
+  }
+  host_transfer_mode = 0;  // Auto mode
+  host_cmd_line.clear();
 
   // Reset memory disks
   for (int i = 0; i < 2; i++) {
@@ -483,7 +505,7 @@ int HBIOSDispatch::getTrapTypeFromFunc(uint8_t func) {
   if (func <= 0x3F) return 6;        // DSKY (0x30-0x3F)
   if (func <= 0x4F) return 4;        // VDA (0x40-0x4F)
   if (func <= 0x5F) return 5;        // SND (0x50-0x5F)
-  if (func == 0xE0) return 7;        // EXT (Extension functions)
+  if (func >= 0xE0 && func <= 0xE7) return 7;  // EXT (0xE0-0xE7, includes host file)
   if (func >= 0xF0) return 3;        // SYS (0xF0-0xFF)
   return -1;
 }
@@ -1975,6 +1997,183 @@ void HBIOSDispatch::handleEXT() {
 
       if (debug) emu_log("[HBIOS EXTSLICE] unit=0x%02X slice=%d -> media=0x%02X LBA=%u\n",
               disk_unit, slice, media_id, slice_lba);
+      break;
+    }
+
+    case HBF_HOST_OPEN_R: {
+      // Open host file for reading
+      // Input: DE = address of null-terminated path string
+      // Output: A = 0 success, 0xFF failure
+      uint16_t path_addr = cpu->regs.DE.get_pair16();
+      std::string path;
+      for (int i = 0; i < 256; i++) {
+        uint8_t ch = memory->fetch_mem(path_addr + i);
+        if (ch == 0) break;
+        path += (char)ch;
+      }
+
+      if (host_read_file) {
+        fclose((FILE*)host_read_file);
+        host_read_file = nullptr;
+      }
+
+      host_read_file = fopen(path.c_str(), "rb");
+      if (host_read_file) {
+        if (debug) emu_log("[HOST] Opened for read: %s\n", path.c_str());
+        result = HBR_SUCCESS;
+      } else {
+        if (debug) emu_log("[HOST] Failed to open for read: %s\n", path.c_str());
+        result = HBR_FAILED;
+      }
+      break;
+    }
+
+    case HBF_HOST_OPEN_W: {
+      // Open host file for writing
+      // Input: DE = address of null-terminated path string
+      // Output: A = 0 success, 0xFF failure
+      uint16_t path_addr = cpu->regs.DE.get_pair16();
+      std::string path;
+      for (int i = 0; i < 256; i++) {
+        uint8_t ch = memory->fetch_mem(path_addr + i);
+        if (ch == 0) break;
+        path += (char)ch;
+      }
+
+      if (host_write_file) {
+        fclose((FILE*)host_write_file);
+        host_write_file = nullptr;
+      }
+
+      host_write_file = fopen(path.c_str(), "wb");
+      if (host_write_file) {
+        if (debug) emu_log("[HOST] Opened for write: %s\n", path.c_str());
+        result = HBR_SUCCESS;
+      } else {
+        if (debug) emu_log("[HOST] Failed to open for write: %s\n", path.c_str());
+        result = HBR_FAILED;
+      }
+      break;
+    }
+
+    case HBF_HOST_READ: {
+      // Read byte from host file
+      // Output: A = 0 success (E = byte), A = 0xFF EOF or error
+      if (!host_read_file) {
+        result = HBR_FAILED;
+        break;
+      }
+
+      int ch = fgetc((FILE*)host_read_file);
+      if (ch == EOF) {
+        result = HBR_FAILED;  // EOF or error
+      } else {
+        cpu->regs.DE.set_low((uint8_t)ch);
+        result = HBR_SUCCESS;
+      }
+      break;
+    }
+
+    case HBF_HOST_WRITE: {
+      // Write byte to host file
+      // Input: E = byte to write
+      // Output: A = 0 success, 0xFF failure
+      if (!host_write_file) {
+        result = HBR_FAILED;
+        break;
+      }
+
+      uint8_t byte = cpu->regs.DE.get_low();
+      if (fputc(byte, (FILE*)host_write_file) == EOF) {
+        result = HBR_FAILED;
+      } else {
+        result = HBR_SUCCESS;
+      }
+      break;
+    }
+
+    case HBF_HOST_CLOSE: {
+      // Close host file
+      // Input: C = 0 for read file, C = 1 for write file
+      // Output: A = 0 success
+      uint8_t which = cpu->regs.BC.get_low();
+      if (which == 0) {
+        // Close read file
+        if (host_read_file) {
+          fclose((FILE*)host_read_file);
+          host_read_file = nullptr;
+        }
+      } else {
+        // Close write file
+        if (host_write_file) {
+          fclose((FILE*)host_write_file);
+          host_write_file = nullptr;
+        }
+      }
+      result = HBR_SUCCESS;
+      break;
+    }
+
+    case HBF_HOST_MODE: {
+      // Get/set transfer mode
+      // Input: C = 0 get mode, C = 1 set mode; E = mode (0=auto, 1=text, 2=binary)
+      // Output: E = current mode (for get), A = 0 success
+      uint8_t subcmd = cpu->regs.BC.get_low();
+      if (subcmd == 0) {
+        // Get mode
+        cpu->regs.DE.set_low(host_transfer_mode);
+      } else {
+        // Set mode
+        host_transfer_mode = cpu->regs.DE.get_low();
+      }
+      result = HBR_SUCCESS;
+      break;
+    }
+
+    case HBF_HOST_GETARG: {
+      // Get command line argument by index
+      // Input: E = argument index (0 = first arg after command), DE = buffer address
+      // Output: A = 0 success (buffer filled), A = 0xFF no such argument
+      uint8_t arg_idx = cpu->regs.DE.get_low();
+      uint16_t buf_addr = cpu->regs.DE.get_pair16();
+
+      // Parse host_cmd_line to find the requested argument
+      // Arguments are space-separated
+      if (host_cmd_line.empty()) {
+        result = HBR_FAILED;
+        break;
+      }
+
+      const char* p = host_cmd_line.c_str();
+      int current_arg = 0;
+
+      while (*p) {
+        // Skip leading spaces
+        while (*p == ' ') p++;
+        if (!*p) break;
+
+        // Found start of an argument
+        const char* arg_start = p;
+
+        // Find end of argument
+        while (*p && *p != ' ') p++;
+
+        if (current_arg == arg_idx) {
+          // Copy this argument to buffer
+          size_t len = p - arg_start;
+          for (size_t i = 0; i < len && i < 255; i++) {
+            memory->store_mem(buf_addr + i, arg_start[i]);
+          }
+          memory->store_mem(buf_addr + len, 0);  // Null terminate
+          result = HBR_SUCCESS;
+          break;
+        }
+        current_arg++;
+      }
+
+      if (result != HBR_SUCCESS) {
+        result = HBR_FAILED;  // Argument not found
+      }
       break;
     }
 

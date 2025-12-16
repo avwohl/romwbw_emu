@@ -126,9 +126,18 @@ enum HBiosFunc {
   HBF_SNDDEVICE = 0x57,  // Sound device info request
   HBF_SNDBEEP   = 0x58,  // Play beep sound
 
-  // Extension Functions - 0xE0
+  // Extension Functions - 0xE0-0xE7
   HBF_EXT       = 0xE0,
   HBF_EXTSLICE  = 0xE0,  // Slice calculation
+
+  // Host File Transfer - 0xE1-0xE7 (EMU custom extension)
+  HBF_HOST_OPEN_R = 0xE1,  // Open host file for reading (DE=path addr)
+  HBF_HOST_OPEN_W = 0xE2,  // Open host file for writing (DE=path addr)
+  HBF_HOST_READ   = 0xE3,  // Read byte from host (returns E=byte, A=status)
+  HBF_HOST_WRITE  = 0xE4,  // Write byte to host (E=byte)
+  HBF_HOST_CLOSE  = 0xE5,  // Close host file (C=0 for read, C=1 for write)
+  HBF_HOST_MODE   = 0xE6,  // Get/set mode (C=0 get, C=1 set; E=mode)
+  HBF_HOST_GETARG = 0xE7,  // Get cmd arg by index (E=index, DE=buf addr)
 
   // System Functions - 0xF0-0xFC
   HBF_SYS       = 0xF0,
@@ -300,6 +309,9 @@ public:
   void addRomApp(const std::string& name, const std::string& path, char key);
   void clearRomApps();
 
+  // Host file transfer (EMU extension)
+  void setHostCmdLine(const std::string& cmdline) { host_cmd_line = cmdline; }
+
   // Signal port handler (port 0xEE)
   // Supports two protocols:
   // 1. Simple status: 0x01=starting, 0xFE=preinit, 0xFF=init complete
@@ -432,6 +444,12 @@ private:
   uint8_t snd_volume[4] = {0};
   uint16_t snd_period[4] = {0};
   uint16_t snd_duration = 100;
+
+  // Host file transfer state (EMU extension 0xE1-0xE7)
+  void* host_read_file = nullptr;   // File handle for reading (FILE*)
+  void* host_write_file = nullptr;  // File handle for writing (FILE*)
+  uint8_t host_transfer_mode = 0;   // 0=auto, 1=text, 2=binary
+  std::string host_cmd_line;        // Original command line for GETARG
 
   // Reset callback for SYSRESET
   ResetCallback reset_callback = nullptr;
