@@ -44,6 +44,12 @@ jobs:
           ./emsdk install latest
           ./emsdk activate latest
 
+      - name: Build qkz80 library
+        run: |
+          git clone https://github.com/avwohl/cpmemu.git
+          cd cpmemu/src
+          make libqkz80.a
+
       - name: Get version
         id: version
         run: |
@@ -59,14 +65,14 @@ jobs:
         run: |
           cd src
           make clean || true
-          make STATIC=1
+          make STATIC=1 QKZ80_CFLAGS="-I../cpmemu/src" QKZ80_LIBS="-L../cpmemu/src -lqkz80"
 
       - name: Build web version
         run: |
           source emsdk/emsdk_env.sh
           cd web
           make clean || true
-          make
+          make QKZ80_SRC=../cpmemu/src
 
       - name: Create staging directory
         run: |
