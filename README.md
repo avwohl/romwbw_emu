@@ -26,27 +26,27 @@ At the RomWBW boot menu, press `2` to boot from disk, or `C` for CP/M from ROM.
 
 ```bash
 # Download and install the latest .deb package
-curl -LO https://github.com/avwohl/romwbw_emu/releases/latest/download/romwbw-emu_0.1.0_amd64.deb
-sudo dpkg -i romwbw-emu_0.1.0_amd64.deb
+curl -LO https://github.com/avwohl/romwbw_emu/releases/latest/download/romwbw-emu_1.17_amd64.deb
+sudo dpkg -i romwbw-emu_1.17_amd64.deb
 
 # Run with included ROM
 romwbw_emu --romwbw=/usr/share/romwbw_emu/roms/emu_avw.rom
 ```
 
-For ARM64 systems, use `romwbw-emu_0.1.0_arm64.deb` instead.
+For ARM64 systems, use `romwbw-emu_1.17_arm64.deb` instead.
 
 ### Fedora/RHEL
 
 ```bash
 # Download and install the latest .rpm package
-curl -LO https://github.com/avwohl/romwbw_emu/releases/latest/download/romwbw-emu-0.1.0-1.x86_64.rpm
-sudo rpm -i romwbw-emu-0.1.0-1.x86_64.rpm
+curl -LO https://github.com/avwohl/romwbw_emu/releases/latest/download/romwbw-emu-1.17-1.x86_64.rpm
+sudo rpm -i romwbw-emu-1.17-1.x86_64.rpm
 
 # Run with included ROM
 romwbw_emu --romwbw=/usr/share/romwbw_emu/roms/emu_avw.rom
 ```
 
-For ARM64 systems, use `romwbw-emu-0.1.0-1.aarch64.rpm` instead.
+For ARM64 systems, use `romwbw-emu-1.17-1.aarch64.rpm` instead.
 
 ### From Source
 
