@@ -3755,7 +3755,6 @@ int main(int argc, char** argv) {
   bool strict_io_mode = false;
   int sense = -1;
   std::string hbios_disks[16];  // For RomWBW disk images (HBIOS dispatch)
-  std::string hdsk_disks[8];    // For SIMH HDSK port 0xFD disk images
   std::string trace_file;
   std::string symbols_file;
   std::string romldr_path;  // RomWBW romldr boot menu
@@ -3814,48 +3813,6 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[DISK] Validated disk%d: %s (%zu bytes)\n", unit, path, disk_size);
       } else {
         fprintf(stderr, "Invalid --disk option: %s (use --disk0=file or --disk1=file)\n", argv[i]);
-        return 1;
-      }
-    } else if (strncmp(argv[i], "--hbdisk", 8) == 0) {
-      // Legacy: Parse --hbdisk0=file, --hbdisk1=file, etc.
-      fprintf(stderr, "Warning: --hbdisk is deprecated, use --disk instead\n");
-      const char* opt = argv[i] + 8;
-      int unit = -1;
-      const char* path = nullptr;
-      if (isdigit(opt[0]) && opt[1] == '=' && opt[2] != '\0') {
-        unit = opt[0] - '0';
-        path = opt + 2;
-      } else if (isdigit(opt[0]) && isdigit(opt[1]) && opt[2] == '=' && opt[3] != '\0') {
-        unit = (opt[0] - '0') * 10 + (opt[1] - '0');
-        path = opt + 3;
-      }
-      if (unit >= 0 && unit < 16 && path) {
-        // Validate disk image exists and has valid size
-        size_t disk_size = 0;
-        const char* err = validate_disk_image(path, &disk_size);
-        if (err) {
-          fprintf(stderr, "Error: --hbdisk%d=%s: %s\n", unit, path, err);
-          return 1;
-        }
-        hbios_disks[unit] = path;
-      } else {
-        fprintf(stderr, "Invalid --hbdisk option: %s\n", argv[i]);
-        return 1;
-      }
-    } else if (strncmp(argv[i], "--hdsk", 6) == 0) {
-      // Legacy: Parse --hdsk0=file, --hdsk1=file, etc. (SIMH HDSK port 0xFD protocol)
-      fprintf(stderr, "Warning: --hdsk is deprecated (uses legacy SIMH protocol), use --disk instead\n");
-      const char* opt = argv[i] + 6;
-      int unit = -1;
-      const char* path = nullptr;
-      if (isdigit(opt[0]) && opt[1] == '=' && opt[2] != '\0') {
-        unit = opt[0] - '0';
-        path = opt + 2;
-      }
-      if (unit >= 0 && unit < 8 && path) {
-        hdsk_disks[unit] = path;
-      } else {
-        fprintf(stderr, "Invalid --hdsk option: %s\n", argv[i]);
         return 1;
       }
     } else if (strncmp(argv[i], "--romapp=", 9) == 0) {
@@ -4042,14 +3999,6 @@ int main(int argc, char** argv) {
       if (!hbios_disks[i].empty()) {
         if (!emu.attach_hbios_disk(i, hbios_disks[i])) {
           fprintf(stderr, "Warning: Could not attach disk %d: %s\n", i, hbios_disks[i].c_str());
-        }
-      }
-    }
-    // Attach any HDSK disk images (SIMH port 0xFD protocol)
-    for (int i = 0; i < 8; i++) {
-      if (!hdsk_disks[i].empty()) {
-        if (!emu.attach_hdsk_disk(i, hdsk_disks[i])) {
-          fprintf(stderr, "Warning: Could not attach HDSK disk %d: %s\n", i, hdsk_disks[i].c_str());
         }
       }
     }
