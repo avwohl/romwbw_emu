@@ -17,6 +17,38 @@ cd src && make
 
 At the RomWBW boot menu, press `2` to boot from disk, or `C` for CP/M from ROM.
 
+## Installation
+
+### Debian/Ubuntu
+
+```bash
+# Download and install the latest .deb package
+curl -LO https://github.com/avwohl/romwbw_emu/releases/latest/download/romwbw-emu_0.1.0_amd64.deb
+sudo dpkg -i romwbw-emu_0.1.0_amd64.deb
+
+# Run with included ROM
+romwbw_emu --romwbw /usr/share/romwbw_emu/roms/SBC_simh_std.rom
+```
+
+For ARM64 systems, use `romwbw-emu_0.1.0_arm64.deb` instead.
+
+### Fedora/RHEL
+
+```bash
+# Download and install the latest .rpm package
+curl -LO https://github.com/avwohl/romwbw_emu/releases/latest/download/romwbw-emu-0.1.0-1.x86_64.rpm
+sudo rpm -i romwbw-emu-0.1.0-1.x86_64.rpm
+
+# Run with included ROM
+romwbw_emu --romwbw /usr/share/romwbw_emu/roms/SBC_simh_std.rom
+```
+
+For ARM64 systems, use `romwbw-emu-0.1.0-1.aarch64.rpm` instead.
+
+### From Source
+
+See [Building](#building) below.
+
 ## Disk Images
 
 The emulator supports RomWBW hard disk images in both **hd1k** (modern) and **hd512** (classic) formats. Format is auto-detected from the MBR partition table.
