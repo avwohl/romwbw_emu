@@ -53,6 +53,8 @@ void HBIOSDispatch::reset() {
   bnkcpy_count = 0;
   heap_ptr = 0x0200;  // Reset heap to start of HCB
   initialized_ram_banks = 0;  // Reset RAM bank initialization tracking
+  // Note: disks are NOT cleared here - they persist across reset.
+  // Call closeAllDisks() explicitly before loading new disk configuration.
 
   vda_rows = 25;
   vda_cols = 80;
@@ -140,6 +142,12 @@ void HBIOSDispatch::closeDisk(int unit) {
   disks[unit].file_backed = false;
   disks[unit].size = 0;
   disks[unit].path.clear();
+}
+
+void HBIOSDispatch::closeAllDisks() {
+  for (int i = 0; i < 16; i++) {
+    closeDisk(i);
+  }
 }
 
 bool HBIOSDispatch::isDiskLoaded(int unit) const {

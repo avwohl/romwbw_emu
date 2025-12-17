@@ -294,6 +294,7 @@ public:
   bool loadDisk(int unit, const uint8_t* data, size_t size);
   bool loadDiskFromFile(int unit, const std::string& path);
   void closeDisk(int unit);
+  void closeAllDisks();  // Close all disks (call before reconfiguring)
   bool isDiskLoaded(int unit) const;
   const HBDisk& getDisk(int unit) const;
 
