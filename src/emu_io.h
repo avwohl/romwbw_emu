@@ -85,7 +85,10 @@ void emu_aux_out(uint8_t ch);
 // Debug/Log Output - for emulator status and debugging
 //=============================================================================
 
-// Log a debug message (may be no-op in release/WASM builds)
+// Enable/disable debug logging
+void emu_set_debug(bool enable);
+
+// Log a debug message (only when debug enabled)
 // Uses printf-style formatting
 void emu_log(const char* fmt, ...);
 
