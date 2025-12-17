@@ -1,0 +1,25 @@
+#!/usr/bin/expect -f
+set timeout 30
+log_user 1
+
+spawn ../src/romwbw_emu --romwbw=../roms/emu_avw.rom --disk0=hd1k_combo.img --debug
+
+expect -re "Boot.*:" { sleep 1; send "2\r" }
+expect "A>" { send "C:R8 zork1.com\r" }
+expect "A>" { send "C:R8 zork1.z3\r" }
+expect "A>" { 
+    puts "\n=== Starting ZORK1 with debug ==="
+    send "ZORK1\r" 
+}
+
+# Wait 3 seconds then send a keypress
+sleep 3
+send " "
+sleep 2
+send "look\r"
+sleep 2
+
+send "\005"
+sleep 1
+send "quit\r"
+puts "\n=== Done ==="

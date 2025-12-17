@@ -1,0 +1,52 @@
+#!/usr/bin/expect -f
+set timeout 10
+log_user 1
+
+spawn ../src/romwbw_emu --romwbw=../roms/emu_avw.rom --disk0=hd1k_combo.img
+
+expect "Boot" { send "2\r" }
+expect "A>" { send "C:R8 zork1.com\r" }
+expect "A>" { send "C:R8 zork1.z3\r" }
+expect "A>" { 
+    puts "\n=== Starting ZORK1, capturing raw output ==="
+    send "ZORK1\r" 
+}
+
+# Capture output character by character for 5 seconds
+set timeout 1
+for {set i 0} {$i < 20} {incr i} {
+    expect {
+        -re "." {
+            set ch $expect_out(0,string)
+            binary scan $ch c code
+            set code [expr {$code & 0xFF}]
+            if {$code == 27} {
+                puts -nonewline "<ESC>"
+            } elseif {$code < 32} {
+                puts -nonewline "<$code>"
+            } else {
+                puts -nonewline $ch
+            }
+            exp_continue
+        }
+        timeout {
+            puts "\n--- timeout $i ---"
+        }
+    }
+}
+
+puts "\n=== Sending keypress ==="
+send "\r"
+sleep 2
+
+expect {
+    -re "." {
+        puts "Got response after keypress"
+        exp_continue
+    }
+    timeout { puts "No response after keypress" }
+}
+
+send "\005"
+sleep 1
+send "quit\r"

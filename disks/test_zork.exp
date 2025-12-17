@@ -1,0 +1,79 @@
+#!/usr/bin/expect -f
+# Test script for Zork on romwbw_emu
+
+set timeout 30
+log_user 1
+
+spawn ../src/romwbw_emu --romwbw=../roms/emu_avw.rom --disk0=hd1k_combo.img
+
+# Wait for boot menu and select disk boot
+expect {
+    -re "Boot.*:" {
+        sleep 1
+        send "2\r"
+    }
+    timeout { puts "TIMEOUT waiting for boot menu"; exit 1 }
+}
+
+# Wait for CP/M prompt (A> since we boot to RAM disk)
+expect {
+    "A>" { puts "\n=== CP/M booted ===" }
+    timeout { puts "TIMEOUT waiting for A> prompt"; exit 1 }
+}
+
+# Transfer zork1.com from host
+send "C:R8 zork1.com\r"
+expect {
+    "A>" { puts "\n=== zork1.com transferred ===" }
+    timeout { puts "TIMEOUT during R8 zork1.com"; exit 1 }
+}
+
+# Transfer zork1.z3 from host
+send "C:R8 zork1.z3\r"
+expect {
+    "A>" { puts "\n=== zork1.z3 transferred ===" }
+    timeout { puts "TIMEOUT during R8 zork1.z3"; exit 1 }
+}
+
+# List files to verify
+send "DIR\r"
+expect {
+    "A>" { }
+    timeout { puts "TIMEOUT during DIR"; exit 1 }
+}
+
+# Run ZORK1
+puts "\n=== Starting ZORK1 ==="
+send "ZORK1\r"
+
+# Wait for any output, capture for 10 seconds
+set timeout 10
+expect {
+    -re ".+" {
+        puts "\n=== Got output from ZORK1 ==="
+        exp_continue
+    }
+    timeout { puts "\n=== 10 second timeout - checking state ===" }
+}
+
+# Wait a bit more
+sleep 2
+
+# Try sending input to Zork
+puts "\n=== Sending 'look' command ==="
+send "look\r"
+sleep 3
+
+# Capture any response
+expect {
+    -re ".+" { exp_continue }
+    timeout { }
+}
+
+# Exit with Ctrl+E
+puts "\n=== Exiting with Ctrl+E ==="
+send "\005"
+sleep 1
+send "quit\r"
+sleep 1
+puts "\n=== Test complete ==="

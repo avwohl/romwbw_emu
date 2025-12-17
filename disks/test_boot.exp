@@ -1,0 +1,29 @@
+#!/usr/bin/expect -f
+# Test boot with slice count limiting
+
+set timeout 30
+log_user 1
+
+spawn ../src/romwbw_emu --romwbw=../roms/emu_avw.rom --disk0=hd1k_combo.img:4
+
+# Wait for boot menu and select disk boot
+expect {
+    -re "Boot.*:" {
+        sleep 1
+        send "2\r"
+    }
+    timeout { puts "TIMEOUT waiting for boot menu"; exit 1 }
+}
+
+# Wait for CP/M prompt
+expect {
+    "A>" { puts "\n=== CP/M booted ===" }
+    timeout { puts "TIMEOUT waiting for A> prompt"; exit 1 }
+}
+
+# Exit
+send "\005"
+sleep 1
+send "quit\r"
+sleep 1
+puts "\n=== Test complete ==="
