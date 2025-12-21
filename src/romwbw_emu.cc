@@ -49,6 +49,10 @@ public:
   // Override port I/O - routes through emulator's handle_in/handle_out
   void port_out(qkz80_uint8 port, qkz80_uint8 value) override;
   qkz80_uint8 port_in(qkz80_uint8 port) override;
+
+  // Override halt and unimplemented opcode handlers
+  void halt(void) override;
+  void unimplemented_opcode(qkz80_uint8 opcode, qkz80_uint16 pc) override;
 };
 
 // Global for signal handler to request stop
@@ -870,6 +874,7 @@ public:
   void set_strict_io_mode(bool mode) { strict_io_mode = mode; }
   bool is_strict_io_mode() const { return strict_io_mode; }
   bool is_halted() const { return halted; }
+  void set_halted(bool h) { halted = h; }
 
   void set_romwbw_mode(bool mode) { romwbw_mode = mode; }
   bool is_romwbw_mode() const { return romwbw_mode; }
@@ -3643,6 +3648,22 @@ qkz80_uint8 z80_with_io::port_in(qkz80_uint8 port) {
     return emu->handle_in(port);
   }
   return 0xFF;  // Floating bus
+}
+
+void z80_with_io::halt(void) {
+  fprintf(stderr, "\n*** HALT instruction at PC=0x%04X ***\n",
+          regs.PC.get_pair16());
+  if (emu) {
+    emu->set_halted(true);
+  }
+}
+
+void z80_with_io::unimplemented_opcode(qkz80_uint8 opcode, qkz80_uint16 pc) {
+  fprintf(stderr, "\n*** Unimplemented opcode 0x%02X at PC=0x%04X ***\n",
+          opcode, pc);
+  if (emu) {
+    emu->set_halted(true);
+  }
 }
 
 // Disk size constants

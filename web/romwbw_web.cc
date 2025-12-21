@@ -24,17 +24,34 @@
 // Use banked_mem as cpm_mem for RomWBW
 using cpm_mem = banked_mem;
 
+// Forward declaration
+struct EmulatorState;
+static EmulatorState* emu = nullptr;
+
+//=============================================================================
+// Extended Z80 for web - handles halt and unimplemented opcodes
+//=============================================================================
+
+class z80_web : public qkz80 {
+public:
+  z80_web(qkz80_cpu_mem* memory) : qkz80(memory) {}
+
+  void halt(void) override;
+  void unimplemented_opcode(qkz80_uint8 opcode, qkz80_uint16 pc) override;
+};
+
 //=============================================================================
 // Emulator State - all state in one struct for clean reset
 //=============================================================================
 
 struct EmulatorState {
   cpm_mem memory;
-  qkz80 cpu;
+  z80_web cpu;
   HBIOSDispatch hbios;
 
   bool running = false;
   bool debug = false;
+  bool halted = false;  // Set by halt/unimplemented opcode handlers
 
   // Counters
   long long instruction_count = 0;
@@ -50,8 +67,24 @@ struct EmulatorState {
   }
 };
 
-// Single global - assign new instance to reset everything
-static EmulatorState* emu = nullptr;
+// z80_web implementations
+void z80_web::halt(void) {
+  emu_log("[HALT] at PC=0x%04X\n", regs.PC.get_pair16());
+  if (emu) {
+    emu->halted = true;
+    emu->running = false;
+  }
+}
+
+void z80_web::unimplemented_opcode(qkz80_uint8 opcode, qkz80_uint16 pc) {
+  emu_log("[UNIMPLEMENTED] opcode 0x%02X at PC=0x%04X\n", opcode, pc);
+  if (emu) {
+    emu->halted = true;
+    emu->running = false;
+  }
+}
+
+// emu is already declared above as forward declaration
 
 // Ensure emulator exists
 static void ensure_emu() {
