@@ -1315,6 +1315,10 @@ public:
           memory->select_bank(value);
           return;
 
+        case 0xED:  // EMU BNKCALL port - bank call with IX=addr, A=bank
+          handle_emu_bnkcall(value);
+          return;
+
         case 0xEE:  // EMU HBIOS signal port
           handle_emu_signal(value);
           return;
@@ -1500,6 +1504,86 @@ private:
         hdsk_result = 0xFF;  // Error
         break;
     }
+  }
+
+  // Handle EMU BNKCALL port (port 0xED)
+  // Called when HB_BNKCALL at 0xFFF9 executes: OUT (0xED), A
+  // On entry: A = target bank, IX = call address in target bank
+  // We intercept specific known vectors (like PRTSUM at 0x0406) and handle them
+  void handle_emu_bnkcall(uint8_t bank) {
+    uint16_t call_addr = cpu->regs.IX.get_pair16();
+
+    if (debug) {
+      fprintf(stderr, "[EMU BNKCALL] bank=0x%02X addr=0x%04X\n", bank, call_addr);
+    }
+
+    // Check for known HBIOS vectors that we need to handle
+    switch (call_addr) {
+      case 0x0406:  // PRTSUM - Print device summary (used by boot loader 'D' command)
+        print_device_summary();
+        break;
+
+      default:
+        // Unknown bank call - just log and return (caller will see no action)
+        if (debug) {
+          fprintf(stderr, "[EMU BNKCALL] Unknown vector 0x%04X in bank 0x%02X - ignoring\n",
+                  call_addr, bank);
+        }
+        break;
+    }
+
+    // The proxy code at 0xFFF9 has OUT (0xED), A followed by RET
+    // So we don't need to do anything else - Z80 will execute the RET
+  }
+
+  // Print device summary (implements PRTSUM vector 0x0406)
+  // This is called by the boot loader 'D' command
+  void print_device_summary() {
+    // Print header
+    const char* header = "\r\n  Unit Device\r\n  ---- ------\r\n";
+    for (const char* p = header; *p; p++) {
+      emu_console_write_char(*p);
+    }
+
+    int unit_num = 0;
+
+    // First, list memory disks (MD0=RAM, MD1=ROM)
+    for (int i = 0; i < 2; i++) {
+      if (md_disks[i].is_enabled) {
+        char line[80];
+        const char* type_str = md_disks[i].is_rom ? "ROM Disk" : "RAM Disk";
+        uint32_t size_kb = (uint32_t)md_disks[i].num_banks * 32;
+        snprintf(line, sizeof(line), "    %d  MD%d: %s (%uKB)\r\n",
+                 unit_num, i, type_str, size_kb);
+        for (const char* p = line; *p; p++) {
+          emu_console_write_char(*p);
+        }
+        unit_num++;
+      }
+    }
+
+    // Then list hard disks
+    for (int i = 0; i < 16; i++) {
+      if (hb_disks[i].is_open) {
+        char line[80];
+        // Get file size
+        long cur_pos = ftell(hb_disks[i].image_file);
+        fseek(hb_disks[i].image_file, 0, SEEK_END);
+        long file_size = ftell(hb_disks[i].image_file);
+        fseek(hb_disks[i].image_file, cur_pos, SEEK_SET);
+        uint64_t size_mb = (file_size + 512*1024) / (1024*1024);
+        snprintf(line, sizeof(line), "    %d  HD%d: Hard Disk (%lluMB, %d slices)\r\n",
+                 unit_num, i, (unsigned long long)size_mb, hb_disks[i].max_slices);
+        for (const char* p = line; *p; p++) {
+          emu_console_write_char(*p);
+        }
+        unit_num++;
+      }
+    }
+
+    // End with blank line
+    emu_console_write_char('\r');
+    emu_console_write_char('\n');
   }
 
   // Handle EMU HBIOS signal port (port 0xEE)
