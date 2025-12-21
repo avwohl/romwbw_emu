@@ -245,10 +245,8 @@ public:
 
         if (bank_id & 0x80) {
             uint32_t phys = ((bank_id & 0x0F) * BANK_SIZE) + offset;
-            // WORKAROUND: Protect CBIOS DEVMAP at 0x8678-0x867B from HCB copy overlap
-            if (phys >= 0x78678 && phys < 0x7867C) {
-                return;  // Skip write to protect DEVMAP
-            }
+            // NOTE: Removed broken DEVMAP protection that was blocking CPM3.SYS CBIOS code
+            // The protection at 0x78678-0x7867B was preventing xbnkmov from being written correctly
             // Protect HBIOS ident area (phys addresses in bank 0x8F = common)
             // 0xFE00-0xFE02 = 0x7FE00-0x7FE02, 0xFF00-0xFF02 = 0x7FF00-0x7FF02, 0xFFFC-0xFFFD = 0x7FFFC-0x7FFFD
             if ((phys >= 0x7FE00 && phys < 0x7FE03) ||

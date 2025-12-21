@@ -865,6 +865,9 @@ private:
   int saved_boot_unit = 0;   // Boot disk unit
   int saved_boot_slice = 0;  // Boot slice
 
+  // RAM bank initialization tracking (bitmap for banks 0x80-0x8F)
+  uint16_t initialized_ram_banks = 0;
+
 public:
   AltairEmulator(qkz80* acpu, cpm_mem* amem, bool adebug = false, bool aromwbw = false)
     : cpu(acpu), memory(amem), debug(adebug), romwbw_mode(aromwbw),
@@ -1151,6 +1154,38 @@ public:
     if (debug) fprintf(stderr, "Sense switches set to: 0x%02X\n", sense_switches);
   }
 
+  // Initialize a RAM bank if it hasn't been initialized yet
+  // Copies page zero and HCB from ROM bank 0 to ensure RST vectors and system config are present
+  void initialize_ram_bank_if_needed(uint8_t bank) {
+    banked_mem* bmem = dynamic_cast<banked_mem*>(memory);
+    if (!bmem) return;
+
+    // Only initialize RAM banks 0x80-0x8F
+    if (!(bank & 0x80) || (bank & 0x70)) return;
+
+    uint8_t bank_idx = bank & 0x0F;
+    if (initialized_ram_banks & (1 << bank_idx)) return;  // Already initialized
+
+    if (debug) {
+      fprintf(stderr, "[BANK INIT] Initializing RAM bank 0x%02X with page zero and HCB\n", bank);
+    }
+
+    // Copy page zero (0x0000-0x0100) - contains RST vectors
+    for (uint16_t addr = 0x0000; addr < 0x0100; addr++) {
+      uint8_t byte = bmem->read_bank(0x00, addr);
+      bmem->write_bank(bank, addr, byte);
+    }
+    // Copy HCB (0x0100-0x0200) - system configuration
+    for (uint16_t addr = 0x0100; addr < 0x0200; addr++) {
+      uint8_t byte = bmem->read_bank(0x00, addr);
+      bmem->write_bank(bank, addr, byte);
+    }
+    // Patch APITYPE to HBIOS (0x00) instead of UNA (0xFF)
+    bmem->write_bank(bank, 0x0112, 0x00);
+
+    initialized_ram_banks |= (1 << bank_idx);
+  }
+
   // Handle IN instruction - returns value read from port
   uint8_t handle_in(uint8_t port) {
     port_in_counts[port]++;
@@ -1312,7 +1347,20 @@ public:
 
         case 0x78:  // RAM bank select
         case 0x7C:  // ROM bank select (same effect in MM_SBC)
+          // Initialize RAM bank if first access (ensures page zero/HCB is present)
+          // This is needed because CP/M 3 uses direct port I/O for bank switching
+          // instead of HBIOS SYSSETBNK, bypassing the initialization in that handler.
+          if (debug) {
+            fprintf(stderr, "[PORT 0x%02X] Bank select to 0x%02X, PC=0x%04X\n",
+                    port, value, cpu->regs.PC.get_pair16());
+          }
+          initialize_ram_bank_if_needed(value);
           memory->select_bank(value);
+          return;
+
+        case 0xEC:  // EMU BNKCPY port - inter-bank memory copy
+          fprintf(stderr, "[PORT 0xEC] BNKCPY triggered at PC=0x%04X\n", cpu->regs.PC.get_pair16());
+          handle_emu_bnkcpy();
           return;
 
         case 0xED:  // EMU BNKCALL port - bank call with IX=addr, A=bank
@@ -1546,6 +1594,64 @@ private:
     // So we don't need to do anything else - Z80 will execute the RET
   }
 
+  // Handle EMU BNKCPY port (port 0xEC)
+  // Called when HB_BNKCPY at 0xFFF6 executes: OUT (0xEC), A
+  // Parameters come from CPU registers and PMGMT:
+  //   HL = source address (in source bank)
+  //   DE = dest address (in dest bank)
+  //   BC = number of bytes to copy
+  //   0xFFE4: SRCBNK (source bank ID, set by xbnkmov)
+  //   0xFFE7: DSTBNK (dest bank ID, set by xbnkmov)
+  void handle_emu_bnkcpy() {
+    banked_mem* bmem = dynamic_cast<banked_mem*>(memory);
+    if (!bmem) return;
+
+    // Read addresses and length from CPU registers
+    uint16_t src_addr = cpu->regs.HL.get_pair16();
+    uint16_t dst_addr = cpu->regs.DE.get_pair16();
+    uint16_t length = cpu->regs.BC.get_pair16();
+    // Read bank IDs from PMGMT block (set by xbnkmov before calling 0xFFF6)
+    uint8_t src_bank = memory->fetch_mem(0xFFE4);
+    uint8_t dst_bank = memory->fetch_mem(0xFFE7);
+
+    if (debug) {
+      fprintf(stderr, "[EMU BNKCPY] src=0x%02X:0x%04X dst=0x%02X:0x%04X len=%d\n",
+              src_bank, src_addr, dst_bank, dst_addr, length);
+    }
+
+    // Perform the inter-bank copy
+    for (uint16_t i = 0; i < length; i++) {
+      uint8_t byte;
+      uint16_t s_addr = src_addr + i;
+      uint16_t d_addr = dst_addr + i;
+
+      // Read from source bank
+      if (s_addr >= 0x8000) {
+        // Common RAM - read directly
+        byte = memory->fetch_mem(s_addr);
+      } else {
+        // Banked area - use direct bank access
+        byte = bmem->read_bank(src_bank, s_addr);
+      }
+
+      // Write to dest bank
+      if (d_addr >= 0x8000) {
+        // Common RAM - write directly
+        memory->store_mem(d_addr, byte);
+      } else {
+        // Banked area - use direct bank access
+        bmem->write_bank(dst_bank, d_addr, byte);
+      }
+    }
+
+    if (debug) {
+      fprintf(stderr, "[EMU BNKCPY] Copied %d bytes\n", length);
+    }
+
+    // The proxy code at 0xFFF6 has OUT (0xEC), A followed by RET
+    // So we don't need to do anything else - Z80 will execute the RET
+  }
+
   // Print device summary (implements PRTSUM vector 0x0406)
   // This is called by the boot loader 'D' command
   void print_device_summary() {
@@ -1621,6 +1727,15 @@ private:
 
       case 0xFF:  // Init complete - HBIOS dispatch now via port 0xEF
         if (debug) fprintf(stderr, "[EMU HBIOS: Init complete, dispatch via port 0xEF]\n");
+        // Dump the proxy entry points at 0xFFF0-0xFFFF to verify correct setup
+        if (debug) {
+          fprintf(stderr, "[PROXY DUMP] 0xFFF0-0xFFFF:\n");
+          for (int i = 0; i < 16; i++) {
+            fprintf(stderr, " %02X", memory->fetch_mem(0xFFF0 + i));
+          }
+          fprintf(stderr, "\n");
+          fprintf(stderr, "[PROXY] Expected at 0xFFF6: D3 EC C9 (OUT (0xEC), A; RET)\n");
+        }
 
         // If romldr path is set, switch to ROM bank 1 and run romldr from ROM
         if (!romldr_path.empty()) {
@@ -2256,34 +2371,21 @@ public:
                   prev_bank, new_bank);
         }
 
-        // When switching to a RAM bank for the first time, copy page zero and HCB
-        // from ROM bank 0. This ensures romldr can read HCB values like CB_APP_BNKS.
-        static uint16_t initialized_ram_banks = 0;  // Bitmap for banks 0x80-0x8F
-        banked_mem* bmem = dynamic_cast<banked_mem*>(memory);
-        if (bmem && (new_bank & 0x80) && !(new_bank & 0x70)) {  // RAM bank 0x80-0x8F
-          uint8_t bank_idx = new_bank & 0x0F;
-          if (!(initialized_ram_banks & (1 << bank_idx))) {
-            // First time accessing this RAM bank - copy page zero and HCB
-            if (debug) {
-              fprintf(stderr, "[SYSSETBNK] Initializing RAM bank 0x%02X with page zero and HCB\n", new_bank);
-            }
-            // Copy page zero (0x0000-0x0100) - contains RST vectors
-            for (uint16_t addr = 0x0000; addr < 0x0100; addr++) {
-              uint8_t byte = bmem->read_bank(0x00, addr);
-              bmem->write_bank(new_bank, addr, byte);
-            }
-            // Copy HCB (0x0100-0x0200) - system configuration
-            for (uint16_t addr = 0x0100; addr < 0x0200; addr++) {
-              uint8_t byte = bmem->read_bank(0x00, addr);
-              bmem->write_bank(new_bank, addr, byte);
-            }
-            // Patch APITYPE to HBIOS (0x00) instead of UNA (0xFF)
-            bmem->write_bank(new_bank, 0x0112, 0x00);
-            initialized_ram_banks |= (1 << bank_idx);
+        // Initialize RAM bank if first access (shared with port 0x78 handler)
+        initialize_ram_bank_if_needed(new_bank);
+
+        memory->select_bank(new_bank);
+
+        // Update PMGMT_CURBNK at 0xFFE0 for RAM banks only
+        // This is needed so code that reads current bank (like clrram) works correctly
+        // We only update for RAM banks to avoid interfering with ROM bank operations
+        if (new_bank & 0x80) {
+          banked_mem* bmem = dynamic_cast<banked_mem*>(memory);
+          if (bmem) {
+            bmem->write_bank(0x8F, 0x7FE0, new_bank);  // 0xFFE0 in common bank
           }
         }
 
-        memory->select_bank(new_bank);
         cpu->regs.BC.set_low(prev_bank);  // Return previous bank in C
         break;
       }
@@ -2329,8 +2431,10 @@ public:
       }
 
       case HBF_SYSRESET: {  // System reset (warm/cold boot)
-        // C register: 0x01 = warm boot (restart boot loader), 0x02 = cold boot
+        // C register: 0x01 = warm boot (restart boot loader), 0x02 = cold boot, 0x03 = user reset
         uint8_t reset_type = unit;  // unit is C register
+        fprintf(stderr, "[SYSRESET] Type 0x%02X requested from PC=0x%04X\n",
+                reset_type, cpu->regs.PC.get_pair16());
         if (reset_type == 0x01 || reset_type == 0x02) {
           // Actual system reset requested (from REBOOT utility)
           fprintf(stderr, "\n[SYSRESET] %s boot requested - restarting system\n",
@@ -4557,8 +4661,9 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[TRACE %ld: PC=0x%04X, op=0x%02X]\n", debug_count, pc, opcode);
       }
     }
-    // Debug: trace instructions after CIOIN
-    emu.trace_after_cioin(pc, opcode);
+
+    // Debug: trace instructions after CIOIN (disabled for normal use)
+    // emu.trace_after_cioin(pc, opcode);
 
     // Execute one instruction (I/O is handled via port_in/port_out virtual functions)
     cpu.execute();
