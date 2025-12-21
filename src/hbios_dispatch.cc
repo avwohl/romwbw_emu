@@ -903,6 +903,15 @@ void HBIOSDispatch::handleDIO() {
       // Input: BC=Function/Unit, HL=Buffer Address, D=Buffer Bank (0x80=use current), E=Block Count
       // Output: A=Result, E=Blocks Read
 
+      // Trace DIOREAD calls during CP/M 3 boot investigation
+      static int dioread_trace_count = 0;
+      if (debug && is_harddisk && dioread_trace_count < 50) {
+        dioread_trace_count++;
+        emu_log("[DIOREAD #%d] unit=%d LBA=%u bank=0x%02X addr=0x%04X count=%d\n",
+                dioread_trace_count, raw_unit, disks[hd_unit].current_lba,
+                cpu->regs.DE.get_high(), cpu->regs.HL.get_pair16(), cpu->regs.DE.get_low());
+      }
+
       if (!is_memdisk && !is_harddisk) {
         // No device at this unit - return error with 0 blocks read
         // Output visible error to terminal
@@ -1495,8 +1504,13 @@ void HBIOSDispatch::handleSYS() {
           break;
 
         case SYSGET_BOOTINFO:
-          // Boot info - return boot device (unit 0)
-          cpu->regs.DE.set_low(0);
+          // Boot info: D = boot unit, E = boot slice (saved during SYSBOOT)
+          cpu->regs.DE.set_high(saved_boot_unit);
+          cpu->regs.DE.set_low(saved_boot_slice);
+          if (debug) {
+            emu_log("[SYSGET BOOTINFO] Returning D=%d (unit), E=%d (slice)\n",
+                    saved_boot_unit, saved_boot_slice);
+          }
           break;
 
         case SYSGET_SWITCH:
@@ -2325,6 +2339,10 @@ bool HBIOSDispatch::bootFromDevice(const char* cmd_str) {
   if (debug) {
     emu_log("[SYSBOOT] Booting from disk %d slice %d\n", boot_unit, boot_slice);
   }
+
+  // Save boot info for SYSGET_BOOTINFO
+  saved_boot_unit = boot_unit;
+  saved_boot_slice = boot_slice;
 
   // Read metadata from offset 0x5E0 (same format as ROM apps)
   uint8_t meta_buf[32];

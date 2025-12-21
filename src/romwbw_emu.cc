@@ -1324,6 +1324,16 @@ public:
           return;
 
         case 0xEF:  // HBIOS dispatch trigger port
+          {
+            // Trace HBIOS calls for debugging
+            static int hbios_trace_count = 0;
+            uint8_t func = cpu->regs.BC.get_high();
+            if (hbios_trace_count < 200 && (func == 0x12 || func == 0x13)) {
+              hbios_trace_count++;
+              fprintf(stderr, "[PORT 0xEF #%d] PC=0x%04X func=0x%02X unit=%d\n",
+                      hbios_trace_count, cpu->regs.PC.get_pair16(), func, cpu->regs.BC.get_low());
+            }
+          }
           handle_hbios_dispatch();
           return;
 
@@ -2512,8 +2522,11 @@ public:
                 lba = cpu->regs.DE.get_low();
               }
 
-              if (debug) {
-                fprintf(stderr, "[HBIOS BCALL->DIOSEEK] Unit %d: LBA=%u\n", dio_unit, lba);
+              // DEBUG: Trace BNKCALL DIOSEEK for CP/M 3 boot investigation
+              static int bnkcall_dioseek_trace = 0;
+              if (bnkcall_dioseek_trace < 50 && is_harddisk) {
+                bnkcall_dioseek_trace++;
+                fprintf(stderr, "[BNKCALL DIOSEEK #%d] unit=%d LBA=%u\n", bnkcall_dioseek_trace, dio_unit, lba);
               }
 
               if (is_memdisk) {
@@ -2532,6 +2545,15 @@ public:
               uint16_t buffer_addr = cpu->regs.HL.get_pair16();
               uint8_t buffer_bank = cpu->regs.DE.get_high();
               uint8_t block_count = cpu->regs.DE.get_low();
+
+              // DEBUG: Trace BNKCALL disk reads for CP/M 3 boot investigation
+              static int bnkcall_dioread_trace = 0;
+              if (bnkcall_dioread_trace < 100 && is_harddisk) {
+                bnkcall_dioread_trace++;
+                uint32_t lba = hb_disks[dio_unit - 2].current_lba;
+                fprintf(stderr, "[BNKCALL DIOREAD #%d] unit=%d LBA=%u bank=0x%02X addr=0x%04X blocks=%d\n",
+                        bnkcall_dioread_trace, dio_unit, lba, buffer_bank, buffer_addr, block_count);
+              }
 
               if (!is_memdisk && !is_harddisk) {
                 result = HBR_NOTREADY;
@@ -2870,6 +2892,13 @@ public:
         // Bit 31 (0x80 in high byte of DE) = LBA mode flag, mask it off
         uint32_t lba = (((uint32_t)(de_reg & 0x7FFF) << 16) | hl_reg);
 
+        // DEBUG: Trace DIOSEEK calls
+        static int dioseek_trace = 0;
+        if (dioseek_trace < 50 && unit >= 2) {
+          dioseek_trace++;
+          fprintf(stderr, "[DIOSEEK HD #%d] unit=%d LBA=%u\n", dioseek_trace, unit, lba);
+        }
+
         // Handle memory disks (units 0-1) vs hard disks (units 2+)
         if (unit < 2 && md_disks[unit].is_enabled) {
           md_disks[unit].current_lba = lba;
@@ -2894,15 +2923,14 @@ public:
         bool is_memdisk = (unit < 2 && md_disks[unit].is_enabled);
         bool is_harddisk = (unit >= 2 && unit < 18 && hb_disks[unit - 2].is_open);
 
-        // DEBUG: Trace disk reads from ROM disk (unit 1) to CBIOS buffer
-        // Set to > 0 to enable trace output
+        // DEBUG: Trace disk reads for CP/M 3 boot investigation
         static int dioread_trace_count = 0;
-        constexpr int DIOREAD_TRACE_LIMIT = 0;  // Disabled
-        if (DIOREAD_TRACE_LIMIT > 0 && unit == 1 && buffer_addr == 0x0A00 && dioread_trace_count < DIOREAD_TRACE_LIMIT) {
+        constexpr int DIOREAD_TRACE_LIMIT = 100;  // Trace first 100 reads
+        if (DIOREAD_TRACE_LIMIT > 0 && is_harddisk && dioread_trace_count < DIOREAD_TRACE_LIMIT) {
           dioread_trace_count++;
-          MemDiskState& md = md_disks[unit];
-          fprintf(stderr, "[DIOREAD u1 #%d] LBA=%u -> bank=0x%02X addr=0x%04X blocks=%d\n",
-                  dioread_trace_count, md.current_lba, buffer_bank, buffer_addr, block_count);
+          uint32_t lba = hb_disks[unit - 2].current_lba;
+          fprintf(stderr, "[DIOREAD HD #%d] unit=%d LBA=%u bank=0x%02X addr=0x%04X blocks=%d\n",
+                  dioread_trace_count, unit, lba, buffer_bank, buffer_addr, block_count);
         }
 
         if (!is_memdisk && !is_harddisk) {
@@ -3464,11 +3492,13 @@ public:
             // L = switch value to set - just ignore
             break;
           case 0xE0:  // SETBOOTINFO - Set boot volume and bank info
-            // D = boot device/unit, E = boot bank, L = boot slice
-            // Just acknowledge - we don't need to track this
+            // Per biosldr.z80: D = unit, E = slice, L = bank (always 0)
+            // Save unit and slice for SYSGET BOOTINFO
+            saved_boot_unit = cpu->regs.DE.get_high();
+            saved_boot_slice = cpu->regs.DE.get_low();  // Slice is in E, not L!
             if (debug) {
-              fprintf(stderr, "[SYSSET BOOTINFO] device=%d bank=0x%02X slice=%d\n",
-                      cpu->regs.DE.get_high(), cpu->regs.DE.get_low(), cpu->regs.HL.get_low());
+              fprintf(stderr, "[SYSSET BOOTINFO] device=%d slice=%d bank=0x%02X (saved)\n",
+                      saved_boot_unit, saved_boot_slice, cpu->regs.HL.get_low());
             }
             break;
           default:

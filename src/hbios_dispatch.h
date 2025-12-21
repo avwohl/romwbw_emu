@@ -456,6 +456,10 @@ private:
   // Reset callback for SYSRESET
   ResetCallback reset_callback = nullptr;
 
+  // Boot info (saved during SYSBOOT, returned by SYSGET_BOOTINFO)
+  int saved_boot_unit = 0;
+  int saved_boot_slice = 0;
+
   // Disks
   HBDisk disks[16];
 
