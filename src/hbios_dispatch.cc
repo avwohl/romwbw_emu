@@ -14,6 +14,19 @@
 #include <cmath>
 #include <cstdio>
 
+// Shared debug log file (defined in hbios_core.cc)
+extern FILE* debug_log_file;
+
+// Log to shared debug file (file only, no stderr)
+static void dlog(const char* fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  if (debug_log_file) {
+    vfprintf(debug_log_file, fmt, args);
+  }
+  va_end(args);
+}
+
 //=============================================================================
 // Constructor/Destructor
 //=============================================================================
@@ -35,6 +48,9 @@ HBIOSDispatch::~HBIOSDispatch() {
 void HBIOSDispatch::reset() {
   trapping_enabled = false;
   waiting_for_input = false;
+  emu_state = HBIOS_RUNNING;
+  output_buffer.clear();
+  input_buffer.clear();
   main_entry = 0xFFF0;
 
   cio_dispatch = 0;
@@ -84,6 +100,57 @@ void HBIOSDispatch::reset() {
 }
 
 //=============================================================================
+// State Machine I/O Methods
+//=============================================================================
+
+std::vector<uint8_t> HBIOSDispatch::getOutputChars() {
+  std::vector<uint8_t> result = std::move(output_buffer);
+  output_buffer.clear();
+  return result;
+}
+
+void HBIOSDispatch::provideInputChar(int ch) {
+  if (ch == '\n') ch = '\r';  // LF -> CR for CP/M
+  input_buffer.push_back(ch);
+  if (emu_state == HBIOS_NEEDS_INPUT) {
+    emu_state = HBIOS_RUNNING;
+    waiting_for_input = false;
+  }
+}
+
+void HBIOSDispatch::queueInputChars(const uint8_t* data, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    int ch = data[i];
+    if (ch == '\n') ch = '\r';
+    input_buffer.push_back(ch);
+  }
+  if (emu_state == HBIOS_NEEDS_INPUT && !input_buffer.empty()) {
+    emu_state = HBIOS_RUNNING;
+    waiting_for_input = false;
+  }
+}
+
+void HBIOSDispatch::queueInputChar(int ch) {
+  if (ch == '\n') ch = '\r';
+  input_buffer.push_back(ch);
+  if (emu_state == HBIOS_NEEDS_INPUT) {
+    emu_state = HBIOS_RUNNING;
+    waiting_for_input = false;
+  }
+}
+
+int HBIOSDispatch::readInputChar() {
+  if (input_buffer.empty()) return -1;
+  int ch = input_buffer.front();
+  input_buffer.erase(input_buffer.begin());
+  return ch;
+}
+
+void HBIOSDispatch::clearInputBuffer() {
+  input_buffer.clear();
+}
+
+//=============================================================================
 // Disk Management
 //=============================================================================
 
@@ -98,8 +165,9 @@ bool HBIOSDispatch::loadDisk(int unit, const uint8_t* data, size_t size) {
   disks[unit].file_backed = false;
   disks[unit].handle = nullptr;
 
-  // Always log disk loads to help debug disk I/O issues
-  emu_log("[HBIOS] Loaded disk %d: %zu bytes (in-memory)\n", unit, size);
+  // Always log disk loads (unconditional for debugging)
+  fprintf(stderr, "[HBIOS] Loaded disk %d: %zu bytes (in-memory), is_open=%d\n",
+          unit, size, disks[unit].is_open);
   return true;
 }
 
@@ -179,9 +247,9 @@ void HBIOSDispatch::setDiskSliceCount(int unit, int slices) {
 //=============================================================================
 
 void HBIOSDispatch::initMemoryDisks() {
-  emu_log("[MD] initMemoryDisks called, memory=%p\n", (void*)memory);
+  fprintf(stderr, "[MD] initMemoryDisks called, memory=%p\n", (void*)memory);
   if (!memory) {
-    emu_log("[MD] Warning: memory not available, memory disks disabled\n");
+    fprintf(stderr, "[MD] Warning: memory not available, memory disks disabled\n");
     return;
   }
 
@@ -197,6 +265,8 @@ void HBIOSDispatch::initMemoryDisks() {
   uint8_t ramd_banks = memory->read_bank(0x00, HCB_BASE + 0xDD);
   uint8_t romd_start = memory->read_bank(0x00, HCB_BASE + 0xDE);
   uint8_t romd_banks = memory->read_bank(0x00, HCB_BASE + 0xDF);
+  fprintf(stderr, "[MD] HCB config: ramd_start=0x%02X ramd_banks=%d romd_start=0x%02X romd_banks=%d\n",
+          ramd_start, ramd_banks, romd_start, romd_banks);
 
   // MD0 = RAM disk
   if (ramd_banks > 0) {
@@ -231,9 +301,9 @@ void HBIOSDispatch::initMemoryDisks() {
 //=============================================================================
 
 void HBIOSDispatch::populateDiskUnitTable() {
-  emu_log("[DISKUT] populateDiskUnitTable called, memory=%p\n", (void*)memory);
+  fprintf(stderr, "[DISKUT] populateDiskUnitTable called, memory=%p\n", (void*)memory);
   if (!memory) {
-    emu_log("[DISKUT] Warning: memory not available\n");
+    fprintf(stderr, "[DISKUT] Warning: memory not available\n");
     return;
   }
 
@@ -280,9 +350,9 @@ void HBIOSDispatch::populateDiskUnitTable() {
   }
 
   // Add hard disks from disks[] array
-  emu_log("[DISKUT] Scanning disks array for loaded disks...\n");
+  fprintf(stderr, "[DISKUT] Scanning disks array for loaded disks...\n");
   for (int i = 0; i < 16 && disk_idx < 16; i++) {
-    emu_log("[DISKUT] disks[%d].is_open = %d\n", i, disks[i].is_open ? 1 : 0);
+    fprintf(stderr, "[DISKUT] disks[%d].is_open = %d, size = %zu\n", i, disks[i].is_open ? 1 : 0, disks[i].size);
     if (disks[i].is_open) {
       rom[DISKUT_BASE + disk_idx * 4 + 0] = 0x09;  // DIODEV_HDSK
       rom[DISKUT_BASE + disk_idx * 4 + 1] = i;     // HDSK unit number
@@ -292,7 +362,7 @@ void HBIOSDispatch::populateDiskUnitTable() {
       memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 1, i);
       memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 2, 0x00);
       memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 3, 0x00);
-      emu_log("[DISKUT] Entry %d: HD%d (hard disk, %zu bytes)\n", disk_idx, i, disks[i].size);
+      fprintf(stderr, "[DISKUT] Entry %d: HD%d (hard disk, %zu bytes)\n", disk_idx, i, disks[i].size);
       disk_idx++;
     }
   }
@@ -615,14 +685,10 @@ bool HBIOSDispatch::handleBankCall() {
 
 void HBIOSDispatch::handlePRTSUM() {
   // Print device summary (called by romldr 'd' command)
-  const char* header = "\r\nDisk Device Summary\r\n\r\n";
-  for (const char* p = header; *p; p++) emu_console_write_char(*p);
-
-  const char* hdr_line = " Unit Dev       Type    Capacity\r\n";
-  for (const char* p = hdr_line; *p; p++) emu_console_write_char(*p);
-
-  const char* hdr_sep = " ---- --------- ------- --------\r\n";
-  for (const char* p = hdr_sep; *p; p++) emu_console_write_char(*p);
+  // All output goes to output_buffer for caller to display
+  writeConsoleString("\r\nDisk Device Summary\r\n\r\n");
+  writeConsoleString(" Unit Dev       Type    Capacity\r\n");
+  writeConsoleString(" ---- --------- ------- --------\r\n");
 
   int unit_num = 0;
   char line[80];
@@ -634,7 +700,7 @@ void HBIOSDispatch::handlePRTSUM() {
       uint32_t size_kb = md_disks[i].num_banks * 32;
       snprintf(line, sizeof(line), "   %2d MD%d       %-7s %4uKB\r\n",
                unit_num, i, type, size_kb);
-      for (const char* p = line; *p; p++) emu_console_write_char(*p);
+      writeConsoleString(line);
       unit_num++;
     }
   }
@@ -645,14 +711,13 @@ void HBIOSDispatch::handlePRTSUM() {
       uint32_t size_mb = (uint32_t)(disks[i].size / (1024 * 1024));
       snprintf(line, sizeof(line), "   %2d HDSK%d     Hard    %4uMB\r\n",
                unit_num, i, size_mb);
-      for (const char* p = line; *p; p++) emu_console_write_char(*p);
+      writeConsoleString(line);
       unit_num++;
     }
   }
 
   // Print footer
-  emu_console_write_char('\r');
-  emu_console_write_char('\n');
+  writeConsoleString("\r\n");
 }
 
 //=============================================================================
@@ -704,7 +769,7 @@ void HBIOSDispatch::doRet() {
 
 void HBIOSDispatch::writeConsoleString(const char* str) {
   while (*str) {
-    emu_console_write_char(*str++);
+    output_buffer.push_back(*str++);
   }
 }
 
@@ -721,45 +786,65 @@ void HBIOSDispatch::handleCIO() {
 
   switch (func) {
     case HBF_CIOIN: {
-      // Read character - behavior depends on dispatch mode and platform
-      if (skip_ret && blocking_allowed) {
-        // Port-based dispatch on CLI - can block until input available
-        while (!emu_console_has_input()) {
-          emu_sleep_ms(1);  // Sleep 1ms to avoid busy-waiting
-        }
-      } else if (!emu_console_has_input()) {
-        // No input available - set waiting flag
-        // For web: caller must check isWaitingForInput() and retry later
-        // For PC-trapping: keeps PC at trap address to retry
-        waiting_for_input = true;
-        if (!skip_ret) return;  // PC-trapping: don't fall through to doRet()
-        // Port-based non-blocking: return 0 and let caller handle retry
-        cpu->regs.DE.set_low(0);
-        break;
+      // Read character from input buffer
+      // If no input available, set state to NEEDS_INPUT and pause execution
+      static int cioin_log_count = 0;
+      bool has_input = !input_buffer.empty();
+      if (cioin_log_count < 20 || has_input) {
+        cioin_log_count++;
+        fprintf(stderr, "[CIOIN #%d] skip_ret=%d blocking=%d has_input=%d buf_size=%zu\n",
+                cioin_log_count, skip_ret ? 1 : 0, blocking_allowed ? 1 : 0,
+                has_input ? 1 : 0, input_buffer.size());
       }
-      int ch = emu_console_read_char();
+
+      if (!has_input) {
+        // No input available - signal that we need input and pause execution
+        waiting_for_input = true;
+        emu_state = HBIOS_NEEDS_INPUT;
+
+        // Rewind PC to retry this HBIOS call when input arrives
+        // The OUT (0xEF), A instruction is 2 bytes, so PC-2 points back to it
+        // When execution resumes after input is provided, the OUT will re-execute
+        uint16_t pc = cpu->regs.PC.get_pair16();
+        cpu->regs.PC.set_pair16(pc - 2);
+
+        return;  // Don't fall through to setResult/doRet
+      }
+
+      // Got input - read from buffer
+      int ch = input_buffer.front();
+      input_buffer.erase(input_buffer.begin());
+      fprintf(stderr, "[CIOIN] read char 0x%02X '%c'\n", ch, (ch >= 32 && ch < 127) ? ch : '?');
       cpu->regs.DE.set_low(ch & 0xFF);
       waiting_for_input = false;
+      emu_state = HBIOS_RUNNING;
       break;
     }
 
     case HBF_CIOOUT: {
-      // Write character - send to Swift which handles VT100 parsing and cursor
+      // Write character to output buffer (caller will retrieve and display)
       uint8_t ch = cpu->regs.DE.get_low();
-      emu_console_write_char(ch);
+      static int cioout_log_count = 0;
+      if (cioout_log_count < 50) {
+        cioout_log_count++;
+        fprintf(stderr, "[CIOOUT #%d] char=0x%02X '%c'\n",
+                cioout_log_count, ch, (ch >= 32 && ch < 127) ? ch : '?');
+      }
+      output_buffer.push_back(ch);
       break;
     }
 
     case HBF_CIOIST: {
-      // Input status - return count in A (matches CLI behavior)
-      bool has_input = emu_console_has_input();
-      result = has_input ? 1 : 0;  // Count of chars waiting
-      break;  // Fall through to setResult(result) and doRet()
+      // Input status - return count from input buffer
+      result = input_buffer.empty() ? 0 : 1;
+      break;
     }
 
     case HBF_CIOOST: {
       // Output status - always ready
-      cpu->regs.DE.set_low(0xFF);
+      // A = status (0=not ready, 1=ready), E = buffer space available
+      result = 1;  // Ready to output
+      cpu->regs.DE.set_low(0xFF);  // Lots of buffer space
       break;
     }
 
@@ -852,6 +937,15 @@ void HBIOSDispatch::handleDIO() {
   uint8_t hd_unit = map_hd_unit(raw_unit);  // Map to disk array index (for HD)
   bool is_harddisk = (hd_unit != 0xFF && hd_unit < 16 && disks[hd_unit].is_open);
 
+  // DEBUG: Unconditional logging for DIO calls
+  static int dio_log_count = 0;
+  if (dio_log_count < 100) {
+    dio_log_count++;
+    fprintf(stderr, "[DIO #%d] func=0x%02X unit=%d hd_unit=%d is_md=%d is_hd=%d disk_open=%d\n",
+            dio_log_count, func, raw_unit, hd_unit, is_memdisk ? 1 : 0, is_harddisk ? 1 : 0,
+            (hd_unit < 16) ? (disks[hd_unit].is_open ? 1 : 0) : -1);
+  }
+
   switch (func) {
     case HBF_DIOSTATUS: {
       // Get status
@@ -892,7 +986,7 @@ void HBIOSDispatch::handleDIO() {
         snprintf(errmsg, sizeof(errmsg),
                  "\r\n[SEEK ERR] unit=%d hd_unit=%d is_open=%d\r\n",
                  raw_unit, hd_unit, (hd_unit < 16) ? disks[hd_unit].is_open : -1);
-        for (const char* p = errmsg; *p; p++) emu_console_write_char(*p);
+        writeConsoleString(errmsg);
         result = HBR_NOUNIT;
       }
       break;
@@ -914,12 +1008,11 @@ void HBIOSDispatch::handleDIO() {
 
       if (!is_memdisk && !is_harddisk) {
         // No device at this unit - return error with 0 blocks read
-        // Output visible error to terminal
         char errmsg[128];
         snprintf(errmsg, sizeof(errmsg),
                  "\r\n[DIO ERR] unit=%d hd_unit=%d is_open=%d\r\n",
                  raw_unit, hd_unit, (hd_unit < 16) ? disks[hd_unit].is_open : -1);
-        for (const char* p = errmsg; *p; p++) emu_console_write_char(*p);
+        writeConsoleString(errmsg);
 
         cpu->regs.DE.set_low(0);
         result = HBR_NOUNIT;
@@ -932,9 +1025,11 @@ void HBIOSDispatch::handleDIO() {
       uint8_t blocks_read = 0;
 
       // Helper lambda to write byte to correct bank
+      // When buffer_bank has bit 7 set (RAM bank 0x80-0x8F), use bank-aware write
+      // Otherwise use store_mem() which respects current bank
       auto write_to_bank = [&](uint16_t addr, uint8_t byte) {
         if (buffer_bank & 0x80) {
-          // Bank-aware write
+          // Bank-aware write (RAM bank specified)
           if (addr >= 0x8000) {
             // Common area - write to bank 0x8F
             memory->write_bank(0x8F, addr - 0x8000, byte);
@@ -942,7 +1037,7 @@ void HBIOSDispatch::handleDIO() {
             memory->write_bank(buffer_bank, addr, byte);
           }
         } else {
-          // Use current bank
+          // Use current bank (ROM bank or 0 specified)
           memory->store_mem(addr, byte);
         }
       };
@@ -1035,9 +1130,11 @@ void HBIOSDispatch::handleDIO() {
       uint8_t blocks_written = 0;
 
       // Helper lambda to read byte from correct bank
+      // When buffer_bank has bit 7 set (RAM bank 0x80-0x8F), use bank-aware read
+      // Otherwise use fetch_mem() which respects current bank
       auto read_from_bank = [&](uint16_t addr) -> uint8_t {
         if (buffer_bank & 0x80) {
-          // Bank-aware read
+          // Bank-aware read (RAM bank specified)
           if (addr >= 0x8000) {
             // Common area - read from bank 0x8F
             return memory->read_bank(0x8F, addr - 0x8000);
@@ -1045,7 +1142,7 @@ void HBIOSDispatch::handleDIO() {
             return memory->read_bank(buffer_bank, addr);
           }
         } else {
-          // Use current bank
+          // Use current bank (ROM bank or 0 specified)
           return memory->fetch_mem(addr);
         }
       };
@@ -1346,6 +1443,13 @@ void HBIOSDispatch::handleSYS() {
         }
 
         memory->select_bank(new_bank);
+
+        // Update PMGMT_CURBNK at 0xFFE0 for RAM banks only
+        // This is needed so code that reads current bank (like CP/M 3's xbnkmov) works correctly
+        // We only update for RAM banks to avoid interfering with ROM bank operations
+        if (new_bank & 0x80) {
+          memory->write_bank(0x8F, 0x7FE0, new_bank);  // 0xFFE0 in common bank (0x8F)
+        }
       }
       cur_bank = new_bank;
       cpu->regs.BC.set_low(prev_bank);  // Return previous bank in C
@@ -1373,10 +1477,9 @@ void HBIOSDispatch::handleSYS() {
       bnkcpy_dst_bank = cpu->regs.DE.get_high();
       bnkcpy_src_bank = cpu->regs.DE.get_low();
       bnkcpy_count = cpu->regs.HL.get_pair16();
-      if (debug) {
-        emu_log("[HBIOS SYSSETCPY] src=0x%02X dst=0x%02X count=%u\n",
-                bnkcpy_src_bank, bnkcpy_dst_bank, bnkcpy_count);
-      }
+      // DEBUG: Always log SYSSETCPY calls
+      dlog("[HBIOS SYSSETCPY] src=0x%02X dst=0x%02X count=%u\n",
+           bnkcpy_src_bank, bnkcpy_dst_bank, bnkcpy_count);
       break;
     }
 
@@ -1388,10 +1491,9 @@ void HBIOSDispatch::handleSYS() {
       uint16_t dst_addr = cpu->regs.DE.get_pair16();
       uint16_t count = bnkcpy_count;
 
-      if (debug) {
-        emu_log("[HBIOS SYSBNKCPY] src=%02X:%04X dst=%02X:%04X count=%u\n",
-                bnkcpy_src_bank, src_addr, bnkcpy_dst_bank, dst_addr, count);
-      }
+      // DEBUG: Always log SYSBNKCPY calls
+      dlog("[HBIOS SYSBNKCPY] src=%02X:%04X dst=%02X:%04X count=%u\n",
+           bnkcpy_src_bank, src_addr, bnkcpy_dst_bank, dst_addr, count);
 
       if (memory && count > 0) {
         for (uint16_t i = 0; i < count; i++) {
@@ -1483,6 +1585,11 @@ void HBIOSDispatch::handleSYS() {
           for (int i = 0; i < 16; i++) {
             if (disks[i].is_open) count++;
           }
+          fprintf(stderr, "[DIOCNT] md_disks: %d,%d hd_disks: %d total=%d\n",
+                  md_disks[0].is_enabled ? 1 : 0,
+                  md_disks[1].is_enabled ? 1 : 0,
+                  disks[0].is_open ? 1 : 0,
+                  count);
           cpu->regs.DE.set_low(count);
           break;
         }
@@ -1820,19 +1927,25 @@ void HBIOSDispatch::handleVDA() {
     }
 
     case HBF_VDAKST: {
-      // Keyboard status
-      cpu->regs.DE.set_low(emu_console_has_input() ? 0xFF : 0x00);
+      // Keyboard status - check input buffer
+      cpu->regs.DE.set_low(input_buffer.empty() ? 0x00 : 0xFF);
       break;
     }
 
     case HBF_VDAKRD: {
-      // Keyboard read - if none available, wait
-      if (!emu_console_has_input()) {
-        // No input - set waiting flag and DON'T call doRet()
+      // Keyboard read - if none available, set NEEDS_INPUT state
+      if (input_buffer.empty()) {
         waiting_for_input = true;
+        emu_state = HBIOS_NEEDS_INPUT;
+
+        // Rewind PC to retry this HBIOS call when input arrives
+        uint16_t pc = cpu->regs.PC.get_pair16();
+        cpu->regs.PC.set_pair16(pc - 2);
+
         return;  // Don't fall through to doRet()
       }
-      int ch = emu_console_read_char();
+      int ch = input_buffer.front();
+      input_buffer.erase(input_buffer.begin());
       cpu->regs.DE.set_low(ch & 0xFF);
       break;
     }
@@ -2269,6 +2382,8 @@ void HBIOSDispatch::handleEXT() {
 
 bool HBIOSDispatch::bootFromDevice(const char* cmd_str) {
   if (!cpu || !memory) return false;
+
+  boot_in_progress = true;  // Signal that boot has started (for debugging)
 
   // Skip leading whitespace
   while (*cmd_str == ' ') cmd_str++;
