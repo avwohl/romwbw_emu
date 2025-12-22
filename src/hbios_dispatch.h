@@ -219,6 +219,16 @@ enum HBiosMediaId {
 };
 
 //=============================================================================
+// Emulator I/O State (for state machine operation)
+//=============================================================================
+
+enum HBIOSState {
+  HBIOS_RUNNING = 0,      // Emulator is running normally
+  HBIOS_NEEDS_INPUT,      // Waiting for character input (CIOIN)
+  HBIOS_HALTED,           // Emulator halted (HLT instruction or error)
+};
+
+//=============================================================================
 // Memory Disk (MD) State
 //=============================================================================
 
@@ -290,6 +300,7 @@ public:
   // Enable/disable debug output
   void setDebug(bool enable) { debug = enable; }
   bool getDebug() const { return debug; }
+  bool getBootInProgress() const { return boot_in_progress; }
 
   // Disk management
   bool loadDisk(int unit, const uint8_t* data, size_t size);
@@ -358,6 +369,41 @@ public:
   bool isWaitingForInput() const { return waiting_for_input; }
   void clearWaitingForInput() { waiting_for_input = false; }
 
+  //==========================================================================
+  // State Machine I/O Interface
+  // The emulator is a pure state machine. Instead of calling external functions,
+  // it buffers I/O and signals what it needs. The outer loop handles actual I/O.
+  //==========================================================================
+
+  // Get current emulator state
+  HBIOSState getState() const { return emu_state; }
+
+  // Character Output: Get buffered output chars (clears buffer after call)
+  // Caller should display these characters
+  std::vector<uint8_t> getOutputChars();
+
+  // Character Output: Check if there are pending output chars
+  bool hasOutputChars() const { return !output_buffer.empty(); }
+
+  // Character Output: Queue a single output char (for direct UART output)
+  void queueOutputChar(uint8_t ch) { output_buffer.push_back(ch); }
+
+  // Character Input: Provide a character (in response to NEEDS_INPUT state)
+  void provideInputChar(int ch);
+
+  // Character Input: Queue multiple characters
+  void queueInputChars(const uint8_t* data, size_t len);
+  void queueInputChar(int ch);
+
+  // Character Input: Check if input is available
+  bool hasInputChar() const { return !input_buffer.empty(); }
+
+  // Character Input: Read and consume one char (returns -1 if empty)
+  int readInputChar();
+
+  // Character Input: Clear input buffer
+  void clearInputBuffer();
+
   // Set whether blocking I/O is allowed (false for web/WASM)
   void setBlockingAllowed(bool allowed) { blocking_allowed = allowed; }
   bool isBlockingAllowed() const { return blocking_allowed; }
@@ -400,6 +446,11 @@ private:
   qkz80* cpu = nullptr;
   banked_mem* memory = nullptr;
   bool debug = false;
+
+  // State machine
+  HBIOSState emu_state = HBIOS_RUNNING;
+  std::vector<uint8_t> output_buffer;  // Buffered output chars (for CIOOUT)
+  std::vector<int> input_buffer;       // Buffered input chars (for CIOIN)
 
   // Trapping control
   bool trapping_enabled = false;
@@ -459,6 +510,7 @@ private:
   // Boot info (saved during SYSBOOT, returned by SYSGET_BOOTINFO)
   int saved_boot_unit = 0;
   int saved_boot_slice = 0;
+  bool boot_in_progress = false;  // Set when boot starts, for debugging
 
   // Disks
   HBDisk disks[16];

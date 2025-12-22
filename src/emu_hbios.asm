@@ -109,7 +109,7 @@ DESC:	db	"Emulator HBIOS - traps to cpmemu",0
 HCB:
 	jp	HB_START		; Entry point (offset 0x00)
 
-CB_MARKER:	db	'W', 0B8h	; Marker ('W', ~'W') (offset 0x03)
+CB_MARKER:	db	'W', 0A8h	; Marker ('W', ~'W'=0xA8) (offset 0x03)
 CB_VERSION:	db	035h		; Version 3.5 (offset 0x05)
 		db	010h		; Update/patch 1.0 -> v3.5.1 (offset 0x06)
 
@@ -312,7 +312,7 @@ HBX_IMG:
 	; All addresses must work at target location
 
 ; Offset 0x00: Ident block
-	db	'W', 0B8h		; Marker
+	db	'W', 0A8h		; Marker ('W', ~'W'=0xA8)
 	db	035h			; Version 3.5
 	db	010h			; Update/patch 1.0 -> v3.5.1
 
