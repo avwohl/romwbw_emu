@@ -20,6 +20,7 @@ ROMWBW_SRCS = romwbw_web.cc \
               $(QKZ80_SRC)/qkz80_reg_set.cc \
               $(QKZ80_SRC)/qkz80_errors.cc \
               ../src/hbios_dispatch.cc \
+              ../src/hbios_cpu.cc \
               ../src/emu_io_wasm.cc
 
 all: romwbw.js

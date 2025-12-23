@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 // Version string - set by Makefile from VERSION file
 #ifndef EMU_VERSION
@@ -99,13 +100,41 @@ static uint8_t handle_in(uint8_t port) {
   uint8_t result = 0xFF;
 
   switch (port) {
-    case 0x78:  // Bank register
-    case 0x7C:
+    case 0x68: {  // UART data register - read character
+      int ch = emu->hbios.readInputChar();
+      result = (ch >= 0) ? (ch & 0xFF) : 0;
+      break;
+    }
+
+    case 0x6D:  // UART Line Status Register (LSR)
+      // Bit 0: Data Ready, Bit 5: THRE (transmitter empty), Bit 6: TEMT
+      result = 0x60 | (emu->hbios.hasInputChar() ? 0x01 : 0x00);
+      break;
+
+    case 0x69:  // UART IER
+    case 0x6A:  // UART IIR
+    case 0x6B:  // UART LCR
+    case 0x6C:  // UART MCR
+    case 0x6E:  // UART MSR
+    case 0x6F:  // UART SCR
+      result = 0x00;  // Safe defaults
+      break;
+
+    case 0x70:  // RTC latch register
+      result = 0xFF;  // No RTC present
+      break;
+
+    case 0x78:  // Bank register (RAM)
+    case 0x7C:  // Bank register (ROM)
       result = emu->memory.get_current_bank();
       break;
 
+    case 0xFE:  // Sense switches (front panel)
+      result = 0x00;
+      break;
+
     default:
-      result = 0xFF;
+      result = 0xFF;  // Floating bus
       break;
   }
 
@@ -124,21 +153,87 @@ static void handle_out(uint8_t port, uint8_t value) {
     emu->io_out_count++;
   }
   switch (port) {
-    case 0x68:  // UART data output (for echo)
-      emu_console_write_char(value);
+    case 0x68:  // UART data output
+      emu->hbios.queueOutputChar(value);
       break;
 
-    case 0x78:  // RAM bank
-    case 0x7C:  // ROM bank
+    case 0x69:  // UART IER
+    case 0x6A:  // UART FCR
+    case 0x6B:  // UART LCR
+    case 0x6C:  // UART MCR
+    case 0x6F:  // UART SCR
+      // Ignored
+      break;
+
+    case 0x70:  // RTC latch register
+      // Ignored
+      break;
+
+    case 0x78:  // RAM bank select
+    case 0x7C:  // ROM bank select
       emu->memory.select_bank(value);
       break;
+
+    case 0xEC: {
+      // EMU BNKCPY port - inter-bank memory copy
+      // Parameters from memory: 0xFFE4=src_bank, 0xFFE7=dst_bank
+      // Registers: HL=src_addr, DE=dst_addr, BC=length
+      uint16_t src_addr = emu->cpu.regs.HL.get_pair16();
+      uint16_t dst_addr = emu->cpu.regs.DE.get_pair16();
+      uint16_t length = emu->cpu.regs.BC.get_pair16();
+      uint8_t src_bank = emu->memory.fetch_mem(0xFFE4);
+      uint8_t dst_bank = emu->memory.fetch_mem(0xFFE7);
+
+      // Perform inter-bank copy
+      for (uint16_t i = 0; i < length; i++) {
+        uint8_t byte;
+        uint16_t s_addr = src_addr + i;
+        uint16_t d_addr = dst_addr + i;
+
+        // Read from source
+        if (s_addr >= 0x8000) {
+          byte = emu->memory.fetch_mem(s_addr);
+        } else {
+          byte = emu->memory.read_bank(src_bank, s_addr);
+        }
+
+        // Write to dest
+        if (d_addr >= 0x8000) {
+          emu->memory.store_mem(d_addr, byte);
+        } else {
+          emu->memory.write_bank(dst_bank, d_addr, byte);
+        }
+      }
+      break;
+    }
+
+    case 0xED: {
+      // EMU BNKCALL port - bank call
+      // On entry: A (value) = target bank, IX = call address
+      uint16_t call_addr = emu->cpu.regs.IX.get_pair16();
+
+      // Handle known vectors via HBIOSDispatch
+      if (call_addr == 0x0406) {
+        // PRTSUM - Print device summary
+        emu->hbios.handlePRTSUM();
+      }
+      // Other vectors handled by Z80 proxy code
+      break;
+    }
 
     case 0xEE:  // EMU signal port
       emu->hbios.handleSignalPort(value);
       break;
 
-    case 0xEF:  // HBIOS dispatch port
+    case 0xEF:  // HBIOS dispatch trigger port
+      // Set skip_ret since Z80 proxy has its own RET
+      emu->hbios.setSkipRet(true);
       emu->hbios.handlePortDispatch();
+      emu->hbios.setSkipRet(false);
+      break;
+
+    default:
+      // Unknown port - ignore
       break;
   }
 }
@@ -146,6 +241,16 @@ static void handle_out(uint8_t port, uint8_t value) {
 //=============================================================================
 // Main Execution Loop
 //=============================================================================
+
+static void flush_output() {
+  // Poll output buffer and send chars to display
+  if (emu->hbios.hasOutputChars()) {
+    std::vector<uint8_t> chars = emu->hbios.getOutputChars();
+    for (uint8_t ch : chars) {
+      emu_console_write_char(ch);
+    }
+  }
+}
 
 static void run_batch() {
   if (!emu->running || emu->hbios.isWaitingForInput()) return;
@@ -202,6 +307,9 @@ static void run_batch() {
     emu->cpu.execute();
     emu->instruction_count++;
   }
+
+  // Flush any pending output characters to display
+  flush_output();
 }
 
 static void main_loop() {
