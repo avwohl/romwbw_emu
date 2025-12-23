@@ -800,14 +800,9 @@ void HBIOSDispatch::handleCIO() {
       } else if (!emu_console_has_input()) {
         // No input available - set waiting flag
         // For web: caller must check isWaitingForInput() and retry later
+        // For PC-trapping: keeps PC at trap address to retry
         waiting_for_input = true;
-        emu_state = HBIOS_NEEDS_INPUT;
-        if (!skip_ret) {
-          // PC-trapping mode: rewind PC to retry
-          uint16_t pc = cpu->regs.PC.get_pair16();
-          cpu->regs.PC.set_pair16(pc - 2);
-          return;
-        }
+        if (!skip_ret) return;  // PC-trapping: don't fall through to doRet()
         // Port-based non-blocking: return 0 and let caller handle retry
         cpu->regs.DE.set_low(0);
         break;
@@ -815,20 +810,13 @@ void HBIOSDispatch::handleCIO() {
       int ch = emu_console_read_char();
       cpu->regs.DE.set_low(ch & 0xFF);
       waiting_for_input = false;
-      emu_state = HBIOS_RUNNING;
       break;
     }
 
     case HBF_CIOOUT: {
-      // Write character to output buffer (caller will retrieve and display)
+      // Write character directly to console
       uint8_t ch = cpu->regs.DE.get_low();
-      static int cioout_log_count = 0;
-      if (debug_log && cioout_log_count < 50) {
-        cioout_log_count++;
-        debug_log("[CIOOUT #%d] char=0x%02X '%c'\n",
-                cioout_log_count, ch, (ch >= 32 && ch < 127) ? ch : '?');
-      }
-      output_buffer.push_back(ch);
+      emu_console_write_char(ch);
       break;
     }
 
@@ -1912,25 +1900,18 @@ void HBIOSDispatch::handleVDA() {
     }
 
     case HBF_VDAKST: {
-      // Keyboard status - check input buffer
-      cpu->regs.DE.set_low(input_buffer.empty() ? 0x00 : 0xFF);
+      // Keyboard status - check emu_console input
+      cpu->regs.DE.set_low(emu_console_has_input() ? 0xFF : 0x00);
       break;
     }
 
     case HBF_VDAKRD: {
-      // Keyboard read - if none available, set NEEDS_INPUT state
-      if (input_buffer.empty()) {
+      // Keyboard read - if none available, set waiting flag
+      if (!emu_console_has_input()) {
         waiting_for_input = true;
-        emu_state = HBIOS_NEEDS_INPUT;
-
-        // Rewind PC to retry this HBIOS call when input arrives
-        uint16_t pc = cpu->regs.PC.get_pair16();
-        cpu->regs.PC.set_pair16(pc - 2);
-
         return;  // Don't fall through to doRet()
       }
-      int ch = input_buffer.front();
-      input_buffer.erase(input_buffer.begin());
+      int ch = emu_console_read_char();
       cpu->regs.DE.set_low(ch & 0xFF);
       break;
     }

@@ -251,7 +251,6 @@
       term.clear();
       vdaCursorRow = 0;
       vdaCursorCol = 0;
-      console.log('VDA Init: ' + rows + 'x' + cols);
     };
 
     Module.onVdaClear = function() {
@@ -352,7 +351,7 @@
         oscillator.start();
         oscillator.stop(ctx.currentTime + duration_ms / 1000);
       } catch (e) {
-        console.log('Sound error:', e);
+        // Sound error - ignore
       }
     };
 
@@ -364,7 +363,6 @@
 
     Module.onSndVolume = function(channel, volume) {
       // Volume control (0-255) - could be used to adjust gain
-      console.log('Sound volume:', channel, volume);
     };
 
     //=========================================================================
@@ -373,7 +371,6 @@
 
     // R8: Request to read a file from host - opens file picker
     Module.onHostFileRequestRead = function(suggestedName) {
-      console.log('[HOST] Read file requested:', suggestedName);
       statusDiv.textContent = 'Select a file to upload to CP/M...';
 
       // Create a temporary file input
@@ -384,7 +381,6 @@
       input.onchange = function(e) {
         const file = e.target.files[0];
         if (!file) {
-          console.log('[HOST] File picker cancelled');
           Module._emu_host_file_cancel();
           statusDiv.textContent = 'File transfer cancelled';
           return;
@@ -398,10 +394,8 @@
           Module._emu_host_file_load(ptr, data.length);
           Module._free(ptr);
           statusDiv.textContent = 'Uploaded: ' + file.name + ' (' + data.length + ' bytes)';
-          console.log('[HOST] File loaded:', file.name, data.length, 'bytes');
         };
         reader.onerror = function() {
-          console.error('[HOST] Error reading file');
           Module._emu_host_file_cancel();
           statusDiv.textContent = 'Error reading file';
         };
@@ -414,7 +408,6 @@
 
     // W8: Download a file from CP/M
     Module.onHostFileDownload = function(filename, blob) {
-      console.log('[HOST] Download file:', filename, blob.size, 'bytes');
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -481,7 +474,6 @@
           Module.HEAPU8.set(diskData[unit], ptr);
           Module._romwbw_load_disk(unit, ptr, diskData[unit].length);
           Module._free(ptr);
-          console.log('Reloaded disk ' + unit + ': ' + diskNames[unit]);
         }
       }
     }
@@ -607,8 +599,7 @@
           loadDiskData(0, new Uint8Array(buf), defaultDisk);
           document.getElementById('disk0Select').value = defaultDisk;
         } catch (err) {
-          // Disk is optional, just log warning
-          console.log('Could not load default disk 0:', err);
+          // Disk is optional
         }
       }
 
@@ -622,8 +613,7 @@
           loadDiskData(1, new Uint8Array(buf), defaultDisk1);
           document.getElementById('disk1Select').value = defaultDisk1;
         } catch (err) {
-          // Disk is optional, just log warning
-          console.log('Could not load default disk 1:', err);
+          // Disk is optional
         }
       }
 
@@ -713,20 +703,12 @@
 
         if (progress === 0) {
           noProgressCount++;
-          console.log(`[DEBUG] NO PROGRESS #${noProgressCount}: running=${running} waiting=${waiting} PC=0x${pc.toString(16)} instr=${instr}`);
-          if (noProgressCount >= 10) {
-            console.error('[DEBUG] HUNG - 10+ cycles with no progress');
-          }
         } else {
-          if (noProgressCount > 0) {
-            console.log(`[DEBUG] Progress resumed: ${progress} instructions`);
-          }
           noProgressCount = 0;
         }
         lastInstructionCount = instr;
 
         if (!running) {
-          console.log('[DEBUG] Emulator stopped');
           stopDebugMonitor();
         }
       }, 500);
