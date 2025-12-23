@@ -181,6 +181,34 @@ void emu_disk_flush(emu_disk_handle disk);
 size_t emu_disk_size(emu_disk_handle disk);
 
 //=============================================================================
+// Disk Image Creation
+//=============================================================================
+
+// Disk format type for creation
+enum emu_disk_format {
+  EMU_DISK_HD1K_SINGLE = 0,   // 8MB single slice hd1k
+  EMU_DISK_HD1K_COMBO = 1,    // 51MB combo (1MB MBR + 6×8MB slices)
+};
+
+// Disk format constants
+static constexpr size_t EMU_HD1K_SINGLE_SIZE = 8388608;     // 8 MB exactly
+static constexpr size_t EMU_HD1K_SLICE_SIZE = 8388608;      // 8 MB per slice
+static constexpr size_t EMU_HD1K_MBR_PREFIX = 1048576;      // 1 MB MBR prefix
+static constexpr size_t EMU_HD1K_COMBO_SLICES = 6;          // 6 slices in combo
+static constexpr size_t EMU_HD1K_COMBO_SIZE = EMU_HD1K_MBR_PREFIX + (EMU_HD1K_COMBO_SLICES * EMU_HD1K_SLICE_SIZE);  // ~51 MB
+
+// Create a new formatted disk image
+// format: EMU_DISK_HD1K_SINGLE (8MB) or EMU_DISK_HD1K_COMBO (51MB)
+// path: file path for CLI, or in-memory name for WASM
+// Returns true on success
+bool emu_disk_create(const std::string& path, emu_disk_format format);
+
+// Create a new formatted disk image in memory
+// Returns allocated data and size, caller takes ownership
+// Returns empty vector on failure
+std::vector<uint8_t> emu_disk_create_memory(emu_disk_format format);
+
+//=============================================================================
 // Time - for RTC emulation
 //=============================================================================
 

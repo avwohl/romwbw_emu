@@ -9,7 +9,7 @@ QKZ80_SRC = ../../cpmemu/src
 VERSION := $(shell cat ../VERSION)
 ROMWBW_CFLAGS = -O2 -std=c++11 -I$(QKZ80_SRC) -DEMU_VERSION=\"$(VERSION)\"
 ROMWBW_LDFLAGS = -s WASM=1 \
-          -s EXPORTED_FUNCTIONS='["_main","_romwbw_key_input","_romwbw_set_boot_string","_romwbw_load_rom","_romwbw_load_disk","_romwbw_get_disk_data","_romwbw_get_disk_size","_romwbw_start","_romwbw_stop","_romwbw_is_running","_romwbw_is_waiting","_romwbw_get_instruction_count","_romwbw_get_pc","_romwbw_set_debug","_romwbw_run_batch","_romwbw_autostart","_emu_host_file_load","_emu_host_file_cancel","_malloc","_free"]' \
+          -s EXPORTED_FUNCTIONS='["_main","_romwbw_key_input","_romwbw_set_boot_string","_romwbw_load_rom","_romwbw_load_disk","_romwbw_get_disk_data","_romwbw_get_disk_size","_romwbw_create_disk","_romwbw_create_disk_for_download","_romwbw_get_created_disk_size","_romwbw_get_disk_format_size","_romwbw_start","_romwbw_stop","_romwbw_is_running","_romwbw_is_waiting","_romwbw_get_instruction_count","_romwbw_get_pc","_romwbw_set_debug","_romwbw_run_batch","_romwbw_autostart","_emu_host_file_load","_emu_host_file_cancel","_malloc","_free"]' \
           -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS","HEAPU8"]' \
           -s ALLOW_MEMORY_GROWTH=1 \
           -s INITIAL_MEMORY=67108864

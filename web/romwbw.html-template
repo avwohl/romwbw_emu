@@ -105,27 +105,35 @@
       <label>Disk 0 (C:):</label>
       <select id="disk0Select" style="margin-right:4px;">
         <option value="">-- None --</option>
+        <option value="__custom__">-- Custom --</option>
         <option value="hd1k_combo.img" selected>hd1k_combo.img (49MB combo)</option>
         <option value="z80cpm_tools.img">z80cpm_tools.img (Tools + R8/W8)</option>
         <option value="hd1k_games.img">hd1k_games.img (Games)</option>
         <option value="hd1k_cpm22.img">hd1k_cpm22.img (CP/M 2.2)</option>
         <option value="hd1k_zsdos.img">hd1k_zsdos.img (ZSDOS)</option>
       </select>
-      <input type="file" id="disk0File" accept=".img,.dsk" style="width:140px;">
+      <input type="file" id="disk0File" accept=".img,.dsk" style="width:200px;">
       <button id="downloadDisk0Btn" disabled title="Download modified disk">↓</button>
     </div>
     <div class="file-input">
       <label>Disk 1 (G:):</label>
       <select id="disk1Select" style="margin-right:4px;">
         <option value="">-- None --</option>
+        <option value="__custom__">-- Custom --</option>
         <option value="hd1k_combo.img">hd1k_combo.img (49MB combo)</option>
         <option value="z80cpm_tools.img">z80cpm_tools.img (Tools + R8/W8)</option>
         <option value="hd1k_games.img" selected>hd1k_games.img (Games)</option>
         <option value="hd1k_cpm22.img">hd1k_cpm22.img (CP/M 2.2)</option>
         <option value="hd1k_zsdos.img">hd1k_zsdos.img (ZSDOS)</option>
       </select>
-      <input type="file" id="disk1File" accept=".img,.dsk" style="width:140px;">
+      <input type="file" id="disk1File" accept=".img,.dsk" style="width:200px;">
       <button id="downloadDisk1Btn" disabled title="Download modified disk">↓</button>
+    </div>
+    <div class="file-input">
+      <label>Create New:</label>
+      <button id="createDisk8mbBtn" title="Download empty 8MB single-slice disk">↓ New 8MB</button>
+      <button id="createDisk51mbBtn" title="Download empty 51MB combo disk (6 slices)">↓ New 51MB</button>
+      <span style="margin-left:10px; color:#666; font-size:11px;">Then use "Choose File" to load</span>
       <button id="startBtn" style="margin-left:20px;">Start</button>
       <button id="stopBtn" disabled>Stop</button>
       <label style="margin-left:20px;"><input type="checkbox" id="debugCheckbox"> Debug</label>
@@ -525,7 +533,7 @@
       const reader = new FileReader();
       reader.onload = function(e) {
         loadDiskData(0, new Uint8Array(e.target.result), file.name);
-        document.getElementById('disk0Select').value = '';
+        document.getElementById('disk0Select').value = '__custom__';
       };
       reader.readAsArrayBuffer(file);
     });
@@ -551,7 +559,7 @@
       const reader = new FileReader();
       reader.onload = function(e) {
         loadDiskData(1, new Uint8Array(e.target.result), file.name);
-        document.getElementById('disk1Select').value = '';
+        document.getElementById('disk1Select').value = '__custom__';
       };
       reader.readAsArrayBuffer(file);
     });
@@ -677,6 +685,48 @@
         a.click();
         URL.revokeObjectURL(url);
       }
+    });
+
+    // Create and download disk helper function
+    function createAndDownloadDisk(format) {
+      // format: 0 = 8MB, 1 = 51MB
+      const formatName = format === 0 ? '8MB' : '51MB';
+      const fileName = format === 0 ? 'new_8mb_disk.img' : 'new_51mb_disk.img';
+      statusDiv.textContent = 'Creating ' + formatName + ' disk...';
+
+      const ptr = Module._romwbw_create_disk_for_download(format);
+      if (!ptr) {
+        statusDiv.textContent = 'Failed to create disk';
+        return;
+      }
+
+      const size = Module._romwbw_get_created_disk_size();
+      if (size <= 0) {
+        statusDiv.textContent = 'Failed to create disk (invalid size)';
+        return;
+      }
+
+      // Copy data and trigger download
+      const data = new Uint8Array(Module.HEAPU8.buffer, ptr, size);
+      const blob = new Blob([data], {type: 'application/octet-stream'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      statusDiv.textContent = 'Downloaded ' + formatName + ' disk (' + size + ' bytes). Use "Choose File" to load it.';
+    }
+
+    // Create 8MB disk button - downloads file
+    document.getElementById('createDisk8mbBtn').addEventListener('click', function() {
+      createAndDownloadDisk(0);  // 0 = EMU_DISK_HD1K_SINGLE
+    });
+
+    // Create 51MB disk button - downloads file
+    document.getElementById('createDisk51mbBtn').addEventListener('click', function() {
+      createAndDownloadDisk(1);  // 1 = EMU_DISK_HD1K_COMBO
     });
 
     // Click on terminal to focus it

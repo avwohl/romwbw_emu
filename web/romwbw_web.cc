@@ -241,6 +241,67 @@ int romwbw_get_disk_size(int unit) {
   return emu->hbios.getDisk(unit).data.size();
 }
 
+// Create a new formatted disk image and load it into a unit
+// format: 0 = 8MB single slice, 1 = 51MB combo (6 slices)
+// unit: disk unit to load into (0-15)
+// Returns: 0 on success, -1 on error
+EMSCRIPTEN_KEEPALIVE
+int romwbw_create_disk(int unit, int format) {
+  ensure_emu();
+  if (unit < 0 || unit >= 16) return -1;
+  if (format < 0 || format > 1) return -1;
+
+  emu_disk_format disk_format = (format == 0) ? EMU_DISK_HD1K_SINGLE : EMU_DISK_HD1K_COMBO;
+  std::vector<uint8_t> data = emu_disk_create_memory(disk_format);
+  if (data.empty()) {
+    emu_error("Failed to create disk image");
+    return -1;
+  }
+
+  if (!emu->hbios.loadDisk(unit, data.data(), data.size())) {
+    emu_error("Failed to load disk into unit %d", unit);
+    return -1;
+  }
+
+  const char* format_name = (format == 0) ? "8MB single" : "51MB combo";
+  emu_status("Created %s disk in unit %d", format_name, unit);
+  return 0;
+}
+
+// Create a new formatted disk image for download (doesn't load into emulator)
+// format: 0 = 8MB single slice, 1 = 51MB combo (6 slices)
+// Returns: pointer to allocated data (caller must free with _free), or 0 on error
+// Size is returned via romwbw_get_disk_format_size()
+static std::vector<uint8_t> created_disk_data;
+
+EMSCRIPTEN_KEEPALIVE
+uint8_t* romwbw_create_disk_for_download(int format) {
+  if (format < 0 || format > 1) return nullptr;
+
+  emu_disk_format disk_format = (format == 0) ? EMU_DISK_HD1K_SINGLE : EMU_DISK_HD1K_COMBO;
+  created_disk_data = emu_disk_create_memory(disk_format);
+  if (created_disk_data.empty()) {
+    return nullptr;
+  }
+
+  return created_disk_data.data();
+}
+
+EMSCRIPTEN_KEEPALIVE
+int romwbw_get_created_disk_size() {
+  return created_disk_data.size();
+}
+
+// Get disk format sizes (for JavaScript to know expected sizes)
+EMSCRIPTEN_KEEPALIVE
+int romwbw_get_disk_format_size(int format) {
+  switch (format) {
+    case 0: return EMU_HD1K_SINGLE_SIZE;  // 8MB
+    case 1: return EMU_HD1K_COMBO_SIZE;   // 51MB
+    default: return 0;
+  }
+}
+
 // Reset callback for SYSRESET
 static void handle_sysreset(uint8_t reset_type) {
   if (!emu) return;
