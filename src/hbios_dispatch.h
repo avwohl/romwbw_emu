@@ -342,26 +342,12 @@ public:
   // 2. Address registration: state machine for per-handler dispatch addresses
   void handleSignalPort(uint8_t value);
 
-  // Check if PC is at an HBIOS trap address
-  // Returns true if this PC should trigger HBIOS dispatch
-  bool checkTrap(uint16_t pc) const;
-
-  // Get which handler type for a trap PC (or from B register)
-  // Returns: 0=CIO, 1=DIO, 2=RTC, 3=SYS, 4=VDA, 5=SND, -1=not a trap
-  int getTrapType(uint16_t pc) const;
+  // Get handler type from function code in B register
+  // Returns: 0=CIO, 1=DIO, 2=RTC, 3=SYS, 4=VDA, 5=SND, -1=unknown
   static int getTrapTypeFromFunc(uint8_t func);
 
-  // Handle an HBIOS call (when trap is detected)
-  // Reads B,C,D,E,HL from CPU, performs operation, sets A (result)
-  // Returns true if call was handled, false if unknown function
-  bool handleCall(int trap_type);
-
-  // Handle HBIOS call at main entry point (0xFFF0)
-  // Dispatches based on function code in B register
+  // Handle HBIOS call - dispatches based on function code in B register
   bool handleMainEntry();
-
-  // Handle bank call at 0xFFF9 (used for PRTSUM etc.)
-  bool handleBankCall();
 
   // Handle PRTSUM - print device summary (called by boot loader 'D' command)
   void handlePRTSUM();
@@ -443,14 +429,6 @@ public:
   void handleDSKY();  // Display/Keypad
   void handleEXT();   // Extension functions (slice calc)
 
-  // Get dispatch addresses (for debugging)
-  uint16_t getCIODispatch() const { return cio_dispatch; }
-  uint16_t getDIODispatch() const { return dio_dispatch; }
-  uint16_t getRTCDispatch() const { return rtc_dispatch; }
-  uint16_t getSYSDispatch() const { return sys_dispatch; }
-  uint16_t getVDADispatch() const { return vda_dispatch; }
-  uint16_t getSNDDispatch() const { return snd_dispatch; }
-
 private:
   // CPU and memory references (not owned)
   qkz80* cpu = nullptr;
@@ -462,20 +440,12 @@ private:
   std::vector<uint8_t> output_buffer;  // Buffered output chars (for CIOOUT)
   std::vector<int> input_buffer;       // Buffered input chars (for CIOIN)
 
-  // Trapping control
+  // Dispatch control
   bool trapping_enabled = false;
   bool waiting_for_input = false;  // Set when CIOIN/VDAKRD needs input
   bool skip_ret = false;           // Skip synthetic RET (for I/O port dispatch)
   bool blocking_allowed = true;    // Can we block for I/O? (false for web/WASM)
-  uint16_t main_entry = 0xFFF0;  // Main HBIOS entry point
-
-  // Dispatch addresses (set via signal port, optional)
-  uint16_t cio_dispatch = 0;
-  uint16_t dio_dispatch = 0;
-  uint16_t rtc_dispatch = 0;
-  uint16_t sys_dispatch = 0;
-  uint16_t vda_dispatch = 0;
-  uint16_t snd_dispatch = 0;
+  uint16_t main_entry = 0xFFF0;    // Main HBIOS entry point
 
   // Signal port state machine
   uint8_t signal_state = 0;

@@ -103,18 +103,6 @@ static void run_batch() {
   }
 
   for (int i = 0; i < 50000 && emu->running && !emu->hbios.isWaitingForInput(); i++) {
-    uint16_t pc = emu->cpu.regs.PC.get_pair16();
-
-    // Check for HBIOS trap
-    if (emu->hbios.checkTrap(pc)) {
-      int trap_type = emu->hbios.getTrapType(pc);
-      if (!emu->hbios.handleCall(trap_type)) {
-        emu_error("[HBIOS] Failed to handle trap at 0x%04X\n", pc);
-      }
-      emu->instruction_count++;
-      continue;
-    }
-
     // Execute instruction - port I/O handled by hbios_cpu::port_in/port_out
     emu->cpu.execute();
     emu->instruction_count++;

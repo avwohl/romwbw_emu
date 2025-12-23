@@ -54,13 +54,6 @@ void HBIOSDispatch::reset() {
   input_buffer.clear();
   main_entry = 0xFFF0;
 
-  cio_dispatch = 0;
-  dio_dispatch = 0;
-  rtc_dispatch = 0;
-  sys_dispatch = 0;
-  vda_dispatch = 0;
-  snd_dispatch = 0;
-
   signal_state = 0;
   signal_addr = 0;
   cur_bank = 0;
@@ -484,131 +477,57 @@ void HBIOSDispatch::handleSignalPort(uint8_t value) {
     // Check for special signals
     switch (value) {
       case 0x01:  // HBIOS starting
-        if (debug_log) debug_log("[HBIOS] Boot code starting...\n");
         return;
 
-      case 0x02:  // Protocol 2: Start sequential registration
-        signal_state = 1;  // Will receive CIO low next
-        signal_addr = 0;
-        if (debug_log) debug_log("[HBIOS] Sequential dispatch registration starting\n");
+      case 0x02:  // Protocol 2: Start sequential registration (accept but ignore)
+        signal_state = 1;
         return;
 
-      case 0xFE:  // PREINIT point (test mode)
-        if (debug_log) debug_log("[HBIOS] PREINIT point reached\n");
+      case 0xFE:  // PREINIT point
         return;
 
-      case 0xFF:  // Init complete - enable trapping
-        trapping_enabled = true;
-        if (debug_log) {
-          emu_log("[HBIOS] Init complete, trapping enabled at 0x%04X\n", main_entry);
-        }
+      case 0xFF:  // Init complete
         return;
 
-      // Protocol 3: Start address registration (0x10-0x15 range)
+      // Protocol 3: Start address registration (accept but ignore)
       case 0x10:  // Start CIO registration
       case 0x11:  // Start DIO registration
       case 0x12:  // Start RTC registration
       case 0x13:  // Start SYS registration
       case 0x14:  // Start VDA registration
       case 0x15:  // Start SND registration
-        signal_state = 0x80 | (value - 0x10);  // Use high bit to distinguish protocol 3
-        signal_addr = 0;
+        signal_state = 0x80 | (value - 0x10);
         return;
 
       default:
-        if (debug_log) debug_log("[HBIOS] Unknown signal: 0x%02X\n", value);
         return;
     }
   }
 
-  // Protocol 3: Prefixed registration (state has high bit set)
+  // Protocol 3: Prefixed registration (accept bytes, ignore values)
   if (signal_state & 0x80) {
-    uint8_t handler_idx = signal_state & 0x0F;
     if (signal_addr == 0) {
-      // Receiving low byte
-      signal_addr = value;
+      signal_addr = value;  // Low byte
     } else {
-      // Receiving high byte - complete registration
-      uint16_t addr = signal_addr | (value << 8);
-      switch (handler_idx) {
-        case 0: cio_dispatch = addr; if (debug_log) debug_log("[HBIOS] CIO dispatch at 0x%04X\n", addr); break;
-        case 1: dio_dispatch = addr; if (debug_log) debug_log("[HBIOS] DIO dispatch at 0x%04X\n", addr); break;
-        case 2: rtc_dispatch = addr; if (debug_log) debug_log("[HBIOS] RTC dispatch at 0x%04X\n", addr); break;
-        case 3: sys_dispatch = addr; if (debug_log) debug_log("[HBIOS] SYS dispatch at 0x%04X\n", addr); break;
-        case 4: vda_dispatch = addr; if (debug_log) debug_log("[HBIOS] VDA dispatch at 0x%04X\n", addr); break;
-        case 5: snd_dispatch = addr; if (debug_log) debug_log("[HBIOS] SND dispatch at 0x%04X\n", addr); break;
-      }
-      signal_state = 0;
+      signal_state = 0;     // High byte received, done
       signal_addr = 0;
     }
     return;
   }
 
-  // Protocol 2: Sequential registration (state 1-8)
-  // State 1=CIO_L, 2=CIO_H, 3=DIO_L, 4=DIO_H, 5=RTC_L, 6=RTC_H, 7=SYS_L, 8=SYS_H
+  // Protocol 2: Sequential registration (accept bytes, ignore values)
   if (signal_state >= 1 && signal_state <= 8) {
-    bool is_low = (signal_state & 1) == 1;  // Odd states are low bytes
-    int handler_idx = (signal_state - 1) / 2;  // 0=CIO, 1=DIO, 2=RTC, 3=SYS
-
-    if (is_low) {
-      signal_addr = value;
+    if (signal_state < 8) {
       signal_state++;
     } else {
-      uint16_t addr = signal_addr | (value << 8);
-      switch (handler_idx) {
-        case 0: cio_dispatch = addr; if (debug_log) debug_log("[HBIOS] CIO dispatch at 0x%04X\n", addr); break;
-        case 1: dio_dispatch = addr; if (debug_log) debug_log("[HBIOS] DIO dispatch at 0x%04X\n", addr); break;
-        case 2: rtc_dispatch = addr; if (debug_log) debug_log("[HBIOS] RTC dispatch at 0x%04X\n", addr); break;
-        case 3: sys_dispatch = addr; if (debug_log) debug_log("[HBIOS] SYS dispatch at 0x%04X\n", addr); break;
-      }
-      signal_addr = 0;
-      if (signal_state < 8) {
-        signal_state++;
-      } else {
-        signal_state = 0;  // Done with all 4 handlers
-      }
+      signal_state = 0;
     }
   }
 }
 
 //=============================================================================
-// Trap Detection
+// Function Dispatch
 //=============================================================================
-
-bool HBIOSDispatch::checkTrap(uint16_t pc) const {
-  if (!trapping_enabled) return false;
-
-  // Main entry point (0xFFF0 by default)
-  if (pc == main_entry) return true;
-
-  // Bank call entry point (0xFFF9) - used for PRTSUM etc.
-  if (pc == 0xFFF9) return true;
-
-  // Per-handler dispatch addresses (optional)
-  if (pc == cio_dispatch && cio_dispatch != 0) return true;
-  if (pc == dio_dispatch && dio_dispatch != 0) return true;
-  if (pc == rtc_dispatch && rtc_dispatch != 0) return true;
-  if (pc == sys_dispatch && sys_dispatch != 0) return true;
-  if (pc == vda_dispatch && vda_dispatch != 0) return true;
-  if (pc == snd_dispatch && snd_dispatch != 0) return true;
-  return false;
-}
-
-int HBIOSDispatch::getTrapType(uint16_t pc) const {
-  // Main entry uses function code in B register
-  if (pc == main_entry) return -2;  // Special: dispatch by B register
-
-  // Bank call (0xFFF9) - used for PRTSUM etc.
-  if (pc == 0xFFF9) return -3;  // Special: bank call
-
-  if (pc == cio_dispatch && cio_dispatch != 0) return 0;
-  if (pc == dio_dispatch && dio_dispatch != 0) return 1;
-  if (pc == rtc_dispatch && rtc_dispatch != 0) return 2;
-  if (pc == sys_dispatch && sys_dispatch != 0) return 3;
-  if (pc == vda_dispatch && vda_dispatch != 0) return 4;
-  if (pc == snd_dispatch && snd_dispatch != 0) return 5;
-  return -1;
-}
 
 int HBIOSDispatch::getTrapTypeFromFunc(uint8_t func) {
   // Determine handler type from HBIOS function code in B register
@@ -621,23 +540,6 @@ int HBIOSDispatch::getTrapTypeFromFunc(uint8_t func) {
   if (func >= 0xE0 && func <= 0xE7) return 7;  // EXT (0xE0-0xE7, includes host file)
   if (func >= 0xF0) return 3;        // SYS (0xF0-0xFF)
   return -1;
-}
-
-bool HBIOSDispatch::handleCall(int trap_type) {
-  switch (trap_type) {
-    case -3: return handleBankCall();    // Bank call (0xFFF9)
-    case -2: return handleMainEntry();   // Dispatch by B register
-    case 0: handleCIO(); break;
-    case 1: handleDIO(); break;
-    case 2: handleRTC(); break;
-    case 3: handleSYS(); break;
-    case 4: handleVDA(); break;
-    case 5: handleSND(); break;
-    case 6: handleDSKY(); break;
-    case 7: handleEXT(); break;
-    default: return false;
-  }
-  return true;
 }
 
 bool HBIOSDispatch::handleMainEntry() {
@@ -662,30 +564,6 @@ bool HBIOSDispatch::handleMainEntry() {
       doRet();
       return true;
   }
-}
-
-//=============================================================================
-// Bank Call (0xFFF9) - handles PRTSUM and other bank-switched calls
-//=============================================================================
-
-bool HBIOSDispatch::handleBankCall() {
-  if (!cpu) return false;
-
-  uint16_t ix = cpu->regs.IX.get_pair16();
-
-  if (debug_log) {
-    emu_log("[HB_BNKCALL] IX=0x%04X A=0x%02X\n", ix, cpu->regs.AF.get_high());
-  }
-
-  if (ix == 0x0406) {  // PRTSUM - Print device summary
-    handlePRTSUM();
-    doRet();
-    return true;
-  }
-
-  // Unknown bank call - just return (let the RET stub execute)
-  doRet();
-  return true;
 }
 
 void HBIOSDispatch::handlePRTSUM() {
