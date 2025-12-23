@@ -857,23 +857,12 @@ public:
     }
   }
 
-  // Poll stdin and queue input to HBIOSDispatch
+  // Poll stdin for escape character only
+  // Input is read directly by CIOIN/VDAKRD via emu_console_read_char
   void poll_stdin() {
     // Check for console escape first
     if (emu_console_check_escape(console_escape_char)) {
       console_mode_requested = true;
-      return;
-    }
-
-    // Check for input
-    if (emu_console_has_input()) {
-      int ch = emu_console_read_char();
-      if (ch >= 0) {
-        // Check for ^C exit
-        emu_console_check_ctrl_c_exit(ch, 4);
-        // Queue the character
-        hbios.queueInputChar(ch);
-      }
     }
   }
 };
@@ -1271,6 +1260,7 @@ int main(int argc, char** argv) {
   // Create emulator (sets cpu.delegate in constructor)
   AltairEmulator emu(&cpu, &memory, debug);
   emu.set_strict_io_mode(strict_io_mode);
+  emu.getHBIOS()->setDebug(debug);  // Enable HBIOS debug output
 
   // Set up HBIOS disk images
   // NOTE: Memory disks are initialized later, after ROM is loaded

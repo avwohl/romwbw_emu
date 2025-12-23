@@ -670,22 +670,22 @@ void HBIOSDispatch::handleCIO() {
   switch (func) {
     case HBF_CIOIN: {
       // Read character - behavior depends on dispatch mode and platform
-      if (skip_ret && blocking_allowed) {
-        // Port-based dispatch on CLI - can block until input available
-        while (!emu_console_has_input()) {
-          emu_sleep_ms(1);  // Sleep 1ms to avoid busy-waiting
-        }
-      } else if (!emu_console_has_input()) {
-        // No input available - set waiting flag
-        // For web: caller must check isWaitingForInput() and retry later
-        // For PC-trapping: keeps PC at trap address to retry
+      if (!blocking_allowed && !emu_console_has_input()) {
+        // Non-blocking mode (web/WASM) - set waiting flag if no input
         waiting_for_input = true;
-        if (!skip_ret) return;  // PC-trapping: don't fall through to doRet()
-        // Port-based non-blocking: return 0 and let caller handle retry
         cpu->regs.DE.set_low(0);
         break;
       }
+      // Blocking mode (CLI) or input available - read char
+      // emu_console_read_char() blocks if needed
       int ch = emu_console_read_char();
+      if (debug_log) {
+        debug_log("[CIOIN] read char: %d (0x%02X) '%c'\n", ch, ch & 0xFF, (ch >= 32 && ch < 127) ? ch : '?');
+      }
+      if (ch < 0) {
+        // EOF - return 0x1A (^Z) as end-of-file marker
+        ch = 0x1A;
+      }
       cpu->regs.DE.set_low(ch & 0xFF);
       waiting_for_input = false;
       break;
@@ -700,7 +700,11 @@ void HBIOSDispatch::handleCIO() {
 
     case HBF_CIOIST: {
       // Input status - return count from emu_console
-      result = emu_console_has_input() ? 1 : 0;
+      // Returns: A = status (0=no data, non-zero=data ready)
+      //          E = pending byte count (0xFF if unknown)
+      bool has_input = emu_console_has_input();
+      result = has_input ? 0xFF : 0;  // Non-zero if input ready
+      cpu->regs.DE.set_low(has_input ? 0xFF : 0);  // E = pending count
       break;
     }
 

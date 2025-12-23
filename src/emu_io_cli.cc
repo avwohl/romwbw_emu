@@ -115,19 +115,22 @@ bool emu_console_has_input() {
   FD_ZERO(&readfds);
   FD_SET(STDIN_FILENO, &readfds);
   tv.tv_sec = 0;
-  tv.tv_usec = 0;
+  tv.tv_usec = 10000;  // 10ms timeout
 
-  if (select(STDIN_FILENO + 1, &readfds, NULL, NULL, &tv) <= 0) {
+  int result = select(STDIN_FILENO + 1, &readfds, NULL, NULL, &tv);
+  if (result <= 0) {
     return false;
   }
 
   // Select says readable - peek to distinguish data from EOF
-  int ch = getchar();
-  if (ch == EOF) {
+  // Use read() instead of getchar() to avoid stdio buffering issues
+  char buf;
+  ssize_t n = read(STDIN_FILENO, &buf, 1);
+  if (n <= 0) {
     stdin_eof = true;
     return false;
   }
-  peek_char = ch;
+  peek_char = (unsigned char)buf;
   return true;
 }
 
@@ -144,20 +147,22 @@ int emu_console_read_char() {
   if (peek_char >= 0) {
     int ch = peek_char;
     peek_char = -1;
-    if (ch == '\n') ch = '\r';
+    if (ch == '\n') ch = '\r';  // LF -> CR for CP/M
     return ch;
   }
 
   // Check EOF
   if (stdin_eof) return -1;
 
-  // Read from stdin (blocking)
-  int ch = getchar();
-  if (ch == EOF) {
+  // Read from stdin (blocking) - use read() to avoid stdio buffering
+  char buf;
+  ssize_t n = read(STDIN_FILENO, &buf, 1);
+  if (n <= 0) {
     stdin_eof = true;
     return -1;
   }
-  if (ch == '\n') ch = '\r';
+  int ch = (unsigned char)buf;
+  if (ch == '\n') ch = '\r';  // LF -> CR for CP/M
   return ch;
 }
 
