@@ -24,7 +24,7 @@ LDFLAGS += -static
 endif
 
 # Object files for romwbw_emu using emu_io abstraction
-ROMWBW_OBJS = emu_io_cli.o hbios_dispatch.o hbios_cpu.o
+ROMWBW_OBJS = emu_io_cli.o hbios_dispatch.o hbios_cpu.o emu_init.o
 
 # Main emulator (boots RomWBW via HBIOS)
 romwbw_emu: romwbw_emu.o $(ROMWBW_OBJS)

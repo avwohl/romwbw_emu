@@ -8,6 +8,7 @@
 
 #include "../src/hbios_cpu.h"  // Shared CPU with port I/O
 #include "../src/emu_io.h"
+#include "../src/emu_init.h"   // Shared initialization functions
 #include <emscripten.h>
 #include <cstdio>
 #include <cstdlib>
@@ -52,7 +53,13 @@ struct EmulatorState : public HBIOSCPUDelegate {
   // HBIOSCPUDelegate implementation
   banked_mem* getMemory() override { return &memory; }
   HBIOSDispatch* getHBIOS() override { return &hbios; }
-  void initializeRamBankIfNeeded(uint8_t bank) override { (void)bank; }
+
+  // Initialize RAM bank on first access
+  // NOTE: Currently disabled for web - causes issues with boot loader
+  // TODO: Investigate why this breaks D command (CP/M 3 may still need this)
+  void initializeRamBankIfNeeded(uint8_t bank) override {
+    (void)bank;  // No-op for now
+  }
   void onHalt() override {
     emu_log("[HALT] at PC=0x%04X\n", cpu.regs.PC.get_pair16());
     halted = true;
@@ -94,6 +101,10 @@ static void flush_output() {
 }
 
 static void run_batch() {
+  // Always flush output first, even when waiting for input
+  // This ensures prompts are displayed before we block waiting for keys
+  flush_output();
+
   if (!emu->running || emu->hbios.isWaitingForInput()) return;
 
   emu->batch_count++;
@@ -146,35 +157,6 @@ void romwbw_set_boot_string(const char* str) {
   emu_console_queue_char('\r');  // Add CR to submit
 }
 
-// Helper: Set up HBIOS ident signatures in RAM common area
-// This is required for REBOOT and other utilities to recognize the system
-static void setup_hbios_ident() {
-  if (!emu) return;
-  uint8_t* ram = emu->memory.get_ram();
-  if (!ram) return;
-
-  // Common area 0x8000-0xFFFF maps to bank 0x8F (index 15 = 0x0F)
-  // Physical offset in RAM = bank_index * 32KB + (addr - 0x8000)
-  const uint32_t COMMON_BASE = 0x0F * 32768;  // Bank 0x8F = index 15
-
-  // Create ident block at 0xFF00 in common area
-  uint32_t ident_phys = COMMON_BASE + (0xFF00 - 0x8000);
-  ram[ident_phys + 0] = 'W';       // Signature byte 1
-  ram[ident_phys + 1] = ~'W';      // Signature byte 2 (0xA8)
-  ram[ident_phys + 2] = 0x35;      // Combined version: (major << 4) | minor = (3 << 4) | 5
-
-  // Also create ident block at 0xFE00 (some utilities may look there)
-  uint32_t ident_phys2 = COMMON_BASE + (0xFE00 - 0x8000);
-  ram[ident_phys2 + 0] = 'W';
-  ram[ident_phys2 + 1] = ~'W';
-  ram[ident_phys2 + 2] = 0x35;
-
-  // Store pointer to ident block at 0xFFFC (little-endian)
-  uint32_t ptr_phys = COMMON_BASE + (0xFFFC - 0x8000);
-  ram[ptr_phys + 0] = 0x00;        // Low byte of 0xFF00
-  ram[ptr_phys + 1] = 0xFF;        // High byte of 0xFF00
-}
-
 // Load ROM image - creates fresh emulator state
 EMSCRIPTEN_KEEPALIVE
 int romwbw_load_rom(const uint8_t* data, int size) {
@@ -182,30 +164,20 @@ int romwbw_load_rom(const uint8_t* data, int size) {
   delete emu;
   emu = new EmulatorState();
 
-  uint8_t* rom = emu->memory.get_rom();
-  if (!rom) return -1;
-
-  int copy_size = (size < 512 * 1024) ? size : 512 * 1024;
-  memcpy(rom, data, copy_size);
-
-  // Patch APITYPE at 0x0112 to 0x00 (HBIOS) instead of 0xFF (UNA)
-  // This is required for REBOOT and other utilities to work
-  rom[0x0112] = 0x00;  // CB_APITYPE = HBIOS
-
-  // Copy HCB to RAM bank 0x80
-  uint8_t* ram = emu->memory.get_ram();
-  if (ram) {
-    memcpy(ram, rom, 512);
+  // Load ROM from buffer using shared function
+  if (!emu_load_rom_from_buffer(&emu->memory, data, size)) {
+    return -1;
   }
 
-  // Set up HBIOS identification signatures
-  setup_hbios_ident();
-
-  // Initialize memory disks from HCB configuration
-  emu->hbios.initMemoryDisks();
+  // Use shared initialization sequence:
+  // 1. Patch APITYPE in ROM
+  // 2. Copy HCB to RAM
+  // 3. Set up HBIOS ident signatures
+  // 4. Initialize memory disks and populate disk tables
+  emu_complete_init(&emu->memory, &emu->hbios, nullptr);
 
   char msg[64];
-  snprintf(msg, sizeof(msg), "ROM loaded: %d bytes", copy_size);
+  snprintf(msg, sizeof(msg), "ROM loaded: %d bytes", size);
   emu_status(msg);
   return 0;
 }
@@ -328,8 +300,7 @@ void romwbw_start() {
   // Register reset callback for SYSRESET (REBOOT command)
   emu->hbios.setResetCallback(handle_sysreset);
 
-  // Populate disk unit table in HCB so romldr can discover disks
-  emu->hbios.populateDiskUnitTable();
+  // Note: Disk unit table is populated by emu_complete_init() in romwbw_load_rom()
 
   // Reset CPU and start at ROM address 0
   emu->cpu.regs.AF.set_pair16(0);
@@ -406,52 +377,26 @@ int romwbw_autostart() {
   delete emu;
   emu = new EmulatorState();
 
-  // Load ROM from virtual filesystem
-  FILE* f = fopen("/romwbw.rom", "rb");
-  if (!f) {
+  // Load ROM from virtual filesystem using shared function
+  if (!emu_load_rom(&emu->memory, "/romwbw.rom")) {
     emu_status("Error: romwbw.rom not found");
     return -1;
   }
 
-  fseek(f, 0, SEEK_END);
-  long size = ftell(f);
-  fseek(f, 0, SEEK_SET);
-
-  uint8_t* rom = emu->memory.get_rom();
-  if (!rom) {
-    fclose(f);
-    return -1;
-  }
-
-  fread(rom, 1, size, f);
-  fclose(f);
-
-  // Patch APITYPE at 0x0112 to 0x00 (HBIOS) instead of 0xFF (UNA)
-  rom[0x0112] = 0x00;  // CB_APITYPE = HBIOS
-
-  // Copy HCB to RAM
-  uint8_t* ram = emu->memory.get_ram();
-  if (ram) {
-    memcpy(ram, rom, 512);
-  }
-
-  // Set up HBIOS identification signatures
-  setup_hbios_ident();
-
-  // Initialize memory disks from HCB configuration
-  emu->hbios.initMemoryDisks();
-
-  // Load disk if present
-  f = fopen("/hd0.img", "rb");
+  // Load disk if present (before completing init so disk table is populated)
+  FILE* f = fopen("/hd0.img", "rb");
   if (f) {
     fseek(f, 0, SEEK_END);
-    size = ftell(f);
+    long size = ftell(f);
     fseek(f, 0, SEEK_SET);
     std::vector<uint8_t> disk_data(size);
     fread(disk_data.data(), 1, size, f);
     fclose(f);
     emu->hbios.loadDisk(0, disk_data.data(), disk_data.size());
   }
+
+  // Use shared initialization sequence
+  emu_complete_init(&emu->memory, &emu->hbios, nullptr);
 
   romwbw_start();
   return 0;

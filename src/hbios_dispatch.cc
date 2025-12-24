@@ -679,8 +679,13 @@ void HBIOSDispatch::handleCIO() {
         waiting_for_input = true;
         return;  // Don't call setResult/doRet - will retry
       }
-      // Blocking mode (CLI) or input available - read char
-      // emu_console_read_char() blocks if needed
+      // Blocking mode (CLI) - flush any pending output before blocking
+      // This ensures prompts are displayed before waiting for input
+      while (!output_buffer.empty()) {
+        emu_console_write_char(output_buffer.front());
+        output_buffer.erase(output_buffer.begin());
+      }
+      // Now read char (blocks if needed)
       int ch = emu_console_read_char();
       if (debug_log) {
         debug_log("[CIOIN] read char: %d (0x%02X) '%c'\n", ch, ch & 0xFF, (ch >= 32 && ch < 127) ? ch : '?');
@@ -695,9 +700,10 @@ void HBIOSDispatch::handleCIO() {
     }
 
     case HBF_CIOOUT: {
-      // Write character directly to console
+      // Write character to output buffer (caller retrieves and displays)
+      // This is needed for web/WASM where output is polled from main loop
       uint8_t ch = cpu->regs.DE.get_low();
-      emu_console_write_char(ch);
+      output_buffer.push_back(ch);
       break;
     }
 

@@ -17,6 +17,7 @@
 #include "hbios_dispatch.h"  // Shared HBIOS definitions
 #include "hbios_cpu.h"       // Shared CPU with HBIOS port I/O
 #include "emu_io.h"
+#include "emu_init.h"        // Shared initialization functions
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -811,35 +812,16 @@ public:
   }
 
   // Initialize a RAM bank if it hasn't been initialized yet
-  // Copies page zero and HCB from ROM bank 0 to ensure RST vectors and system config are present
+  // Uses shared emu_init_ram_bank() which copies page zero and HCB from ROM bank 0
   void initialize_ram_bank_if_needed(uint8_t bank) {
     banked_mem* bmem = dynamic_cast<banked_mem*>(memory);
     if (!bmem) return;
 
-    // Only initialize RAM banks 0x80-0x8F
-    if (!(bank & 0x80) || (bank & 0x70)) return;
-
-    uint8_t bank_idx = bank & 0x0F;
-    if (initialized_ram_banks & (1 << bank_idx)) return;  // Already initialized
-
-    if (debug) {
-      fprintf(stderr, "[BANK INIT] Initializing RAM bank 0x%02X with page zero and HCB\n", bank);
+    if (debug && emu_init_ram_bank(bmem, bank, &initialized_ram_banks)) {
+      fprintf(stderr, "[BANK INIT] Initialized RAM bank 0x%02X\n", bank);
+    } else {
+      emu_init_ram_bank(bmem, bank, &initialized_ram_banks);
     }
-
-    // Copy page zero (0x0000-0x0100) - contains RST vectors
-    for (uint16_t addr = 0x0000; addr < 0x0100; addr++) {
-      uint8_t byte = bmem->read_bank(0x00, addr);
-      bmem->write_bank(bank, addr, byte);
-    }
-    // Copy HCB (0x0100-0x0200) - system configuration
-    for (uint16_t addr = 0x0100; addr < 0x0200; addr++) {
-      uint8_t byte = bmem->read_bank(0x00, addr);
-      bmem->write_bank(bank, addr, byte);
-    }
-    // Patch APITYPE to HBIOS (0x00) instead of UNA (0xFF)
-    bmem->write_bank(bank, 0x0112, 0x00);
-
-    initialized_ram_banks |= (1 << bank_idx);
   }
 
   // Port I/O is now handled by hbios_cpu class
@@ -867,107 +849,11 @@ public:
   }
 };
 
-// Disk size constants
-static constexpr size_t HD1K_SINGLE_SIZE = 8388608;      // 8 MB exactly
-static constexpr size_t HD1K_PREFIX_SIZE = 1048576;      // 1 MB prefix
-static constexpr size_t HD512_SINGLE_SIZE = 8519680;     // 8.32 MB
+// Disk size constants and MBR checking are now in emu_init.h/emu_init.cc
 
-// Partition types
-static constexpr uint8_t PART_TYPE_ROMWBW = 0x2E;  // RomWBW hd1k partition
-static constexpr uint8_t PART_TYPE_FAT16 = 0x06;   // FAT16 (incompatible)
-static constexpr uint8_t PART_TYPE_FAT32 = 0x0B;   // FAT32 (incompatible)
-
-// Check if MBR has valid RomWBW partition or none at all
-// Returns warning message or nullptr if OK
-static const char* check_disk_mbr(const char* path, size_t size) {
-  // Only check for 8MB single-slice images - these are the problematic ones
-  if (size != HD1K_SINGLE_SIZE) {
-    return nullptr;  // Only check single-slice images
-  }
-
-  FILE* f = fopen(path, "rb");
-  if (!f) return nullptr;
-
-  uint8_t mbr[512];
-  size_t read = fread(mbr, 1, 512, f);
-  fclose(f);
-
-  if (read != 512) return nullptr;
-
-  // Check for MBR signature
-  if (mbr[510] != 0x55 || mbr[511] != 0xAA) {
-    return nullptr;  // No MBR - probably raw hd1k slice, OK
-  }
-
-  // Has MBR signature - check partition types
-  bool has_romwbw_partition = false;
-  bool has_fat_partition = false;
-
-  for (int p = 0; p < 4; p++) {
-    int offset = 0x1BE + (p * 16);
-    uint8_t ptype = mbr[offset + 4];
-    if (ptype == PART_TYPE_ROMWBW) {
-      has_romwbw_partition = true;
-    }
-    if (ptype == PART_TYPE_FAT16 || ptype == PART_TYPE_FAT32) {
-      has_fat_partition = true;
-    }
-  }
-
-  if (has_romwbw_partition) {
-    return nullptr;  // Has proper RomWBW partition, OK
-  }
-
-  if (has_fat_partition) {
-    return "WARNING: disk has FAT16/FAT32 MBR but no RomWBW partition - may not work correctly";
-  }
-
-  // Has MBR but no RomWBW partition and no FAT - check first bytes
-  // A proper hd1k slice starts with Z80 boot code (JR or JP instruction)
-  if (mbr[0] == 0x18 || mbr[0] == 0xC3) {
-    return nullptr;  // Looks like Z80 boot code - probably just has stale MBR signature
-  }
-
-  return "WARNING: disk has MBR but no RomWBW partition (0x2E) - format may be invalid";
-}
-
-// Validate disk image file - returns error message or nullptr if valid
+// Validate disk image file - now uses shared emu_validate_disk_image()
 static const char* validate_disk_image(const char* path, size_t* out_size = nullptr) {
-  FILE* f = fopen(path, "rb");
-  if (!f) {
-    return "file does not exist";
-  }
-
-  fseek(f, 0, SEEK_END);
-  size_t size = ftell(f);
-  fclose(f);
-
-  if (out_size) *out_size = size;
-
-  // Check for valid hd1k sizes
-  if (size == HD1K_SINGLE_SIZE) {
-    // Check MBR for potential issues with single-slice images
-    const char* mbr_warning = check_disk_mbr(path, size);
-    if (mbr_warning) {
-      fprintf(stderr, "[DISK] %s: %s\n", path, mbr_warning);
-    }
-    return nullptr;  // Valid size: single-slice hd1k (8MB)
-  }
-
-  // Check for combo disk: 1MB prefix + N * 8MB slices
-  if (size > HD1K_PREFIX_SIZE && ((size - HD1K_PREFIX_SIZE) % HD1K_SINGLE_SIZE) == 0) {
-    return nullptr;  // Valid: combo hd1k with prefix
-  }
-
-  // Check for hd512 sizes
-  if (size == HD512_SINGLE_SIZE) {
-    return nullptr;  // Valid: single-slice hd512 (8.32MB)
-  }
-  if (size > 0 && (size % HD512_SINGLE_SIZE) == 0) {
-    return nullptr;  // Valid: multi-slice hd512
-  }
-
-  return "invalid disk size (must be 8MB for hd1k or 8.32MB for hd512)";
+  return emu_validate_disk_image(path, out_size);
 }
 
 void print_usage(const char* prog) {
@@ -1380,163 +1266,12 @@ int main(int argc, char** argv) {
       emu.load_romldr_rom();
     }
 
-    // Copy HCB from ROM bank 0 to RAM bank 0x80 (HBIOS working bank)
-    // The HCB at 0x100-0x1FF contains configuration that romldr reads via PEEK
-    uint8_t* rom = memory.get_rom();
-    uint8_t* ram = memory.get_ram();
-    if (rom && ram) {
-      // Patch ROM's HCB APITYPE field BEFORE copying to RAM
-      // Set to 0x00 (HBIOS) instead of 0xFF (UNA) so REBOOT and other
-      // utilities recognize this as an HBIOS system, not UNA
-      // This ensures all subsequent copies from ROM will have correct value
-      rom[0x0112] = 0x00;  // CB_APITYPE = HBIOS in ROM
-
-      // Copy first 512 bytes (includes HCB at 0x100)
-      memcpy(ram, rom, 512);
-
-      fprintf(stderr, "Copied HCB from ROM bank 0 to RAM bank 0x80\n");
-
-      // Set up HBIOS ident pointer at 0xFFFC in common area (bank 0x8F)
-      // REBOOT and other utilities check for this signature
-      // Format: pointer at 0xFFFC -> ident block with 'W', ~'W', ver_maj, ver_min
-      // Common area 0x8000-0xFFFF maps to bank 0x8F (index 15 = 0x0F)
-      // Physical offset in RAM = bank_index * 32KB + (addr - 0x8000)
-      const uint32_t COMMON_BASE = 0x0F * 32768;  // Bank 0x8F = index 15
-
-      // Create ident block at 0xFF00 in common area
-      uint32_t ident_phys = COMMON_BASE + (0xFF00 - 0x8000);  // 0x7F00 offset
-      ram[ident_phys + 0] = 'W';       // Signature byte 1
-      ram[ident_phys + 1] = ~'W';      // Signature byte 2 (0xA8)
-      ram[ident_phys + 2] = 0x35;      // Combined version: (major << 4) | minor = (3 << 4) | 5
-
-      // Also create ident block at 0xFE00 (some REBOOT versions may look there)
-      uint32_t ident_phys2 = COMMON_BASE + (0xFE00 - 0x8000);
-      ram[ident_phys2 + 0] = 'W';
-      ram[ident_phys2 + 1] = ~'W';
-      ram[ident_phys2 + 2] = 0x35;
-
-      // Store pointer to ident block at 0xFFFC (little-endian)
-      uint32_t ptr_phys = COMMON_BASE + (0xFFFC - 0x8000);  // 0x7FFC offset
-      ram[ptr_phys + 0] = 0x00;        // Low byte of 0xFF00
-      ram[ptr_phys + 1] = 0xFF;        // High byte of 0xFF00
-
-      // Populate disk unit table in HCB for boot loader device inventory
-      // The disk unit table is at HCB+0x60 (address 0x160), 16 entries of 4 bytes each
-      // Format per entry:
-      //   Byte 0: Device type (DIODEV_*): 0x00=MD, 0x09=HDSK, 0x03=IDE, 0x06=SD, 0xFF=empty
-      //   Byte 1: Unit number within device type
-      //   Byte 2: Mode/attributes (0x80 = removable, etc.)
-      //   Byte 3: Reserved/LU
-      const uint16_t DISKUT_BASE = 0x160;  // HCB+0x60
-
-      // First, mark all entries as empty (0xFF)
-      for (int i = 0; i < 16; i++) {
-        rom[DISKUT_BASE + i * 4 + 0] = 0xFF;
-        rom[DISKUT_BASE + i * 4 + 1] = 0xFF;
-        rom[DISKUT_BASE + i * 4 + 2] = 0xFF;
-        rom[DISKUT_BASE + i * 4 + 3] = 0xFF;
-      }
-
-      int disk_idx = 0;
-
-      // Add memory disks (MD0=RAM, MD1=ROM) - read from HCB config
-      uint8_t ramd_banks = rom[0x1DD];  // CB_RAMD_BNKS
-      uint8_t romd_banks = rom[0x1DF];  // CB_ROMD_BNKS
-      if (ramd_banks > 0 && disk_idx < 16) {
-        rom[DISKUT_BASE + disk_idx * 4 + 0] = 0x00;  // DIODEV_MD
-        rom[DISKUT_BASE + disk_idx * 4 + 1] = 0x00;  // Unit 0 (RAM disk)
-        rom[DISKUT_BASE + disk_idx * 4 + 2] = 0x00;  // No special attributes
-        rom[DISKUT_BASE + disk_idx * 4 + 3] = 0x00;
-        disk_idx++;
-      }
-      if (romd_banks > 0 && disk_idx < 16) {
-        rom[DISKUT_BASE + disk_idx * 4 + 0] = 0x00;  // DIODEV_MD
-        rom[DISKUT_BASE + disk_idx * 4 + 1] = 0x01;  // Unit 1 (ROM disk)
-        rom[DISKUT_BASE + disk_idx * 4 + 2] = 0x00;  // No special attributes
-        rom[DISKUT_BASE + disk_idx * 4 + 3] = 0x00;
-        disk_idx++;
-      }
-
-      // Add hard disks from hbios_disks array
-      for (int i = 0; i < 16 && disk_idx < 16; i++) {
-        if (!hbios_disks[i].empty()) {
-          rom[DISKUT_BASE + disk_idx * 4 + 0] = 0x09;  // DIODEV_HDSK
-          rom[DISKUT_BASE + disk_idx * 4 + 1] = (uint8_t)i;  // HDSK unit number
-          rom[DISKUT_BASE + disk_idx * 4 + 2] = 0x00;  // No special attributes
-          rom[DISKUT_BASE + disk_idx * 4 + 3] = 0x00;
-          disk_idx++;
-        }
-      }
-
-      // Note: CB_DEVCNT will be updated after drive map is populated
-      // to reflect the number of logical drives, not physical devices
-
-      // Debug: show what we wrote to the disk table
-      fprintf(stderr, "[HCB] Writing disk unit table:\n");
-      for (int i = 0; i < disk_idx; i++) {
-        fprintf(stderr, "  [%d] %02X %02X %02X %02X\n", i,
-                rom[DISKUT_BASE + i * 4 + 0],
-                rom[DISKUT_BASE + i * 4 + 1],
-                rom[DISKUT_BASE + i * 4 + 2],
-                rom[DISKUT_BASE + i * 4 + 3]);
-      }
-
-      // Populate drive map at HCB+0x20 (0x120)
-      // Format: each byte = (slice << 4) | unit
-      // Drive letters A-P map to bytes 0x120-0x12F
-      // Value 0xFF = no drive assigned
-      const uint16_t DRVMAP_BASE = 0x120;  // HCB+0x20
-      int drive_letter = 0;  // 0=A, 1=B, etc.
-
-      // First, mark all drive map entries as unused (0xFF)
-      for (int i = 0; i < 16; i++) {
-        rom[DRVMAP_BASE + i] = 0xFF;
-      }
-
-      // Then assign memory disks
-      // A: = MD0 (RAM disk) if enabled
-      if (ramd_banks > 0 && drive_letter < 16) {
-        rom[DRVMAP_BASE + drive_letter] = 0x00;  // Unit 0, slice 0
-        drive_letter++;
-      }
-      // B: = MD1 (ROM disk) if enabled
-      if (romd_banks > 0 && drive_letter < 16) {
-        rom[DRVMAP_BASE + drive_letter] = 0x01;  // Unit 1, slice 0
-        drive_letter++;
-      }
-
-      // Then assign hard disk slices
-      // Assign drive letters (slices) per hard disk, respecting per-disk slice limits
-      for (int hd = 0; hd < 16 && drive_letter < 16; hd++) {
-        if (!hbios_disks[hd].empty()) {
-          // Unit number: HD0 = unit 2, HD1 = unit 3, etc.
-          int unit = hd + 2;
-
-          // Use per-disk slice count (configured via --disk0=file:N syntax, default 4)
-          int num_slices = hbios_disk_slices[hd];
-
-          // Assign each slice to a drive letter
-          for (int slice = 0; slice < num_slices && drive_letter < 16; slice++) {
-            rom[DRVMAP_BASE + drive_letter] = ((slice & 0x0F) << 4) | (unit & 0x0F);
-            drive_letter++;
-          }
-        }
-      }
-
-      fprintf(stderr, "[HCB] Drive map: assigned %d drive letters\n", drive_letter);
-
-      // Update device count in HCB to match number of logical drives
-      // The CBIOS uses this to determine how many drives to configure
-      rom[0x0C + 0x100] = (uint8_t)drive_letter;  // CB_DEVCNT at HCB+0x0C
-
-      // Re-copy the updated HCB to RAM
-      memcpy(ram, rom, 512);
-      fprintf(stderr, "[HCB] Populated disk unit table with %d devices, %d logical drives\n",
-              disk_idx, drive_letter);
-    }
-
-    // NOW initialize memory disks from HCB (after ROM is loaded)
-    emu.getHBIOS()->initMemoryDisks();
+    // Use shared initialization sequence:
+    // 1. Patch APITYPE in ROM
+    // 2. Copy HCB to RAM
+    // 3. Set up HBIOS ident signatures
+    // 4. Initialize memory disks and populate disk tables
+    emu_complete_init(&memory, emu.getHBIOS(), hbios_disk_slices);
   }
 
   // Enable tracing if requested

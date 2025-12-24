@@ -159,7 +159,7 @@ void emu_console_queue_char(int ch) {
 
 void emu_console_write_char(uint8_t ch) {
   ch &= 0x7F;  // Strip high bit
-  // Skip CR - browsers only need LF
+  // Skip CR - browsers only need LF for line endings
   if (ch != '\r') {
     js_console_output(ch);
   }
