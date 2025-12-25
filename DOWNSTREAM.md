@@ -8,7 +8,7 @@ The RomWBW emulator is structured with a shared core that all platforms use:
 
 ```
 src/
-├── emu_init.h           # Shared initialization functions (NEW)
+├── emu_init.h           # Shared initialization functions
 ├── emu_init.cc          # Implementation of shared init
 ├── emu_io.h             # Platform abstraction interface
 ├── hbios_dispatch.h     # HBIOS function dispatcher
@@ -22,7 +22,7 @@ src/
 
 Add these source files to your build:
 
-1. **emu_init.cc** - Shared initialization (NEW - required)
+1. **emu_init.cc** - Shared initialization
 2. **hbios_dispatch.cc** - HBIOS function handling
 3. **hbios_cpu.cc** - CPU port I/O
 4. Your platform's `emu_io_*.cc` implementation
@@ -34,35 +34,45 @@ Plus these headers:
 - `hbios_cpu.h`
 - `romwbw_mem.h`
 
-## Key Changes (December 2024)
+## Critical: Shadow RAM Fix (December 2024)
 
-### New Shared Initialization Module
+### The Bug
 
-All platforms must now use `emu_init.h` functions for proper initialization. This fixes:
+The `romwbw_mem.h` memory system had a bug where shadow RAM was checked for ALL ROM banks instead of only bank 0. This caused incorrect behavior when:
 
-1. **Device list blank in ROM** - The disk unit table at HCB+0x60 was not being populated
-2. **CP/M 3 bank switching issues** - RAM banks need initialization with page zero/HCB copies
+1. Shadow bits were set for addresses 0x000-0x1FF (page zero + HCB)
+2. The boot loader (romldr) ran from ROM bank 1
+3. romldr tried to read HCB data from addresses 0x100-0x1FF
+4. **Bug**: Reads returned shadow RAM content (bank 0's data) instead of ROM bank 1's content
 
-### Before (Broken Pattern)
+### The Fix
 
-```cpp
-// DON'T DO THIS - incomplete initialization
-uint8_t* rom = memory.get_rom();
-rom[0x0112] = 0x00;  // Patch APITYPE
-memcpy(ram, rom, 512);  // Copy HCB
-hbios.initMemoryDisks();
-// Missing: HBIOS ident, drive map, device count, etc.
-```
-
-### After (Correct Pattern)
+In `romwbw_mem.h`, the `fetch_banked()` function now checks `current_bank == 0x00` before using shadow RAM:
 
 ```cpp
-// DO THIS - complete shared initialization
-#include "emu_init.h"
+// BEFORE (broken):
+if (get_shadow_bit(addr)) {
+    return ram[phys];  // Shadow RAM for ANY ROM bank - WRONG!
+}
 
-// After loading ROM, call the complete initialization:
-emu_complete_init(&memory, &hbios, disk_slices);
+// AFTER (fixed):
+if (current_bank == 0x00 && get_shadow_bit(addr)) {
+    return ram[phys];  // Shadow RAM only for bank 0 - CORRECT
+}
 ```
+
+### What You Need to Do
+
+1. **Pull the latest romwbw_mem.h** - Contains the critical shadow RAM fix
+2. **Pull the latest emu_init.cc** - Now calls `emu_copy_hcb_to_shadow_ram()` at the end of initialization
+3. **Use `emu_complete_init()`** - This handles all HCB setup correctly
+
+The `emu_complete_init()` function now:
+1. Patches APITYPE in ROM
+2. Copies HCB to RAM (simple copy)
+3. Sets up HBIOS ident signatures
+4. Populates disk tables
+5. **NEW**: Copies HCB to shadow RAM with shadow bits set (must be last!)
 
 ## Initialization Sequence
 
@@ -100,6 +110,7 @@ This function performs:
 5. Populates disk unit table at 0x160 (HCB+0x60)
 6. Populates drive map at 0x120 (HCB+0x20)
 7. Updates device count at 0x10C (HCB+0x0C)
+8. Copies HCB to shadow RAM with shadow bits set
 
 ### 4. Implement RAM Bank Initialization
 
@@ -116,8 +127,7 @@ class MyEmulator : public HBIOSCPUDelegate {
 };
 ```
 
-This is called automatically by hbios_cpu when switching to a RAM bank. It ensures
-CP/M 3 (and other OSes using bank switching) have proper page zero and HCB in each bank.
+This is called automatically by hbios_cpu when switching to a RAM bank.
 
 ## Platform-Specific emu_io Implementation
 
@@ -139,40 +149,9 @@ void emu_console_queue_char(int ch);
 void emu_log(const char* fmt, ...);
 void emu_error(const char* fmt, ...);
 void emu_status(const char* fmt, ...);
-
-// File I/O (standard C I/O works on all platforms)
-// fopen/fread/fwrite/fclose are used by emu_init.cc
 ```
 
-## Standard C File I/O
-
-The shared initialization code uses standard C file I/O functions:
-- `fopen()`
-- `fread()`
-- `fwrite()`
-- `fclose()`
-- `fseek()`
-- `ftell()`
-
-These work on all target platforms:
-- Unix/Linux/macOS: Native support
-- iOS: Works for app bundle resources and documents directory
-- Windows: Works with MSVC CRT
-- WebAssembly: Emscripten provides virtual filesystem
-
-## Disk Validation
-
-Before attaching disk images, validate them:
-
-```cpp
-size_t disk_size;
-const char* error = emu_validate_disk_image("/path/to/disk.img", &disk_size);
-if (error) {
-  // Handle error
-}
-```
-
-## Full Example (iOS-style)
+## Full Example
 
 ```cpp
 #include "emu_init.h"
@@ -239,24 +218,6 @@ public:
 };
 ```
 
-## Important Notes
-
-### Avoid Duplicate Disk Table Population
-
-`HBIOSDispatch::initMemoryDisks()` internally calls `populateDiskUnitTable()`.
-Do NOT call `populateDiskUnitTable()` again after `initMemoryDisks()` - this
-can cause hangs or other issues.
-
-The correct flow is:
-```cpp
-// emu_complete_init handles this correctly:
-// 1. Calls initMemoryDisks() which populates disk unit table
-// 2. Calls emu_populate_drive_map() to set up drive letters
-// 3. Updates device count
-```
-
-If you're calling these manually, ensure you don't duplicate the disk table population.
-
 ## Troubleshooting
 
 ### System Hangs After 'D' Command
@@ -265,8 +226,7 @@ If you're calling these manually, ensure you don't duplicate the disk table popu
 
 **Cause**: `populateDiskUnitTable()` called multiple times.
 
-**Fix**: Use `emu_complete_init()` which handles this correctly, or ensure
-you only call `populateDiskUnitTable()` once (via `initMemoryDisks()`).
+**Fix**: Use `emu_complete_init()` which handles this correctly.
 
 ### Device List Shows Blank
 
@@ -280,14 +240,9 @@ you only call `populateDiskUnitTable()` once (via `initMemoryDisks()`).
 
 **Symptom**: System crashes or hangs when switching to CP/M 3.
 
-**Cause**: `initializeRamBankIfNeeded()` not implemented or returning without action.
+**Cause**: `initializeRamBankIfNeeded()` not implemented.
 
-**Fix**: Implement the delegate method using `emu_init_ram_bank()`:
-```cpp
-void initializeRamBankIfNeeded(uint8_t bank) override {
-  emu_init_ram_bank(&memory, bank, &initialized_ram_banks);
-}
-```
+**Fix**: Implement the delegate method using `emu_init_ram_bank()`.
 
 ### REBOOT Command Fails
 
@@ -295,11 +250,19 @@ void initializeRamBankIfNeeded(uint8_t bank) override {
 
 **Cause**: HBIOS ident signatures not set up at 0xFE00/0xFF00.
 
-**Fix**: Ensure `emu_complete_init()` is called (it sets up the signatures).
+**Fix**: Ensure `emu_complete_init()` is called.
+
+### romldr Reads Wrong HCB Data
+
+**Symptom**: Boot loader reads incorrect configuration, wrong disk count, etc.
+
+**Cause**: Missing shadow RAM fix in romwbw_mem.h.
+
+**Fix**: Pull latest romwbw_mem.h with the `current_bank == 0x00` check.
 
 ## ROM Requirements
 
-**IMPORTANT**: The emulator requires a ROM with port 0xEF HBIOS proxy code.
+The emulator requires a ROM with port 0xEF HBIOS proxy code.
 
 Standard RomWBW ROMs (like `SBC_simh_std.rom`) contain real HBIOS code and expect
 actual hardware. These will NOT work with the emulator.
@@ -307,39 +270,23 @@ actual hardware. These will NOT work with the emulator.
 Use one of the `emu_*.rom` files that contain proxy code which outputs to port 0xEF
 for HBIOS dispatch. The emulator intercepts port 0xEF and handles HBIOS calls in C++.
 
-## Console Output Buffering
+## Console Output
 
-CIOOUT (console output) writes characters to an internal `output_buffer`. Your main
-loop MUST poll and flush this buffer:
+The `writeConsoleString()` function now writes directly to `emu_console_write_char()`
+instead of the output buffer. This ensures consistent display across all platforms.
 
-```cpp
-void flush_output() {
-  while (hbios.hasOutputChars()) {
-    std::vector<uint8_t> chars = hbios.getOutputChars();
-    for (uint8_t ch : chars) {
-      emu_console_write_char(ch);
-    }
-  }
-}
+For CLI (blocking mode), CIOIN automatically flushes output before blocking.
 
-// In main loop:
-flush_output();  // Call before blocking on input
-```
-
-For CLI (blocking mode), CIOIN automatically flushes output before blocking to
-ensure prompts are displayed.
-
-For web/WASM (non-blocking mode), call `flush_output()` on each main loop iteration.
+For web/WASM (non-blocking mode), output goes directly to the display.
 
 ## Migration Checklist
 
-- [ ] Add `emu_init.cc` to your build
-- [ ] Add `#include "emu_init.h"` to your emulator code
+- [ ] Pull latest `romwbw_mem.h` with shadow RAM fix
+- [ ] Pull latest `emu_init.cc` and `emu_init.h`
+- [ ] Pull latest `hbios_dispatch.cc`
 - [ ] Replace manual HCB patching with `emu_complete_init()`
 - [ ] Implement `initializeRamBankIfNeeded()` using `emu_init_ram_bank()`
-- [ ] Remove any manual `setup_hbios_ident()` calls (now handled by emu_complete_init)
-- [ ] Remove manual disk unit table population (now handled by emu_complete_init)
-- [ ] Implement `flush_output()` to poll and display console output
-- [ ] Use an `emu_*.rom` file with port 0xEF proxy code
+- [ ] Remove any manual HCB shadow setup (now handled by emu_complete_init)
 - [ ] Test device list with `D` command at boot menu
 - [ ] Test CP/M 3 boot and operation
+- [ ] Test REBOOT command

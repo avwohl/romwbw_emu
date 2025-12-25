@@ -161,6 +161,27 @@ void emu_copy_hcb_to_ram(banked_mem* memory) {
   emu_log("[EMU_INIT] Copied HCB from ROM bank 0 to RAM bank 0x80\n");
 }
 
+void emu_copy_hcb_to_shadow_ram(banked_mem* memory) {
+  if (!memory) return;
+
+  uint8_t* rom = memory->get_rom();
+  if (!rom) return;
+
+  // Copy first 512 bytes from ROM to shadow RAM using store_mem().
+  // This sets shadow bits so reads from ROM bank 0 will return shadow RAM content.
+  // We select ROM bank 0 mode, then use store_mem() which writes to shadow RAM
+  // and sets the shadow bit for each address.
+  uint8_t saved_bank = memory->get_current_bank();
+  memory->select_bank(0x00);  // ROM bank 0 mode
+
+  for (int i = 0; i < 512; i++) {
+    memory->store_mem(i, rom[i]);  // Writes to shadow RAM and sets shadow bit
+  }
+
+  memory->select_bank(saved_bank);  // Restore previous bank
+  emu_log("[EMU_INIT] Copied HCB to shadow RAM with shadow bits set\n");
+}
+
 void emu_setup_hbios_ident(banked_mem* memory) {
   if (!memory) return;
 
@@ -444,7 +465,7 @@ void emu_complete_init(banked_mem* memory, HBIOSDispatch* hbios,
   // 1. Patch APITYPE in ROM
   emu_patch_apitype(memory);
 
-  // 2. Copy HCB to RAM
+  // 2. Copy HCB to RAM (simple copy for early access)
   emu_copy_hcb_to_ram(memory);
 
   // 3. Set up HBIOS ident signatures
@@ -470,6 +491,12 @@ void emu_complete_init(banked_mem* memory, HBIOSDispatch* hbios,
       }
     }
   }
+
+  // 5. Final HCB copy to shadow RAM with shadow bits set
+  // This must be done AFTER all ROM modifications (disk tables, drive map, etc.)
+  // so that reads from ROM bank 0 addresses 0x000-0x1FF return the final values.
+  // This is required for the romwbw_mem.h shadow RAM fix (shadow only applies to bank 0).
+  emu_copy_hcb_to_shadow_ram(memory);
 
   emu_log("[EMU_INIT] Complete initialization finished\n");
 }

@@ -96,6 +96,13 @@ void emu_patch_apitype(banked_mem* memory);
 // Call emu_patch_apitype() before this function
 void emu_copy_hcb_to_ram(banked_mem* memory);
 
+// Copy HCB from ROM to shadow RAM with shadow bits set
+// This is the preferred method after ROM modifications (disk tables, etc.)
+// Unlike emu_copy_hcb_to_ram(), this uses store_mem() to set shadow bits,
+// ensuring reads from ROM bank 0 will return the shadow RAM content.
+// IMPORTANT: Only needed after modifying ROM (disk tables, drive map, etc.)
+void emu_copy_hcb_to_shadow_ram(banked_mem* memory);
+
 // Set up HBIOS ident signatures in common RAM area
 // Creates signature blocks at 0xFF00 and 0xFE00 in bank 0x8F
 // Also sets up pointer at 0xFFFC

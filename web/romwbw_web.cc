@@ -43,6 +43,9 @@ struct EmulatorState : public HBIOSCPUDelegate {
   long long instruction_count = 0;
   int batch_count = 0;
 
+  // RAM bank initialization tracking (for CP/M 3 bank switching)
+  uint16_t initialized_ram_banks = 0;
+
   EmulatorState() : cpu(&memory, this) {
     memory.enable_banking();
     hbios.setCPU(&cpu);
@@ -54,11 +57,9 @@ struct EmulatorState : public HBIOSCPUDelegate {
   banked_mem* getMemory() override { return &memory; }
   HBIOSDispatch* getHBIOS() override { return &hbios; }
 
-  // Initialize RAM bank on first access
-  // NOTE: Currently disabled for web - causes issues with boot loader
-  // TODO: Investigate why this breaks D command (CP/M 3 may still need this)
+  // Initialize RAM bank on first access (for CP/M 3 bank switching)
   void initializeRamBankIfNeeded(uint8_t bank) override {
-    (void)bank;  // No-op for now
+    emu_init_ram_bank(&memory, bank, &initialized_ram_banks);
   }
   void onHalt() override {
     emu_log("[HALT] at PC=0x%04X\n", cpu.regs.PC.get_pair16());
