@@ -15,9 +15,8 @@
 #include <cstdio>
 #include <cstdarg>
 
-// Optional debug log file - defined in hbios_core.cc for iOS, nullptr for CLI
-// Using weak linkage to allow optional definition
-__attribute__((weak)) FILE* debug_log_file = nullptr;
+// Optional debug log file - defined in platform-specific code, nullptr for CLI
+static FILE* debug_log_file = nullptr;
 
 // Log to debug file if available (deep debugging, file only)
 static void dlog(const char* fmt, ...) {
@@ -251,6 +250,26 @@ void HBIOSDispatch::initMemoryDisks() {
     return;
   }
 
+  // Initial HCB setup: copy first 512 bytes from ROM to RAM bank 0x80
+  // This includes page zero (RST vectors) and HCB configuration
+  uint8_t* rom = memory->get_rom();
+  uint8_t* ram = memory->get_ram();
+  if (rom && ram) {
+    // Patch ROM's APITYPE field to HBIOS (0x00) instead of UNA (0xFF)
+    // This ensures REBOOT and other utilities recognize this as HBIOS
+    rom[0x0112] = 0x00;
+
+    // Copy page zero + HCB (first 512 bytes) from ROM to shadow RAM (bank 0x80)
+    // and set shadow bits so reads from any ROM bank will see this data
+    uint8_t saved_bank = memory->get_current_bank();
+    memory->select_bank(0x00);  // ROM bank 0 mode
+    for (int i = 0; i < 512; i++) {
+      memory->store_mem(i, rom[i]);  // Writes to shadow RAM and sets shadow bit
+    }
+    memory->select_bank(saved_bank);  // Restore bank
+    emu_log("[MD] Copied HCB from ROM to RAM bank 0x80, patched APITYPE=0x00\n");
+  }
+
   // HCB (HBIOS Configuration Block) is at 0x0100 in ROM bank 0
   // Memory disk configuration is at:
   // CB_BIDRAMD0 = HCB + 0xDC = 0x1DC (RAM disk start bank)
@@ -423,6 +442,25 @@ void HBIOSDispatch::populateDiskUnitTable() {
     emu_log("0x%02X ", rom[DRVMAP_BASE + i]);
   }
   emu_log("\n[DISKUT] CB_DEVCNT in ROM (0x10C) = 0x%02X\n", rom[0x10C]);
+
+  // Critical: Copy HCB to shadow RAM and set shadow bits
+  // When romldr runs in ROM bank 1, it reads HCB from addresses 0x100-0x1FF.
+  // Without shadow bits set, these reads go to ROM bank 1 which has different data.
+  // By setting shadow bits, reads from any ROM bank will get the correct HCB data.
+  uint8_t* ram = memory->get_ram();
+  if (ram) {
+    // Copy page zero + HCB (first 512 bytes) from ROM to shadow RAM (bank 0x80)
+    // and set shadow bits so reads from any ROM bank will see this data
+    uint8_t saved_bank = memory->get_current_bank();
+    memory->select_bank(0x00);  // ROM bank 0 mode
+    for (int i = 0; i < 512; i++) {
+      memory->store_mem(i, rom[i]);  // Writes to shadow RAM and sets shadow bit
+    }
+    memory->select_bank(saved_bank);  // Restore bank
+    // Also patch APITYPE to HBIOS (0x00) instead of UNA (0xFF)
+    memory->store_mem(0x0112, 0x00);
+    emu_log("[DISKUT] Copied HCB to shadow RAM with shadow bits set\n");
+  }
 }
 
 //=============================================================================
@@ -651,8 +689,9 @@ void HBIOSDispatch::doRet() {
 }
 
 void HBIOSDispatch::writeConsoleString(const char* str) {
+  // Use direct console output (same path as CIOOUT) for consistent display
   while (*str) {
-    output_buffer.push_back(*str++);
+    emu_console_write_char(*str++);
   }
 }
 

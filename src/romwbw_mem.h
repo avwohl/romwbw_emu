@@ -336,14 +336,14 @@ private:
             uint32_t phys = ((current_bank & 0x0F) * BANK_SIZE) + addr;
             return ram[phys];
         } else {
-            // ROM bank selected - check shadow RAM first for data areas
-            // If this address was written to while in ROM mode, read from shadow RAM
-            if (get_shadow_bit(addr)) {
+            // ROM bank selected
+            // Shadow RAM only applies to bank 0 - other ROM banks read directly
+            // This is required for bank switching to work correctly
+            if (current_bank == 0x00 && get_shadow_bit(addr)) {
                 uint32_t phys = (0 * BANK_SIZE) + addr;  // Bank 0x80 (shadow RAM)
                 return ram[phys];
             }
-            // Not shadowed - read from ROM
-            // Mask to 4 bits since we only have 16 ROM banks (512KB / 32KB = 16)
+            // Read from ROM - mask to 4 bits since we only have 16 ROM banks
             uint32_t phys = ((current_bank & 0x0F) * BANK_SIZE) + addr;
             return rom[phys];
         }
