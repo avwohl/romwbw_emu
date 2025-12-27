@@ -75,6 +75,18 @@ Download disk images from [RomWBW releases](https://github.com/wwarthen/RomWBW/r
 - **hd512 format**: Default for other disk images
   - No prefix, 8.3MB slices, 128KB system area, 512 directory entries
 
+### SIMH Compatibility
+
+SIMH AltairZ80 hard disk images (`.dsk` files) are compatible:
+
+| File Size | Format | Works? |
+|-----------|--------|--------|
+| 8,388,608 bytes (8 MB) | SIMH HDSK / hd1k | Yes |
+| 8,519,680 bytes (8.32 MB) | SIMH HDCPM / hd512 | Yes |
+| 51,380,224 bytes (49 MB) | RomWBW combo (native) | Yes |
+
+See `docs/DISK_FORMATS.md` for details.
+
 ### Drive Letters
 
 - `A:` - RAM disk (MD0)
@@ -170,6 +182,7 @@ romwbw_emu/
 
 ## Documentation
 
+- `docs/DISK_FORMATS.md` - Disk formats, SIMH compatibility, and cpmtools usage
 - `docs/ROMWBW_INTEGRATION.md` - RomWBW architecture and HBIOS details
 - `docs/HBIOS_Implementation_Guide.md` - How HBIOS is implemented
 - `docs/HBIOS_DATA_EXPORTS.md` - HBIOS data structures

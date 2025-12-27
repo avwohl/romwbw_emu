@@ -4,11 +4,75 @@ This document describes the disk formats supported by the romwbw_emu emulator an
 
 ## Quick Reference
 
-| Format | Size | Sectors/Slice | Dir Entries | MBR Prefix | Auto-Detect |
-|--------|------|---------------|-------------|------------|-------------|
-| **hd1k single** | 8 MB (8,388,608 bytes) | 16,384 (0x4000) | 1024 | No | Yes (by size) |
-| **hd1k combo** | 1MB + N×8MB | 16,384 per slice | 1024 | Yes (type 0x2E) | Yes (MBR scan) |
-| **hd512** | 8.32 MB (8,519,680 bytes) | 16,640 (0x4100) | 512 | No | Yes (fallback) |
+| Format | Size | Sectors/Slice | Dir Entries | SIMH Equivalent |
+|--------|------|---------------|-------------|-----------------|
+| **hd1k single** | 8 MB (8,388,608 bytes) | 16,384 (0x4000) | 1024 | HDSK (compatible) |
+| **hd1k combo** | 1MB + N×8MB | 16,384 per slice | 1024 | - |
+| **hd512** | 8.32 MB (8,519,680 bytes) | 16,640 (0x4100) | 512 | HDCPM (compatible) |
+
+## SIMH Compatibility
+
+This emulator is compatible with disk images created by the SIMH AltairZ80 simulator. The table below shows which SIMH formats work:
+
+### Supported SIMH Formats
+
+| SIMH Format | File Size | Extension | Our Format | Status |
+|-------------|-----------|-----------|------------|--------|
+| **HDSK** (default hard disk) | 8,388,608 bytes (8 MB) | `.dsk`, `.img` | hd1k | **Works** |
+| **HDCPM** (Amstrad hard disk) | 8,519,680 bytes (8.32 MB) | `.dsk`, `.img` | hd512 | **Works** |
+
+### Not Supported
+
+| SIMH Format | File Size | Reason |
+|-------------|-----------|--------|
+| **88-DISK** (8" floppy) | 337,568 bytes (~330 KB) | Uses 137-byte hard-sectored format |
+| **Mini-disk** (5.25" floppy) | 76,720 bytes (~75 KB) | Uses 137-byte hard-sectored format |
+
+### Why It Works
+
+The SIMH HDSK format and our hd1k format are **binary compatible**. Both store data as sequential sectors from byte 0:
+
+- SIMH HDSK: 2048 tracks × 32 sectors × 128 bytes = 8,388,608 bytes
+- RomWBW hd1k: 1024 tracks × 16 sectors × 512 bytes = 8,388,608 bytes
+
+The geometry differs but the byte layout is identical. CP/M doesn't care about physical geometry - it uses logical block addressing at the BIOS level.
+
+### Using SIMH Disk Images
+
+```bash
+# 8 MB SIMH hard disk image - works directly
+./romwbw_emu --romwbw roms/emu_romwbw.rom --disk0=cpm3.dsk
+
+# Check file size first
+ls -l myimage.dsk
+# If exactly 8,388,608 bytes → treated as hd1k
+# If exactly 8,519,680 bytes → treated as hd512
+```
+
+### Quick Size Reference
+
+To determine if a `.dsk` or `.img` file will work:
+
+```bash
+ls -l *.dsk *.img
+```
+
+| Size (bytes) | Size (readable) | Format | Compatible? |
+|--------------|-----------------|--------|-------------|
+| 8,388,608 | 8.0 MB exactly | HDSK/hd1k | Yes |
+| 8,519,680 | 8.1 MB (~8.32 MB) | HDCPM/hd512 | Yes |
+| 51,380,224 | 49 MB (1MB + 6×8MB) | RomWBW combo | Yes (native) |
+| 337,568 | 330 KB | 88-DISK floppy | No |
+| 76,720 | 75 KB | Mini-disk floppy | No |
+
+**Note:** The 51MB combo disk format is RomWBW-native (not a SIMH format). It contains a 1MB MBR prefix followed by six 8MB slices, each of which uses the same sector layout as SIMH HDSK.
+
+### Obtaining SIMH Disk Images
+
+SIMH CP/M disk images can be found at:
+- Peter Schorn's site: https://schorn.ch/altair.html
+- The `cpmplus.zip` distribution includes bootable CP/M 3 images
+- Various CP/M archives with `.dsk` files sized at 8 MB
 
 ## Setting Up cpmtools
 
