@@ -277,6 +277,7 @@ enum emu_host_file_state {
   HOST_FILE_WAITING_READ,   // Waiting for user to pick file to read
   HOST_FILE_READING,        // File loaded, ready to read bytes
   HOST_FILE_WRITING,        // Accumulating bytes to write
+  HOST_FILE_WRITE_READY,    // Write buffer ready for UI to save
 };
 
 // Get current host file state
