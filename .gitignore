@@ -36,3 +36,6 @@ Thumbs.db
 # Local machine-specific makefile settings
 src/local.mk
 web/*.img
+
+# Node.js
+node_modules/

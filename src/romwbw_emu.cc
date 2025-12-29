@@ -872,11 +872,6 @@ void print_usage(const char* prog) {
   fprintf(stderr, "    N = number of slices (1-8), controls how many drive letters are used\n");
   fprintf(stderr, "    Example: --disk0=disk.img:1 uses only 1 slice (C: only)\n");
   fprintf(stderr, "\n");
-  fprintf(stderr, "  --create-disk=FILE:FORMAT  Create a new formatted disk image and exit\n");
-  fprintf(stderr, "    FORMAT: 8mb   - 8MB single slice hd1k (1024 dir entries)\n");
-  fprintf(stderr, "            51mb  - 51MB combo disk (1MB MBR + 6x8MB slices)\n");
-  fprintf(stderr, "    Example: --create-disk=mydisk.img:8mb\n");
-  fprintf(stderr, "\n");
   fprintf(stderr, "  Supported disk formats (auto-detected):\n");
   fprintf(stderr, "    hd1k  - Modern RomWBW format, 8MB per slice, 1024 dir entries\n");
   fprintf(stderr, "    hd512 - Classic format, 8.32MB per slice, 512 dir entries\n");
@@ -941,46 +936,6 @@ int main(int argc, char** argv) {
       binary = argv[i] + 9;
     } else if (strcmp(argv[i], "--strict-io") == 0) {
       strict_io_mode = true;
-    } else if (strncmp(argv[i], "--create-disk=", 14) == 0) {
-      // Parse --create-disk=FILE:FORMAT
-      // FORMAT is 8mb or 51mb
-      const char* opt = argv[i] + 14;
-      const char* colon = strrchr(opt, ':');
-      if (!colon || colon == opt || colon[1] == '\0') {
-        fprintf(stderr, "Error: --create-disk requires FILE:FORMAT (e.g., mydisk.img:8mb)\n");
-        return 1;
-      }
-      std::string path(opt, colon - opt);
-      std::string format_str(colon + 1);
-
-      emu_disk_format format;
-      if (format_str == "8mb" || format_str == "8MB") {
-        format = EMU_DISK_HD1K_SINGLE;
-      } else if (format_str == "51mb" || format_str == "51MB") {
-        format = EMU_DISK_HD1K_COMBO;
-      } else {
-        fprintf(stderr, "Error: Unknown disk format '%s' (use 8mb or 51mb)\n", format_str.c_str());
-        return 1;
-      }
-
-      // Check if file already exists
-      if (emu_file_exists(path)) {
-        fprintf(stderr, "Error: File '%s' already exists. Remove it first or use a different name.\n", path.c_str());
-        return 1;
-      }
-
-      // Create the disk
-      size_t expected_size = (format == EMU_DISK_HD1K_SINGLE) ? EMU_HD1K_SINGLE_SIZE : EMU_HD1K_COMBO_SIZE;
-      fprintf(stderr, "Creating %s disk image: %s (%zu bytes)...\n", format_str.c_str(), path.c_str(), expected_size);
-
-      if (!emu_disk_create(path, format)) {
-        fprintf(stderr, "Error: Failed to create disk image '%s'\n", path.c_str());
-        return 1;
-      }
-
-      fprintf(stderr, "Successfully created %s\n", path.c_str());
-      fprintf(stderr, "You can now use it with: --disk0=%s\n", path.c_str());
-      return 0;  // Exit after creating disk
     } else if (strncmp(argv[i], "--sense=", 8) == 0) {
       sense = strtol(argv[i] + 8, nullptr, 0);
     } else if (strncmp(argv[i], "--load=", 7) == 0) {
