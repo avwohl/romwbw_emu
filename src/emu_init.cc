@@ -234,6 +234,27 @@ bool emu_init_ram_bank(banked_mem* memory, uint8_t bank, uint16_t* initialized_b
     memory->write_bank(bank, addr, byte);
   }
 
+  // Install CBIOS page zero stamp at 0x40 (required by ASSIGN, MODE, etc.)
+  // Format: 'W', ~'W', version (major<<4|minor), update<<4, CBX pointer
+  memory->write_bank(bank, 0x40, 'W');        // Marker byte 1
+  memory->write_bank(bank, 0x41, ~'W');       // Marker byte 2 (0xA8)
+  memory->write_bank(bank, 0x42, 0x35);       // Version 3.5 (3<<4 | 5)
+  memory->write_bank(bank, 0x43, 0x10);       // Update 1, patch 0
+  // CBX pointer at 0x44-0x45: point to our CBX block at 0x50
+  memory->write_bank(bank, 0x44, 0x50);       // Low byte
+  memory->write_bank(bank, 0x45, 0x00);       // High byte
+
+  // Set up minimal CBX block at 0x50
+  // CBX+0: DEVMAP pointer (not used by ASSIGN, set to 0)
+  memory->write_bank(bank, 0x50, 0x00);
+  memory->write_bank(bank, 0x51, 0x00);
+  // CBX+2: DRVMAP pointer - point to HCB drive map at 0x120
+  memory->write_bank(bank, 0x52, 0x20);       // Low byte of 0x120
+  memory->write_bank(bank, 0x53, 0x01);       // High byte of 0x120
+  // CBX+4: DPBMAP pointer (point to dummy area, ASSIGN may not use it)
+  memory->write_bank(bank, 0x54, 0x00);
+  memory->write_bank(bank, 0x55, 0x00);
+
   // Copy HCB (0x0100-0x0200) from ROM bank 0 - system configuration
   for (uint16_t addr = 0x0100; addr < 0x0200; addr++) {
     uint8_t byte = memory->read_bank(0x00, addr);
