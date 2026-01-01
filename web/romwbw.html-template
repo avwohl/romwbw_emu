@@ -81,9 +81,100 @@
       padding: 2px 6px;
       border-radius: 3px;
     }
+    /* Loading overlay */
+    #loading-overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.85);
+      z-index: 1000;
+      justify-content: center;
+      align-items: center;
+    }
+    #loading-overlay.visible {
+      display: flex;
+    }
+    .loading-content {
+      background: #1a1a2e;
+      border: 2px solid #0066aa;
+      border-radius: 12px;
+      padding: 30px 50px;
+      text-align: center;
+      min-width: 350px;
+    }
+    .loading-content h2 {
+      color: #00aaff;
+      margin: 0 0 20px 0;
+      font-size: 18px;
+    }
+    .loading-item {
+      margin: 12px 0;
+      text-align: left;
+    }
+    .loading-item-label {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 4px;
+      font-size: 13px;
+    }
+    .loading-item-name {
+      color: #ccc;
+    }
+    .loading-item-status {
+      color: #888;
+    }
+    .loading-item-status.done {
+      color: #0a0;
+    }
+    .progress-bar {
+      height: 8px;
+      background: #333;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      background: #0066aa;
+      width: 0%;
+      transition: width 0.1s;
+    }
+    .progress-bar-fill.done {
+      background: #0a0;
+    }
   </style>
 </head>
 <body>
+  <!-- Loading overlay -->
+  <div id="loading-overlay">
+    <div class="loading-content">
+      <h2>Loading RomWBW Emulator</h2>
+      <div class="loading-item" id="load-rom">
+        <div class="loading-item-label">
+          <span class="loading-item-name">ROM</span>
+          <span class="loading-item-status">waiting</span>
+        </div>
+        <div class="progress-bar"><div class="progress-bar-fill"></div></div>
+      </div>
+      <div class="loading-item" id="load-disk0">
+        <div class="loading-item-label">
+          <span class="loading-item-name">Disk 0</span>
+          <span class="loading-item-status">waiting</span>
+        </div>
+        <div class="progress-bar"><div class="progress-bar-fill"></div></div>
+      </div>
+      <div class="loading-item" id="load-disk1">
+        <div class="loading-item-label">
+          <span class="loading-item-name">Disk 1</span>
+          <span class="loading-item-status">waiting</span>
+        </div>
+        <div class="progress-bar"><div class="progress-bar-fill"></div></div>
+      </div>
+    </div>
+  </div>
+
   <div class="header-row">
     <h1>RomWBW Emulator <a href="https://github.com/avwohl/cpmemu" style="font-size:12px;color:#888;margin-left:10px;">[sources]</a></h1>
     <span id="status" style="color:#888;font-size:14px;">Loading...</span>
@@ -578,59 +669,148 @@
       }
     });
 
+    // Loading overlay helpers
+    const loadingOverlay = document.getElementById('loading-overlay');
+
+    function showLoading() {
+      // Reset all progress bars
+      ['load-rom', 'load-disk0', 'load-disk1'].forEach(id => {
+        const el = document.getElementById(id);
+        el.querySelector('.loading-item-status').textContent = 'waiting';
+        el.querySelector('.loading-item-status').classList.remove('done');
+        el.querySelector('.progress-bar-fill').style.width = '0%';
+        el.querySelector('.progress-bar-fill').classList.remove('done');
+      });
+      loadingOverlay.classList.add('visible');
+    }
+
+    function hideLoading() {
+      loadingOverlay.classList.remove('visible');
+    }
+
+    function updateLoadingProgress(itemId, percent, status) {
+      const el = document.getElementById(itemId);
+      const statusEl = el.querySelector('.loading-item-status');
+      const fillEl = el.querySelector('.progress-bar-fill');
+      statusEl.textContent = status;
+      fillEl.style.width = percent + '%';
+      if (percent >= 100) {
+        statusEl.classList.add('done');
+        fillEl.classList.add('done');
+      }
+    }
+
+    // Fetch with progress tracking
+    async function fetchWithProgress(url, itemId) {
+      updateLoadingProgress(itemId, 0, 'connecting...');
+      const response = await fetch(url);
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+
+      const contentLength = response.headers.get('content-length');
+      if (!contentLength) {
+        // No content-length header, can't track progress
+        updateLoadingProgress(itemId, 50, 'downloading...');
+        const buf = await response.arrayBuffer();
+        updateLoadingProgress(itemId, 100, formatSize(buf.byteLength));
+        return new Uint8Array(buf);
+      }
+
+      const total = parseInt(contentLength, 10);
+      let loaded = 0;
+      const reader = response.body.getReader();
+      const chunks = [];
+
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        loaded += value.length;
+        const pct = Math.round((loaded / total) * 100);
+        updateLoadingProgress(itemId, pct, formatSize(loaded) + ' / ' + formatSize(total));
+      }
+
+      // Combine chunks
+      const result = new Uint8Array(loaded);
+      let offset = 0;
+      for (const chunk of chunks) {
+        result.set(chunk, offset);
+        offset += chunk.length;
+      }
+      updateLoadingProgress(itemId, 100, formatSize(loaded));
+      return result;
+    }
+
+    function formatSize(bytes) {
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+
     // Start button
     startBtn.addEventListener('click', async function() {
       startBtn.disabled = true;
+
+      // Check if we need to load anything
+      const needRom = !romLoaded;
+      const needDisk0 = !diskLoaded[0];
+      const needDisk1 = !diskLoaded[1];
+
+      // Show loading overlay if we need to download files
+      if (needRom || needDisk0 || needDisk1) {
+        showLoading();
+
+        // Mark items that are already loaded
+        if (!needRom) updateLoadingProgress('load-rom', 100, 'cached');
+        if (!needDisk0) updateLoadingProgress('load-disk0', 100, 'cached');
+        if (!needDisk1) updateLoadingProgress('load-disk1', 100, 'cached');
+      }
+
+      try {
+        // Auto-load default ROM if none loaded
+        if (needRom) {
+          const defaultRom = 'emu_avw.rom';
+          const data = await fetchWithProgress(defaultRom, 'load-rom');
+          loadRomData(data, defaultRom);
+          document.getElementById('romSelect').value = defaultRom;
+        }
+
+        // Reload any previously loaded disks (ROM load resets emulator state)
+        reloadDisks();
+
+        // Auto-load default disk 0 if none loaded
+        if (needDisk0) {
+          const defaultDisk = 'hd1k_combo.img';
+          try {
+            const data = await fetchWithProgress(defaultDisk, 'load-disk0');
+            loadDiskData(0, data, defaultDisk);
+            document.getElementById('disk0Select').value = defaultDisk;
+          } catch (err) {
+            updateLoadingProgress('load-disk0', 100, 'skipped');
+          }
+        }
+
+        // Auto-load default disk 1 if none loaded
+        if (needDisk1) {
+          const defaultDisk1 = 'hd1k_games.img';
+          try {
+            const data = await fetchWithProgress(defaultDisk1, 'load-disk1');
+            loadDiskData(1, data, defaultDisk1);
+            document.getElementById('disk1Select').value = defaultDisk1;
+          } catch (err) {
+            updateLoadingProgress('load-disk1', 100, 'skipped');
+          }
+        }
+      } catch (err) {
+        hideLoading();
+        statusDiv.textContent = 'Error loading: ' + err;
+        startBtn.disabled = false;
+        return;
+      }
+
+      hideLoading();
       term.clear();
       term.writeln('RomWBW Emulator v' + EMU_VERSION);
       term.writeln('');
-
-      // Auto-load default ROM if none loaded
-      if (!romLoaded) {
-        const defaultRom = 'emu_avw.rom';
-        statusDiv.textContent = 'Loading default ROM...';
-        try {
-          const response = await fetch(defaultRom);
-          const buf = await response.arrayBuffer();
-          loadRomData(new Uint8Array(buf), defaultRom);
-          document.getElementById('romSelect').value = defaultRom;
-        } catch (err) {
-          statusDiv.textContent = 'Error loading ROM: ' + err;
-          startBtn.disabled = false;
-          return;
-        }
-      }
-
-      // Reload any previously loaded disks (ROM load resets emulator state)
-      reloadDisks();
-
-      // Auto-load default disk 0 if none loaded
-      if (!diskLoaded[0]) {
-        const defaultDisk = 'hd1k_combo.img';
-        statusDiv.textContent = 'Loading default disk 0...';
-        try {
-          const response = await fetch(defaultDisk);
-          const buf = await response.arrayBuffer();
-          loadDiskData(0, new Uint8Array(buf), defaultDisk);
-          document.getElementById('disk0Select').value = defaultDisk;
-        } catch (err) {
-          // Disk is optional
-        }
-      }
-
-      // Auto-load default disk 1 if none loaded
-      if (!diskLoaded[1]) {
-        const defaultDisk1 = 'hd1k_games.img';
-        statusDiv.textContent = 'Loading default disk 1...';
-        try {
-          const response = await fetch(defaultDisk1);
-          const buf = await response.arrayBuffer();
-          loadDiskData(1, new Uint8Array(buf), defaultDisk1);
-          document.getElementById('disk1Select').value = defaultDisk1;
-        } catch (err) {
-          // Disk is optional
-        }
-      }
 
       // Set boot string if provided
       const bootStr = document.getElementById('bootString').value.trim();
