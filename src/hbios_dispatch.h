@@ -257,7 +257,7 @@ struct HBDisk {
   bool file_backed = false;
   size_t size = 0;
   uint32_t current_lba = 0;   // Current LBA position (set by DIOSEEK)
-  int max_slices = 4;         // Max slices to expose (configurable via --disk0=file:N)
+  int max_slices = 8;         // Max slices to expose (configurable via --disk0=file:N)
 
   // Partition/slice info (detected from MBR on first EXTSLICE call)
   bool partition_probed = false;     // True if MBR has been parsed

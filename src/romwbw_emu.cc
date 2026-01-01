@@ -829,8 +829,8 @@ void print_usage(const char* prog) {
   fprintf(stderr, "  --debug           Enable debug output\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Disk options:\n");
-  fprintf(stderr, "  --disk0=FILE[:N]  Attach disk image to slot 0 (default: 4 slices -> C:-F:)\n");
-  fprintf(stderr, "  --disk1=FILE[:N]  Attach disk image to slot 1 (default: 4 slices -> G:-J:)\n");
+  fprintf(stderr, "  --disk0=FILE[:N]  Attach disk image to slot 0 (default: 8 slices)\n");
+  fprintf(stderr, "  --disk1=FILE[:N]  Attach disk image to slot 1 (default: 8 slices)\n");
   fprintf(stderr, "    N = number of slices (1-8), controls how many drive letters are used\n");
   fprintf(stderr, "    Example: --disk0=disk.img:1 uses only 1 slice (C: only)\n");
   fprintf(stderr, "\n");
