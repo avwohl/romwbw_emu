@@ -151,19 +151,55 @@ int emu_console_read_char() {
     return ch;
   }
 
-  // Check EOF
-  if (stdin_eof) return -1;
-
-  // Read from stdin (blocking) - use read() to avoid stdio buffering
-  char buf;
-  ssize_t n = read(STDIN_FILENO, &buf, 1);
-  if (n <= 0) {
-    stdin_eof = true;
+  // Check EOF - for non-TTY, exit the emulator
+  if (stdin_eof) {
+    if (!isatty(STDIN_FILENO)) {
+      emu_io_cleanup();
+      exit(0);
+    }
     return -1;
   }
-  int ch = (unsigned char)buf;
-  if (ch == '\n') ch = '\r';  // LF -> CR for CP/M
-  return ch;
+
+  // For non-TTY (pipe), do a single blocking read and exit on EOF
+  if (!isatty(STDIN_FILENO)) {
+    char buf;
+    ssize_t n = read(STDIN_FILENO, &buf, 1);
+    if (n > 0) {
+      int ch = (unsigned char)buf;
+      if (ch == '\n') ch = '\r';
+      return ch;
+    }
+    // EOF on pipe - exit cleanly
+    emu_io_cleanup();
+    exit(0);
+  }
+
+  // TTY: use select() to wait for actual input
+  // This avoids misinterpreting "no data yet" as EOF in raw mode
+  while (true) {
+    fd_set readfds;
+    struct timeval tv;
+    FD_ZERO(&readfds);
+    FD_SET(STDIN_FILENO, &readfds);
+    tv.tv_sec = 0;
+    tv.tv_usec = 100000;  // 100ms timeout
+
+    int sel = select(STDIN_FILENO + 1, &readfds, NULL, NULL, &tv);
+    if (sel > 0) {
+      char buf;
+      ssize_t n = read(STDIN_FILENO, &buf, 1);
+      if (n > 0) {
+        int ch = (unsigned char)buf;
+        if (ch == '\n') ch = '\r';  // LF -> CR for CP/M
+        return ch;
+      }
+      if (n <= 0) {
+        stdin_eof = true;
+        return -1;
+      }
+    }
+    // Timeout - loop and try again (allows escape checking in main loop)
+  }
 }
 
 void emu_console_queue_char(int ch) {
