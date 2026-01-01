@@ -44,8 +44,6 @@ static constexpr uint8_t PART_TYPE_FAT16 = 0x06;   // FAT16 (incompatible)
 static constexpr uint8_t PART_TYPE_FAT32 = 0x0B;   // FAT32 (incompatible)
 
 // HCB field offsets (relative to HCB base at 0x100)
-static constexpr uint16_t HCB_BOOTVOL = 0x0D;     // CB_BOOTVOL (boot volume: D=unit, E=slice)
-static constexpr uint16_t HCB_BOOTBID = 0x0F;     // CB_BOOTBID (boot bank ID)
 static constexpr uint16_t HCB_APITYPE = 0x12;     // CB_APITYPE
 static constexpr uint16_t HCB_DEVCNT = 0x0C;      // CB_DEVCNT (device count)
 static constexpr uint16_t HCB_DRVMAP = 0x20;      // CB_DRVMAP (drive map base)
@@ -127,9 +125,34 @@ bool emu_init_ram_bank(banked_mem* memory, uint8_t bank, uint16_t* initialized_b
 // Disk Unit Table and Drive Map
 //=============================================================================
 
-// Note: We don't populate the disk unit table (0x160) or drive map (0x120)
-// because real RomWBW CBIOS builds these dynamically using HBIOS API calls
-// (SYSGET_DIOCNT, DIODEVICE, DIOCAP), not from pre-populated tables.
+// Disk configuration for unit table population
+struct emu_disk_config {
+  bool is_loaded;              // True if disk is attached
+  int max_slices;              // Maximum slices to expose (1-8)
+  // Note: More fields can be added as needed
+};
+
+// Populate disk unit table in HCB
+// This writes device info to 0x160 (HCB+0x60)
+// memory: banked memory with loaded ROM
+// hbios: HBIOS dispatch with loaded disks (for disk info)
+// Returns: number of devices written to table
+int emu_populate_disk_unit_table(banked_mem* memory, HBIOSDispatch* hbios);
+
+// Populate drive map in HCB
+// This writes drive letter assignments to 0x120 (HCB+0x20)
+// memory: banked memory with loaded ROM
+// hbios: HBIOS dispatch with loaded disks
+// disk_slices: array of max slice counts per disk (nullptr = use defaults)
+// Returns: number of drive letters assigned
+int emu_populate_drive_map(banked_mem* memory, HBIOSDispatch* hbios,
+                           const int* disk_slices);
+
+// Combined function: populate both disk unit table and drive map
+// This is the main function to call after loading disks
+// Also updates CB_DEVCNT to match number of logical drives
+void emu_populate_disk_tables(banked_mem* memory, HBIOSDispatch* hbios,
+                              const int* disk_slices);
 
 //=============================================================================
 // Disk Image Validation
@@ -160,14 +183,12 @@ const char* emu_validate_disk_image(const char* path, size_t* out_size = nullptr
 //   1. Patch APITYPE in ROM
 //   2. Copy HCB to RAM
 //   3. Set up HBIOS ident signatures
-//   4. Initialize memory disks from HCB (if hbios provided)
-//   5. Copy HCB to shadow RAM
-//
-// Note: We don't populate disk tables - CBIOS builds these dynamically.
+//   4. Populate disk tables (if hbios provided)
+//   5. Initialize memory disks from HCB
 //
 // memory: banked memory with loaded ROM
 // hbios: HBIOS dispatch (can be nullptr if skipping disk setup)
-// disk_slices: ignored (kept for API compatibility)
+// disk_slices: per-disk slice counts (can be nullptr for defaults)
 void emu_complete_init(banked_mem* memory, HBIOSDispatch* hbios = nullptr,
                        const int* disk_slices = nullptr);
 

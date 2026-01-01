@@ -70,47 +70,9 @@ static unsigned long long get_next_trigger(const InterruptConfig& cfg, unsigned 
   return current_cycles + dist(interrupt_rng);
 }
 
-// Deliver a maskable interrupt to the CPU
-// Returns true if interrupt was delivered, false if blocked (interrupts disabled)
-static bool deliver_maskable_interrupt(qkz80& cpu, const InterruptConfig& cfg) {
-  // Check if interrupts are enabled (IFF1)
-  if (cpu.regs.IFF1 == 0) {
-    return false;  // Interrupts disabled
-  }
-
-  // Disable interrupts (like hardware would)
-  cpu.regs.IFF1 = 0;
-  cpu.regs.IFF2 = 0;
-
-  // Push current PC
-  cpu.push_word(cpu.regs.PC.get_pair16());
-
-  // Jump to interrupt vector
-  if (cfg.use_rst) {
-    // RST n jumps to n * 8
-    cpu.regs.PC.set_pair16(cfg.rst_num * 8);
-  } else {
-    // CALL addr
-    cpu.regs.PC.set_pair16(cfg.call_addr);
-  }
-
-  return true;
-}
-
-// Deliver an NMI to the CPU
-// NMI cannot be disabled, always jumps to 0x0066
-static void deliver_nmi(qkz80& cpu) {
-  // Copy IFF1 to IFF2 (so RETN can restore interrupt state)
-  cpu.regs.IFF2 = cpu.regs.IFF1;
-  // Disable interrupts
-  cpu.regs.IFF1 = 0;
-
-  // Push current PC
-  cpu.push_word(cpu.regs.PC.get_pair16());
-
-  // Jump to NMI vector
-  cpu.regs.PC.set_pair16(0x0066);
-}
+// Track if we're waiting for a maskable interrupt to be delivered
+// (used when IFF1=0 delays delivery)
+static bool waiting_for_int_delivery = false;
 
 // HBIOS function codes and result codes are now in hbios_dispatch.h
 
@@ -1348,17 +1310,31 @@ int main(int argc, char** argv) {
       cpu.regs.PC.set_pair16(emu.get_next_pc());
     }
 
-    // Check for scheduled interrupts
+    // Check for scheduled interrupts (using upstream qkz80 interrupt API)
     if (nmi_config.enabled && cpu.cycles >= nmi_config.next_trigger) {
-      deliver_nmi(cpu);
+      cpu.request_nmi();
       nmi_config.next_trigger = get_next_trigger(nmi_config, cpu.cycles);
     }
-    if (maskable_int_config.enabled && cpu.cycles >= maskable_int_config.next_trigger) {
-      if (deliver_maskable_interrupt(cpu, maskable_int_config)) {
-        // Interrupt delivered, schedule next one
-        maskable_int_config.next_trigger = get_next_trigger(maskable_int_config, cpu.cycles);
+    if (maskable_int_config.enabled &&
+        cpu.cycles >= maskable_int_config.next_trigger &&
+        !waiting_for_int_delivery) {
+      // Request interrupt using upstream API
+      if (maskable_int_config.use_rst) {
+        cpu.request_rst(maskable_int_config.rst_num);
+      } else {
+        // CALL mode: use IM0 with RST 38H vector (0xFF)
+        cpu.request_int(0xFF);
       }
-      // If interrupts disabled, keep trying until delivered
+      waiting_for_int_delivery = true;
+    }
+
+    // Deliver pending interrupts
+    cpu.check_interrupts();
+
+    // If we were waiting for INT delivery and it completed, schedule next
+    if (waiting_for_int_delivery && !cpu.int_pending) {
+      maskable_int_config.next_trigger = get_next_trigger(maskable_int_config, cpu.cycles);
+      waiting_for_int_delivery = false;
     }
 
     // Periodically check for console escape (every 10000 instructions)
