@@ -102,7 +102,7 @@
       <label style="margin-left:12px;">Boot:</label><input type="text" id="bootString" placeholder="2=disk, C=CPM" style="width:100px;" value="2">
     </div>
     <div class="file-input">
-      <label>Disk 0 (C:):</label>
+      <label>Disk 0:</label>
       <select id="disk0Select" style="margin-right:4px;">
         <option value="">-- None --</option>
         <option value="__custom__">-- Custom --</option>
@@ -116,7 +116,7 @@
       <button id="downloadDisk0Btn" disabled title="Download modified disk">↓</button>
     </div>
     <div class="file-input">
-      <label>Disk 1 (G:):</label>
+      <label>Disk 1:</label>
       <select id="disk1Select" style="margin-right:4px;">
         <option value="">-- None --</option>
         <option value="__custom__">-- Custom --</option>
@@ -142,8 +142,8 @@
 
   <div class="instructions">
     <h3>Quick Start</h3>
-    <p>1. Click <strong>Start</strong> to boot with games disk (default settings)</p>
-    <p>2. At <code>C&gt;</code> prompt, type <code>DIR</code> to see files, or run a game like <code>ZORK1</code></p>
+    <p>1. Click <strong>Start</strong> to boot with default disks</p>
+    <p>2. At <code>A&gt;</code> prompt, type <code>DIR</code> to see files, or run a game like <code>ZORK1</code></p>
 
     <h3>ROM Types</h3>
     <p><code>emu_avw.rom</code> - <strong>Recommended.</strong> Uses emulator's C++ HBIOS. Works with all hd1k disk images.</p>
@@ -155,10 +155,12 @@
     <p><code>hd1k_cpm22.img</code> / <code>hd1k_zsdos.img</code> - Operating system disks</p>
 
     <h3>Boot Options</h3>
-    <p><code>2</code> - Boot from disk (drive C:) | <code>C</code> - CP/M from ROM | <code>H</code> - Help</p>
+    <p><code>2</code> - Boot from disk (drive A:) | <code>C</code> - CP/M from ROM | <code>H</code> - Help</p>
 
     <h3>Drive Letters</h3>
-    <p><code>A:</code> RAM disk | <code>B:</code> ROM disk | <code>C:-F:</code> Disk 0 (4 slices) | <code>G:-J:</code> Disk 1 (4 slices)</p>
+    <p>Hard disks are assigned first, then memory disks. With 2 disks loaded:</p>
+    <p><code>A:-D:</code> Disk 0 (4 slices) | <code>E:-H:</code> Disk 1 (4 slices) | <code>I:</code> RAM disk | <code>J:</code> ROM disk</p>
+    <p>With 1 disk: 8 slices (A:-H:). With 3+ disks: 2 slices each.</p>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>

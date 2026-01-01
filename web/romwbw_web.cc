@@ -240,7 +240,44 @@ void romwbw_start() {
   // Register reset callback for SYSRESET (REBOOT command)
   emu->hbios.setResetCallback(handle_sysreset);
 
-  // Note: Disk unit table is populated by emu_complete_init() in romwbw_load_rom()
+  // Count loaded disks and calculate auto slice count (matching CBIOS logic)
+  int disk_count = 0;
+  for (int i = 0; i < 16; i++) {
+    if (emu->hbios.isDiskLoaded(i)) {
+      disk_count++;
+    }
+  }
+
+  // Calculate auto slice count: 1 disk = 8 slices, 2 disks = 4 each, 3+ = 2 each
+  int auto_slices = (disk_count <= 1) ? 8 : (disk_count == 2) ? 4 : 2;
+  emu_log("[WASM] %d disk(s) loaded, using %d slices each\n", disk_count, auto_slices);
+
+  // Apply slice counts to all loaded disks
+  for (int i = 0; i < 16; i++) {
+    if (emu->hbios.isDiskLoaded(i)) {
+      emu->hbios.setDiskSliceCount(i, auto_slices);
+    }
+  }
+
+  // Build slice array for emu_populate_drive_map
+  int disk_slices[16];
+  for (int i = 0; i < 16; i++) {
+    disk_slices[i] = emu->hbios.isDiskLoaded(i) ? auto_slices : 0;
+  }
+
+  // Repopulate disk tables now that disks are loaded with correct slice counts
+  emu->hbios.populateDiskUnitTable();
+  int drive_count = emu_populate_drive_map(&emu->memory, &emu->hbios, disk_slices);
+
+  // Update device count in HCB
+  uint8_t* rom = emu->memory.get_rom();
+  if (rom) {
+    rom[HCB_BASE + HCB_DEVCNT] = (uint8_t)drive_count;
+    emu->memory.write_bank(0x80, HCB_BASE + HCB_DEVCNT, (uint8_t)drive_count);
+  }
+
+  // Copy updated HCB to shadow RAM
+  emu_copy_hcb_to_shadow_ram(&emu->memory);
 
   // Reset CPU and start at ROM address 0
   emu->cpu.regs.AF.set_pair16(0);
