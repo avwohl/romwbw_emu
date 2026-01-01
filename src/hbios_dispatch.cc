@@ -333,24 +333,7 @@ void HBIOSDispatch::populateDiskUnitTable() {
 
   int disk_idx = 0;
 
-  // Add memory disks (MD0=RAM, MD1=ROM) if enabled
-  for (int i = 0; i < 2 && disk_idx < 16; i++) {
-    if (md_disks[i].is_enabled) {
-      // Write to both ROM (for boot loader) and RAM bank 0x80 (working copy)
-      rom[DISKUT_BASE + disk_idx * 4 + 0] = 0x00;  // DIODEV_MD
-      rom[DISKUT_BASE + disk_idx * 4 + 1] = i;     // Unit number
-      rom[DISKUT_BASE + disk_idx * 4 + 2] = 0x00;  // No special attrs
-      rom[DISKUT_BASE + disk_idx * 4 + 3] = 0x00;
-      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 0, 0x00);
-      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 1, i);
-      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 2, 0x00);
-      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 3, 0x00);
-      emu_log("[DISKUT] Entry %d: MD%d (memory disk)\n", disk_idx, i);
-      disk_idx++;
-    }
-  }
-
-  // Add hard disks from disks[] array
+  // Add hard disks FIRST so boot disk is at the start of the unit table
   if (debug_log) debug_log("[DISKUT] Scanning disks array for loaded disks...\n");
   for (int i = 0; i < 16 && disk_idx < 16; i++) {
     if (debug_log) debug_log("[DISKUT] disks[%d].is_open = %d, size = %zu\n", i, disks[i].is_open ? 1 : 0, disks[i].size);
@@ -368,6 +351,23 @@ void HBIOSDispatch::populateDiskUnitTable() {
     }
   }
 
+  // Add memory disks (MD0=RAM, MD1=ROM) AFTER hard disks
+  for (int i = 0; i < 2 && disk_idx < 16; i++) {
+    if (md_disks[i].is_enabled) {
+      // Write to both ROM (for boot loader) and RAM bank 0x80 (working copy)
+      rom[DISKUT_BASE + disk_idx * 4 + 0] = 0x00;  // DIODEV_MD
+      rom[DISKUT_BASE + disk_idx * 4 + 1] = i;     // Unit number
+      rom[DISKUT_BASE + disk_idx * 4 + 2] = 0x00;  // No special attrs
+      rom[DISKUT_BASE + disk_idx * 4 + 3] = 0x00;
+      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 0, 0x00);
+      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 1, i);
+      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 2, 0x00);
+      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 3, 0x00);
+      emu_log("[DISKUT] Entry %d: MD%d (memory disk)\n", disk_idx, i);
+      disk_idx++;
+    }
+  }
+
   // Populate drive map at HCB+0x20 (0x120)
   // Format: each byte = (slice << 4) | unit
   // Drive letters A-P map to bytes 0x120-0x12F
@@ -381,17 +381,8 @@ void HBIOSDispatch::populateDiskUnitTable() {
     memory->write_bank(0x80, DRVMAP_BASE + i, 0xFF);
   }
 
-  // Assign memory disks first (A: = MD0, B: = MD1)
-  for (int i = 0; i < 2 && drive_letter < 16; i++) {
-    if (md_disks[i].is_enabled) {
-      uint8_t map_val = (0 << 4) | i;  // slice 0, unit i
-      rom[DRVMAP_BASE + drive_letter] = map_val;
-      memory->write_bank(0x80, DRVMAP_BASE + drive_letter, map_val);
-      drive_letter++;
-    }
-  }
-
-  // Assign hard disk slices, respecting per-disk slice limits
+  // Assign hard disk slices FIRST so boot disk is A:
+  // This matches RomWBW behavior where boot device slices are A:, B:, C:, D:, etc.
   for (int hd = 0; hd < 16 && drive_letter < 16; hd++) {
     if (disks[hd].is_open) {
       // Unit number: HD0 = unit 2, HD1 = unit 3, etc.
@@ -406,6 +397,18 @@ void HBIOSDispatch::populateDiskUnitTable() {
         memory->write_bank(0x80, DRVMAP_BASE + drive_letter, map_val);
         drive_letter++;
       }
+    }
+  }
+
+  // Assign memory disks AFTER hard disks
+  // This puts them after the boot disk slices (e.g., E: and F: if 4 slices used)
+  for (int i = 0; i < 2 && drive_letter < 16; i++) {
+    if (md_disks[i].is_enabled) {
+      uint8_t map_val = (0 << 4) | i;  // slice 0, unit i
+      rom[DRVMAP_BASE + drive_letter] = map_val;
+      memory->write_bank(0x80, DRVMAP_BASE + drive_letter, map_val);
+      emu_log("[DISKUT] MD%d assigned to %c:\n", i, 'A' + drive_letter);
+      drive_letter++;
     }
   }
 
