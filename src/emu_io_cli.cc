@@ -34,6 +34,10 @@ static std::queue<int> input_queue;
 static bool stdin_eof = false;
 static int peek_char = -1;
 
+// Escape handling - set by main loop, checked by blocking read
+static char current_escape_char = 0x05;  // Default ^E
+static bool escape_requested = false;
+
 // Ctrl+C tracking
 static int consecutive_ctrl_c = 0;
 
@@ -151,19 +155,64 @@ int emu_console_read_char() {
     return ch;
   }
 
-  // Check EOF
-  if (stdin_eof) return -1;
-
-  // Read from stdin (blocking) - use read() to avoid stdio buffering
-  char buf;
-  ssize_t n = read(STDIN_FILENO, &buf, 1);
-  if (n <= 0) {
-    stdin_eof = true;
+  // Check EOF - for non-TTY, exit the emulator
+  if (stdin_eof) {
+    if (!isatty(STDIN_FILENO)) {
+      emu_io_cleanup();
+      exit(0);
+    }
     return -1;
   }
-  int ch = (unsigned char)buf;
-  if (ch == '\n') ch = '\r';  // LF -> CR for CP/M
-  return ch;
+
+  // For TTY, block waiting for input with select()
+  // For non-TTY (pipe), just try once and exit on EOF
+  if (!isatty(STDIN_FILENO)) {
+    // Non-TTY: single non-blocking read attempt
+    char buf;
+    ssize_t n = read(STDIN_FILENO, &buf, 1);
+    if (n > 0) {
+      int ch = (unsigned char)buf;
+      if (ch == '\n') ch = '\r';
+      return ch;
+    }
+    // EOF on pipe - exit cleanly
+    emu_io_cleanup();
+    exit(0);
+  }
+
+  // TTY: block waiting for input, checking for escape
+  while (true) {
+    fd_set readfds;
+    struct timeval tv;
+    FD_ZERO(&readfds);
+    FD_SET(STDIN_FILENO, &readfds);
+    tv.tv_sec = 0;
+    tv.tv_usec = 50000;  // 50ms timeout
+
+    int sel = select(STDIN_FILENO + 1, &readfds, NULL, NULL, &tv);
+    if (sel > 0) {
+      char buf;
+      ssize_t n = read(STDIN_FILENO, &buf, 1);
+      if (n > 0) {
+        int ch = (unsigned char)buf;
+        // Check for escape character
+        if (ch == current_escape_char) {
+          escape_requested = true;
+          return ch;
+        }
+        if (ch == '\n') ch = '\r';  // LF -> CR for CP/M
+        return ch;
+      }
+      if (n <= 0) {
+        stdin_eof = true;
+        return -1;
+      }
+    }
+    // Timeout - check if escape was requested externally
+    if (escape_requested) {
+      return -2;  // Special return to signal escape
+    }
+  }
 }
 
 void emu_console_queue_char(int ch) {
@@ -181,6 +230,15 @@ void emu_console_write_char(uint8_t ch) {
 }
 
 bool emu_console_check_escape(char escape_char) {
+  // Save escape char for blocking read to check
+  current_escape_char = escape_char;
+
+  // Check if escape was detected by blocking read
+  if (escape_requested) {
+    escape_requested = false;
+    return true;
+  }
+
   if (!isatty(STDIN_FILENO)) return false;
 
   // Check peeked char

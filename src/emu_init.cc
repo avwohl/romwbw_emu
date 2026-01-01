@@ -251,100 +251,11 @@ bool emu_init_ram_bank(banked_mem* memory, uint8_t bank, uint16_t* initialized_b
 // Disk Unit Table and Drive Map
 //=============================================================================
 
-int emu_populate_disk_unit_table(banked_mem* memory, HBIOSDispatch* hbios) {
-  if (!memory || !hbios) return 0;
-
-  // The disk unit table population is now handled by HBIOSDispatch::populateDiskUnitTable()
-  // which writes to both ROM (for boot loader) and RAM bank 0x80 (working copy)
-  hbios->populateDiskUnitTable();
-
-  // Return a count (estimated based on what we know)
-  // The actual count is managed internally by HBIOSDispatch
-  return 0;  // HBIOSDispatch handles the actual count
-}
-
-int emu_populate_drive_map(banked_mem* memory, HBIOSDispatch* hbios,
-                           const int* disk_slices) {
-  if (!memory) return 0;
-
-  uint8_t* rom = memory->get_rom();
-  if (!rom) return 0;
-
-  // Read memory disk configuration from HCB
-  uint8_t ramd_banks = rom[HCB_BASE + HCB_RAMD_BNKS];  // CB_RAMD_BNKS at 0x1DD
-  uint8_t romd_banks = rom[HCB_BASE + HCB_ROMD_BNKS];  // CB_ROMD_BNKS at 0x1DF
-
-  int drive_letter = 0;  // 0=A, 1=B, etc.
-
-  // First, mark all drive map entries as unused (0xFF) in both ROM and RAM
-  for (int i = 0; i < 16; i++) {
-    rom[DRVMAP_BASE + i] = 0xFF;
-    memory->write_bank(0x80, DRVMAP_BASE + i, 0xFF);
-  }
-
-  // Assign memory disks
-  // A: = MD0 (RAM disk) if enabled
-  if (ramd_banks > 0 && drive_letter < 16) {
-    rom[DRVMAP_BASE + drive_letter] = 0x00;  // Unit 0, slice 0
-    memory->write_bank(0x80, DRVMAP_BASE + drive_letter, 0x00);
-    drive_letter++;
-  }
-
-  // B: = MD1 (ROM disk) if enabled
-  if (romd_banks > 0 && drive_letter < 16) {
-    rom[DRVMAP_BASE + drive_letter] = 0x01;  // Unit 1, slice 0
-    memory->write_bank(0x80, DRVMAP_BASE + drive_letter, 0x01);
-    drive_letter++;
-  }
-
-  // Assign hard disk slices (if hbios provided)
-  if (hbios) {
-    for (int hd = 0; hd < 16 && drive_letter < 16; hd++) {
-      if (hbios->isDiskLoaded(hd)) {
-        // Unit number: HD0 = unit 2, HD1 = unit 3, etc.
-        int unit = hd + 2;
-
-        // Get slice count for this disk (default 4)
-        int num_slices = disk_slices ? disk_slices[hd] : 4;
-        if (num_slices < 1) num_slices = 1;
-        if (num_slices > 8) num_slices = 8;
-
-        // Assign each slice to a drive letter
-        for (int slice = 0; slice < num_slices && drive_letter < 16; slice++) {
-          uint8_t map_value = ((slice & 0x0F) << 4) | (unit & 0x0F);
-          rom[DRVMAP_BASE + drive_letter] = map_value;
-          memory->write_bank(0x80, DRVMAP_BASE + drive_letter, map_value);
-          drive_letter++;
-        }
-      }
-    }
-  }
-
-  emu_log("[EMU_INIT] Drive map: assigned %d drive letters\n", drive_letter);
-
-  return drive_letter;
-}
-
-void emu_populate_disk_tables(banked_mem* memory, HBIOSDispatch* hbios,
-                              const int* disk_slices) {
-  if (!memory) return;
-
-  // Populate disk unit table (via HBIOSDispatch)
-  if (hbios) {
-    emu_populate_disk_unit_table(memory, hbios);
-  }
-
-  // Populate drive map
-  int drive_count = emu_populate_drive_map(memory, hbios, disk_slices);
-
-  // Update device count in HCB
-  uint8_t* rom = memory->get_rom();
-  if (rom) {
-    rom[HCB_BASE + HCB_DEVCNT] = (uint8_t)drive_count;
-    memory->write_bank(0x80, HCB_BASE + HCB_DEVCNT, (uint8_t)drive_count);
-    emu_log("[EMU_INIT] Set device count to %d\n", drive_count);
-  }
-}
+// Note: We don't populate the disk unit table (0x160) or drive map (0x120)
+// because real RomWBW CBIOS builds these dynamically using HBIOS API calls
+// (SYSGET_DIOCNT, DIODEVICE, DIOCAP), not from pre-populated tables.
+// The emu_populate_disk_unit_table, emu_populate_drive_map, and
+// emu_populate_disk_tables functions have been removed as they were unused.
 
 //=============================================================================
 // Disk Image Validation
@@ -454,7 +365,7 @@ const char* emu_validate_disk_image(const char* path, size_t* out_size) {
 //=============================================================================
 
 void emu_complete_init(banked_mem* memory, HBIOSDispatch* hbios,
-                       const int* disk_slices) {
+                       const int* /* disk_slices - unused */) {
   if (!memory) {
     emu_error("[EMU_INIT] Memory is null in emu_complete_init\n");
     return;
@@ -471,31 +382,17 @@ void emu_complete_init(banked_mem* memory, HBIOSDispatch* hbios,
   // 3. Set up HBIOS ident signatures
   emu_setup_hbios_ident(memory);
 
-  // 4. Populate disk tables (if hbios provided)
+  // 4. Initialize memory disks from HCB configuration (if hbios provided)
   if (hbios) {
-    // Initialize memory disks from HCB configuration
-    // Note: initMemoryDisks() calls populateDiskUnitTable() internally
     hbios->initMemoryDisks();
-
-    // Populate drive map and device count only if disk_slices provided
-    // (CLI provides this, web/iOS may not need it)
-    if (disk_slices) {
-      int drive_count = emu_populate_drive_map(memory, hbios, disk_slices);
-
-      // Update device count in HCB
-      uint8_t* rom = memory->get_rom();
-      if (rom) {
-        rom[HCB_BASE + HCB_DEVCNT] = (uint8_t)drive_count;
-        memory->write_bank(0x80, HCB_BASE + HCB_DEVCNT, (uint8_t)drive_count);
-        emu_log("[EMU_INIT] Set device count to %d\n", drive_count);
-      }
-    }
   }
 
+  // Note: We don't populate disk unit table (0x160) or drive map (0x120) -
+  // CBIOS builds these dynamically using HBIOS API calls.
+
   // 5. Final HCB copy to shadow RAM with shadow bits set
-  // This must be done AFTER all ROM modifications (disk tables, drive map, etc.)
+  // This must be done AFTER all ROM modifications
   // so that reads from ROM bank 0 addresses 0x000-0x1FF return the final values.
-  // This is required for the romwbw_mem.h shadow RAM fix (shadow only applies to bank 0).
   emu_copy_hcb_to_shadow_ram(memory);
 
   emu_log("[EMU_INIT] Complete initialization finished\n");

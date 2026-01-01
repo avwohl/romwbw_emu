@@ -1,0 +1,5 @@
+ • When booting from disk, the standard RomWBW drive letter allocations don't seem to be performed.  For example, I boot to "2.1".  HDSK0:1 should be assigned to drive A:.  However, it is assigned to D:.
+ • Booting 2.2 does not work well because of the drive assignment issue above.  PROFILE.SUB is not executed because of the prior issue.
+ • The ASSIGN command occasionally fails with "Unexpected CBIOS" error.  It is inconsistent and I have not been able to recreate this consistently.
+ • Attempting to boot 2.4 (ZPM3) fails with "*** Disk I/O failure".
+ • Attempting to access any slice beyond 3, also seems to result in a disk error.  For example, I assign a drive letter to HDSK0:5, then use DIR on the assigned drive letter and I get a disk error.

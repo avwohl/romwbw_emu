@@ -6,6 +6,7 @@
 
 #include "hbios_dispatch.h"
 #include "emu_io.h"
+#include "emu_init.h"
 #include "qkz80.h"
 #include "qkz80_cpu_flags.h"
 #include "romwbw_mem.h"
@@ -293,142 +294,9 @@ void HBIOSDispatch::initMemoryDisks() {
             romd_start, romd_start + romd_banks - 1, size_kb, md_disks[1].total_sectors());
   }
 
-  // Populate disk unit table so boot loader can enumerate all disks
-  populateDiskUnitTable();
-}
-
-//=============================================================================
-// Disk Unit Table Population
-//=============================================================================
-
-void HBIOSDispatch::populateDiskUnitTable() {
-  if (debug_log) debug_log("[DISKUT] populateDiskUnitTable called\n");
-  if (!memory) {
-    emu_error("[DISKUT] Warning: memory not available\n");
-    return;
-  }
-
-  // Get direct ROM pointer - write_bank() ignores ROM writes, so we need direct access
-  uint8_t* rom = memory->get_rom();
-  if (!rom) {
-    emu_log("[DISKUT] Warning: ROM not available\n");
-    return;
-  }
-
-  // The disk unit table is at HCB+0x60 (address 0x160), 16 entries of 4 bytes each
-  // Format per entry:
-  //   Byte 0: Device type (DIODEV_*): 0x00=MD, 0x09=HDSK, 0xFF=empty
-  //   Byte 1: Unit number within device type
-  //   Byte 2: Mode/attributes (0x80 = removable, etc.)
-  //   Byte 3: Reserved/LU
-  const uint16_t DISKUT_BASE = 0x160;  // HCB+0x60
-
-  // First, mark all 16 entries as empty (0xFF) in both ROM and RAM bank 0x80
-  for (int i = 0; i < 16; i++) {
-    for (int b = 0; b < 4; b++) {
-      rom[DISKUT_BASE + i * 4 + b] = 0xFF;
-      memory->write_bank(0x80, DISKUT_BASE + i * 4 + b, 0xFF);
-    }
-  }
-
-  int disk_idx = 0;
-
-  // Add memory disks (MD0=RAM, MD1=ROM) if enabled
-  for (int i = 0; i < 2 && disk_idx < 16; i++) {
-    if (md_disks[i].is_enabled) {
-      // Write to both ROM (for boot loader) and RAM bank 0x80 (working copy)
-      rom[DISKUT_BASE + disk_idx * 4 + 0] = 0x00;  // DIODEV_MD
-      rom[DISKUT_BASE + disk_idx * 4 + 1] = i;     // Unit number
-      rom[DISKUT_BASE + disk_idx * 4 + 2] = 0x00;  // No special attrs
-      rom[DISKUT_BASE + disk_idx * 4 + 3] = 0x00;
-      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 0, 0x00);
-      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 1, i);
-      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 2, 0x00);
-      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 3, 0x00);
-      emu_log("[DISKUT] Entry %d: MD%d (memory disk)\n", disk_idx, i);
-      disk_idx++;
-    }
-  }
-
-  // Add hard disks from disks[] array
-  if (debug_log) debug_log("[DISKUT] Scanning disks array for loaded disks...\n");
-  for (int i = 0; i < 16 && disk_idx < 16; i++) {
-    if (debug_log) debug_log("[DISKUT] disks[%d].is_open = %d, size = %zu\n", i, disks[i].is_open ? 1 : 0, disks[i].size);
-    if (disks[i].is_open) {
-      rom[DISKUT_BASE + disk_idx * 4 + 0] = 0x09;  // DIODEV_HDSK
-      rom[DISKUT_BASE + disk_idx * 4 + 1] = i;     // HDSK unit number
-      rom[DISKUT_BASE + disk_idx * 4 + 2] = 0x00;  // No special attrs
-      rom[DISKUT_BASE + disk_idx * 4 + 3] = 0x00;
-      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 0, 0x09);
-      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 1, i);
-      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 2, 0x00);
-      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 3, 0x00);
-      if (debug_log) debug_log("[DISKUT] Entry %d: HD%d (hard disk, %zu bytes)\n", disk_idx, i, disks[i].size);
-      disk_idx++;
-    }
-  }
-
-  // Populate drive map at HCB+0x20 (0x120)
-  // Format: each byte = (slice << 4) | unit
-  // Drive letters A-P map to bytes 0x120-0x12F
-  // Value 0xFF = no drive assigned
-  const uint16_t DRVMAP_BASE = 0x120;  // HCB+0x20
-  int drive_letter = 0;  // 0=A, 1=B, etc.
-
-  // First, mark all drive map entries as unused (0xFF)
-  for (int i = 0; i < 16; i++) {
-    rom[DRVMAP_BASE + i] = 0xFF;
-    memory->write_bank(0x80, DRVMAP_BASE + i, 0xFF);
-  }
-
-  // Assign memory disks first (A: = MD0, B: = MD1)
-  for (int i = 0; i < 2 && drive_letter < 16; i++) {
-    if (md_disks[i].is_enabled) {
-      uint8_t map_val = (0 << 4) | i;  // slice 0, unit i
-      rom[DRVMAP_BASE + drive_letter] = map_val;
-      memory->write_bank(0x80, DRVMAP_BASE + drive_letter, map_val);
-      drive_letter++;
-    }
-  }
-
-  // Assign hard disk slices, respecting per-disk slice limits
-  for (int hd = 0; hd < 16 && drive_letter < 16; hd++) {
-    if (disks[hd].is_open) {
-      // Unit number: HD0 = unit 2, HD1 = unit 3, etc.
-      int unit = hd + 2;
-      // Use per-disk max_slices (default 4, configurable via setDiskSliceCount)
-      int num_slices = disks[hd].max_slices;
-      emu_log("[DISKUT] HD%d: is_open=true, max_slices=%d, assigning %d slices starting at %c:\n",
-              hd, disks[hd].max_slices, num_slices, 'A' + drive_letter);
-      for (int slice = 0; slice < num_slices && drive_letter < 16; slice++) {
-        uint8_t map_val = ((slice & 0x0F) << 4) | (unit & 0x0F);
-        rom[DRVMAP_BASE + drive_letter] = map_val;
-        memory->write_bank(0x80, DRVMAP_BASE + drive_letter, map_val);
-        drive_letter++;
-      }
-    }
-  }
-
-  // Update device count at HCB+0x0C (CB_DEVCNT) to match number of logical drives
-  rom[0x10C] = (uint8_t)drive_letter;
-  memory->write_bank(0x80, 0x10C, drive_letter);
-
-  emu_log("[DISKUT] Populated %d disk entries, %d drive letters in HCB\n", disk_idx, drive_letter);
-
-  // Debug: dump drive map from ROM (what boot loader reads)
-  emu_log("[DISKUT] Drive map in ROM (0x120-0x12F):\n");
-  emu_log("[DISKUT]   A-H: ");
-  for (int i = 0; i < 8; i++) {
-    emu_log("0x%02X ", rom[DRVMAP_BASE + i]);
-  }
-  emu_log("\n[DISKUT]   I-P: ");
-  for (int i = 8; i < 16; i++) {
-    emu_log("0x%02X ", rom[DRVMAP_BASE + i]);
-  }
-  emu_log("\n[DISKUT] CB_DEVCNT in ROM (0x10C) = 0x%02X\n", rom[0x10C]);
-
-  // Note: Shadow RAM copy with shadow bits is now handled by emu_complete_init()
-  // which calls emu_copy_hcb_to_shadow_ram() after all ROM modifications are done.
+  // Note: We don't populate the disk unit table (0x160) or drive map (0x120)
+  // because real RomWBW CBIOS builds these dynamically using HBIOS API calls
+  // (SYSGET_DIOCNT, DIODEVICE, DIOCAP), not from pre-populated tables.
 }
 
 //=============================================================================
@@ -553,6 +421,9 @@ bool HBIOSDispatch::handleMainEntry() {
 
   uint8_t func = cpu->regs.BC.get_high();
   int trap_type = getTrapTypeFromFunc(func);
+
+  // Trace all HBIOS calls for debugging - disabled to reduce noise
+  // Enable selectively as needed
 
   switch (trap_type) {
     case 0: handleCIO(); return true;
@@ -881,14 +752,6 @@ void HBIOSDispatch::handleDIO() {
       // Input: BC=Function/Unit, HL=Buffer Address, D=Buffer Bank (0x80=use current), E=Block Count
       // Output: A=Result, E=Blocks Read
 
-      // Trace DIOREAD calls during CP/M 3 boot investigation
-      static int dioread_trace_count = 0;
-      if (debug_log && is_harddisk && dioread_trace_count < 50) {
-        dioread_trace_count++;
-        debug_log("[DIOREAD #%d] unit=%d LBA=%u bank=0x%02X addr=0x%04X count=%d\n",
-                dioread_trace_count, raw_unit, disks[hd_unit].current_lba,
-                cpu->regs.DE.get_high(), cpu->regs.HL.get_pair16(), cpu->regs.DE.get_low());
-      }
 
       if (!is_memdisk && !is_harddisk) {
         // No device at this unit - return error with 0 blocks read
@@ -1329,8 +1192,9 @@ void HBIOSDispatch::handleSYS() {
       // Update PMGMT_CURBNK at 0xFFE0 for RAM banks only
       // This is needed so code that reads current bank (like CP/M 3's xbnkmov) works correctly
       // We only update for RAM banks to avoid interfering with ROM bank operations
+      // Note: 0xFFE0 is in common memory (0x8000-0xFFFF), use store_mem() not write_bank()
       if (new_bank & 0x80) {
-        memory->write_bank(0x8F, 0x7FE0, new_bank);  // 0xFFE0 in common bank (0x8F)
+        memory->store_mem(0xFFE0, new_bank);
       }
 
       cur_bank = new_bank;
@@ -1492,10 +1356,6 @@ void HBIOSDispatch::handleSYS() {
           // Boot info: D = boot unit, E = boot slice (saved during SYSBOOT)
           cpu->regs.DE.set_high(saved_boot_unit);
           cpu->regs.DE.set_low(saved_boot_slice);
-          if (debug_log) {
-            emu_log("[SYSGET BOOTINFO] Returning D=%d (unit), E=%d (slice)\n",
-                    saved_boot_unit, saved_boot_slice);
-          }
           break;
 
         case SYSGET_SWITCH:
@@ -1618,16 +1478,45 @@ void HBIOSDispatch::handleSYS() {
         case SYSSET_SWITCH:
           // Set front panel switches - just ignore
           break;
-        case SYSSET_BOOTINFO:
-          // Set boot volume info (called by CPMLDR before loading CPM3.SYS)
-          // D = boot unit, E = boot slice, L = bank (always 0)
+        case SYSSET_BOOTINFO: {
+          // Set boot volume info (called by boot loader before loading OS)
+          // D = boot unit, E = boot slice, L = bank
           saved_boot_unit = cpu->regs.DE.get_high();
           saved_boot_slice = cpu->regs.DE.get_low();
+          uint8_t boot_bank = cpu->regs.HL.get_low();
+
+          // Write boot volume to HCB in BOTH ROM and RAM
+          // Boot loader runs from ROM, CBIOS reads from RAM bank 0x80
+          // CB_BOOTVOL is a word at HCB+0x0D: low byte = slice, high byte = unit
+          if (memory) {
+            uint16_t bootvol_addr = HCB_BASE + HCB_BOOTVOL;
+            uint16_t bootbid_addr = HCB_BASE + HCB_BOOTBID;
+
+            // Write to ROM (bank 0)
+            uint8_t* rom = memory->get_rom();
+            if (rom) {
+              rom[bootvol_addr] = saved_boot_slice;
+              rom[bootvol_addr + 1] = saved_boot_unit;
+              rom[bootbid_addr] = boot_bank;
+            }
+
+            // Write to RAM bank 0x80 (what CBIOS will read)
+            memory->write_bank(0x80, bootvol_addr, saved_boot_slice);
+            memory->write_bank(0x80, bootvol_addr + 1, saved_boot_unit);
+            memory->write_bank(0x80, bootbid_addr, boot_bank);
+
+            // Also write to shadow RAM for ROM bank 0 reads
+            memory->store_mem(bootvol_addr, saved_boot_slice);
+            memory->store_mem(bootvol_addr + 1, saved_boot_unit);
+            memory->store_mem(bootbid_addr, boot_bank);
+          }
+
           if (debug_log) {
-            emu_log("[SYSSET BOOTINFO] unit=%d slice=%d (bank=0x%02X ignored)\n",
-                    saved_boot_unit, saved_boot_slice, cpu->regs.HL.get_low());
+            emu_log("[SYSSET BOOTINFO] unit=%d slice=%d bank=0x%02X -> HCB 0x%04X (ROM+RAM)\n",
+                    saved_boot_unit, saved_boot_slice, boot_bank, HCB_BASE + HCB_BOOTVOL);
           }
           break;
+        }
         default:
           if (debug_log) {
             emu_log("[HBIOS SYSSET] Unhandled subfunction 0x%02X\n", subfunc);
@@ -2053,8 +1942,10 @@ void HBIOSDispatch::handleEXT() {
           // Slice beyond limit - return error to stop CBIOS enumeration
           media_id = 0;  // MID_NONE - signals no valid media
           result = HBR_FAILED;
-          emu_log("[EXTSLICE] unit=0x%02X slice=%d REJECTED (max=%d)\n",
-                  disk_unit, slice, disk.max_slices);
+          if (debug_log) {
+            debug_log("[EXTSLICE] unit=0x%02X slice=%d REJECTED (max=%d)\n",
+                    disk_unit, slice, disk.max_slices);
+          }
         } else {
           // Calculate slice LBA offset
           slice_lba = disk.partition_base_lba + ((uint32_t)slice * disk.slice_size);
@@ -2063,14 +1954,12 @@ void HBIOSDispatch::handleEXT() {
           if (disk.is_hd1k) {
             media_id = 0x0A;  // MID_HDNEW (hd1k format)
           }
-          emu_log("[EXTSLICE] unit=0x%02X slice=%d -> media=0x%02X LBA=%u (max=%d)\n",
-                  disk_unit, slice, media_id, slice_lba, disk.max_slices);
         }
       } else {
         // Disk not open or invalid unit
         result = HBR_FAILED;
         media_id = 0;  // MID_NONE
-        emu_log("[EXTSLICE] unit=0x%02X slice=%d -> DISK NOT OPEN\n", disk_unit, slice);
+        if (debug_log) debug_log("[EXTSLICE] unit=0x%02X slice=%d -> DISK NOT OPEN\n", disk_unit, slice);
       }
 
       // Set return values
@@ -2078,6 +1967,7 @@ void HBIOSDispatch::handleEXT() {
       cpu->regs.BC.set_low(media_id);    // C = media ID
       cpu->regs.DE.set_pair16((slice_lba >> 16) & 0xFFFF);
       cpu->regs.HL.set_pair16(slice_lba & 0xFFFF);
+
       break;
     }
 
