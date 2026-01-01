@@ -829,10 +829,10 @@ void print_usage(const char* prog) {
   fprintf(stderr, "  --debug           Enable debug output\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Disk options:\n");
-  fprintf(stderr, "  --disk0=FILE[:N]  Attach disk image to slot 0 (default: 8 slices)\n");
-  fprintf(stderr, "  --disk1=FILE[:N]  Attach disk image to slot 1 (default: 8 slices)\n");
-  fprintf(stderr, "    N = number of slices (1-8), controls how many drive letters are used\n");
-  fprintf(stderr, "    Example: --disk0=disk.img:1 uses only 1 slice (C: only)\n");
+  fprintf(stderr, "  --disk0=FILE[:N]  Attach disk image to slot 0\n");
+  fprintf(stderr, "  --disk1=FILE[:N]  Attach disk image to slot 1\n");
+  fprintf(stderr, "    N = number of slices (1-8), or omit for auto (1 disk=8, 2 disks=4 each)\n");
+  fprintf(stderr, "    Example: --disk0=disk.img:1 uses only 1 slice\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "  Supported disk formats (auto-detected):\n");
   fprintf(stderr, "    hd1k  - Modern RomWBW format, 8MB per slice, 1024 dir entries\n");
@@ -871,7 +871,7 @@ int main(int argc, char** argv) {
   bool strict_io_mode = false;
   int sense = -1;
   std::string hbios_disks[16];  // For RomWBW disk images (HBIOS dispatch)
-  int hbios_disk_slices[16] = {4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4};  // Max slices per disk (default 4)
+  int hbios_disk_slices[16] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};  // -1 = auto
   std::string trace_file;
   std::string symbols_file;
   std::string romldr_path;  // RomWBW romldr boot menu
@@ -1113,14 +1113,26 @@ int main(int argc, char** argv) {
   // Set up HBIOS disk images
   // NOTE: Memory disks are initialized later, after ROM is loaded
   // Attach any file-backed hard disk images (HBIOS dispatch protocol)
+  int disk_count = 0;
   for (int i = 0; i < 16; i++) {
     if (!hbios_disks[i].empty()) {
       if (!emu.getHBIOS()->loadDiskFromFile(i, hbios_disks[i])) {
         fprintf(stderr, "Warning: Could not attach disk %d: %s\n", i, hbios_disks[i].c_str());
       } else {
-        // Set the slice count for this disk
-        emu.getHBIOS()->setDiskSliceCount(i, hbios_disk_slices[i]);
+        disk_count++;
       }
+    }
+  }
+
+  // Calculate auto slice count based on disk count (matching CBIOS logic):
+  // 1 disk: 8 slices, 2 disks: 4 slices, 3+ disks: 2 slices
+  int auto_slices = (disk_count <= 1) ? 8 : (disk_count == 2) ? 4 : 2;
+
+  // Apply slice counts (auto or explicit)
+  for (int i = 0; i < 16; i++) {
+    if (emu.getHBIOS()->isDiskLoaded(i)) {
+      int slices = (hbios_disk_slices[i] < 0) ? auto_slices : hbios_disk_slices[i];
+      emu.getHBIOS()->setDiskSliceCount(i, slices);
     }
   }
 
