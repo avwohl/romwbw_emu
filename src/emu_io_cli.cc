@@ -34,6 +34,10 @@ static std::queue<int> input_queue;
 static bool stdin_eof = false;
 static int peek_char = -1;
 
+// Escape handling - set by escape check, used by blocking read
+static char current_escape_char = 0x05;  // Default ^E
+static bool escape_requested = false;
+
 // Ctrl+C tracking
 static int consecutive_ctrl_c = 0;
 
@@ -109,13 +113,13 @@ bool emu_console_has_input() {
   // Check if at EOF
   if (stdin_eof) return false;
 
-  // Check with select
+  // Check with select - no wait, just poll
   fd_set readfds;
   struct timeval tv;
   FD_ZERO(&readfds);
   FD_SET(STDIN_FILENO, &readfds);
   tv.tv_sec = 0;
-  tv.tv_usec = 10000;  // 10ms timeout
+  tv.tv_usec = 0;  // No timeout - instant check
 
   int result = select(STDIN_FILENO + 1, &readfds, NULL, NULL, &tv);
   if (result <= 0) {
@@ -174,32 +178,29 @@ int emu_console_read_char() {
     exit(0);
   }
 
-  // TTY: use select() to wait for actual input
-  // This avoids misinterpreting "no data yet" as EOF in raw mode
-  while (true) {
-    fd_set readfds;
-    struct timeval tv;
-    FD_ZERO(&readfds);
-    FD_SET(STDIN_FILENO, &readfds);
-    tv.tv_sec = 0;
-    tv.tv_usec = 100000;  // 100ms timeout
+  // TTY: use blocking select() to wait for input
+  // No timeout - block until input arrives for maximum throughput
+  fd_set readfds;
+  FD_ZERO(&readfds);
+  FD_SET(STDIN_FILENO, &readfds);
 
-    int sel = select(STDIN_FILENO + 1, &readfds, NULL, NULL, &tv);
-    if (sel > 0) {
-      char buf;
-      ssize_t n = read(STDIN_FILENO, &buf, 1);
-      if (n > 0) {
-        int ch = (unsigned char)buf;
-        if (ch == '\n') ch = '\r';  // LF -> CR for CP/M
-        return ch;
+  int sel = select(STDIN_FILENO + 1, &readfds, NULL, NULL, NULL);
+  if (sel > 0) {
+    char buf;
+    ssize_t n = read(STDIN_FILENO, &buf, 1);
+    if (n > 0) {
+      int ch = (unsigned char)buf;
+      // Check for escape character
+      if (ch == current_escape_char) {
+        escape_requested = true;
       }
-      if (n <= 0) {
-        stdin_eof = true;
-        return -1;
-      }
+      if (ch == '\n') ch = '\r';  // LF -> CR for CP/M
+      return ch;
     }
-    // Timeout - loop and try again (allows escape checking in main loop)
   }
+  // Error or signal - treat as EOF
+  stdin_eof = true;
+  return -1;
 }
 
 void emu_console_queue_char(int ch) {
@@ -217,6 +218,15 @@ void emu_console_write_char(uint8_t ch) {
 }
 
 bool emu_console_check_escape(char escape_char) {
+  // Save escape char for blocking read to check
+  current_escape_char = escape_char;
+
+  // Check if escape was detected by blocking read
+  if (escape_requested) {
+    escape_requested = false;
+    return true;
+  }
+
   if (!isatty(STDIN_FILENO)) return false;
 
   // Check peeked char
@@ -228,7 +238,7 @@ bool emu_console_check_escape(char escape_char) {
     return false;
   }
 
-  // Check with select
+  // Non-blocking check with select
   fd_set readfds;
   struct timeval tv;
   FD_ZERO(&readfds);
@@ -240,11 +250,13 @@ bool emu_console_check_escape(char escape_char) {
     return false;
   }
 
-  int ch = getchar();
-  if (ch == EOF) {
+  char buf;
+  ssize_t n = read(STDIN_FILENO, &buf, 1);
+  if (n <= 0) {
     stdin_eof = true;
     return false;
   }
+  int ch = (unsigned char)buf;
   if (ch == escape_char) {
     return true;
   }
