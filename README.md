@@ -192,6 +192,8 @@ romwbw_emu/
 
 - [RomWBW](https://github.com/wwarthen/RomWBW) - Z80/Z180 ROM-based system software
 - [cpmemu-bdos](https://github.com/avwohl/cpmemu-bdos) - CP/M BDOS translator for Linux
+- [ioscpm](https://github.com/avwohl/ioscpm) - iOS/macOS version
+- [z80cpmw](https://github.com/avwohl/z80cpmw) - windows version
 
 ## License
 
