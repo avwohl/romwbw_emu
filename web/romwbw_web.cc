@@ -214,6 +214,19 @@ int romwbw_get_disk_size(int unit) {
   return emu->hbios.getDisk(unit).data.size();
 }
 
+// User-specified slice counts per disk (0 = auto-calculate)
+static int user_disk_slices[16] = {0};
+
+// Set max slices for a disk (call before romwbw_start)
+// slices=0 means auto-calculate based on disk count
+EMSCRIPTEN_KEEPALIVE
+void romwbw_set_disk_slices(int unit, int slices) {
+  if (unit >= 0 && unit < 16) {
+    user_disk_slices[unit] = slices;
+    emu_log("[WASM] Set disk %d max slices to %d\n", unit, slices);
+  }
+}
+
 // Reset callback for SYSRESET
 static void handle_sysreset(uint8_t reset_type) {
   if (!emu) return;
@@ -250,19 +263,20 @@ void romwbw_start() {
 
   // Calculate auto slice count: 1 disk = 8 slices, 2 disks = 4 each, 3+ = 2 each
   int auto_slices = (disk_count <= 1) ? 8 : (disk_count == 2) ? 4 : 2;
-  emu_log("[WASM] %d disk(s) loaded, using %d slices each\n", disk_count, auto_slices);
+  emu_log("[WASM] %d disk(s) loaded, auto_slices=%d\n", disk_count, auto_slices);
 
-  // Apply slice counts to all loaded disks
-  for (int i = 0; i < 16; i++) {
-    if (emu->hbios.isDiskLoaded(i)) {
-      emu->hbios.setDiskSliceCount(i, auto_slices);
-    }
-  }
-
-  // Build slice array for emu_populate_drive_map
+  // Build slice array - use user-specified if set, otherwise auto
   int disk_slices[16];
   for (int i = 0; i < 16; i++) {
-    disk_slices[i] = emu->hbios.isDiskLoaded(i) ? auto_slices : 0;
+    if (emu->hbios.isDiskLoaded(i)) {
+      int slices = (user_disk_slices[i] > 0) ? user_disk_slices[i] : auto_slices;
+      disk_slices[i] = slices;
+      emu->hbios.setDiskSliceCount(i, slices);
+      emu_log("[WASM] Disk %d: %d slices%s\n", i, slices,
+              user_disk_slices[i] > 0 ? " (user)" : " (auto)");
+    } else {
+      disk_slices[i] = 0;
+    }
   }
 
   // Repopulate disk tables now that disks are loaded with correct slice counts

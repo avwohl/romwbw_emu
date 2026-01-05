@@ -203,7 +203,15 @@
         <option value="hd1k_cpm22.img">hd1k_cpm22.img (CP/M 2.2)</option>
         <option value="hd1k_zsdos.img">hd1k_zsdos.img (ZSDOS)</option>
       </select>
-      <input type="file" id="disk0File" accept=".img,.dsk" style="width:200px;">
+      <select id="disk0Slices" title="Max slices for disk 0">
+        <option value="0">Auto</option>
+        <option value="1">1 slice</option>
+        <option value="2">2 slices</option>
+        <option value="4">4 slices</option>
+        <option value="6">6 slices</option>
+        <option value="8">8 slices</option>
+      </select>
+      <input type="file" id="disk0File" accept=".img,.dsk" style="width:160px;">
       <button id="downloadDisk0Btn" disabled title="Download modified disk">↓</button>
     </div>
     <div class="file-input">
@@ -217,7 +225,15 @@
         <option value="hd1k_cpm22.img">hd1k_cpm22.img (CP/M 2.2)</option>
         <option value="hd1k_zsdos.img">hd1k_zsdos.img (ZSDOS)</option>
       </select>
-      <input type="file" id="disk1File" accept=".img,.dsk" style="width:200px;">
+      <select id="disk1Slices" title="Max slices for disk 1">
+        <option value="0">Auto</option>
+        <option value="1">1 slice</option>
+        <option value="2">2 slices</option>
+        <option value="4">4 slices</option>
+        <option value="6">6 slices</option>
+        <option value="8">8 slices</option>
+      </select>
+      <input type="file" id="disk1File" accept=".img,.dsk" style="width:160px;">
       <button id="downloadDisk1Btn" disabled title="Download modified disk">↓</button>
     </div>
     <div class="file-input">
@@ -248,10 +264,10 @@
     <h3>Boot Options</h3>
     <p><code>2</code> - Boot from disk (drive A:) | <code>C</code> - CP/M from ROM | <code>H</code> - Help</p>
 
-    <h3>Drive Letters</h3>
-    <p>Hard disks are assigned first, then memory disks. With 2 disks loaded:</p>
-    <p><code>A:-D:</code> Disk 0 (4 slices) | <code>E:-H:</code> Disk 1 (4 slices) | <code>I:</code> RAM disk | <code>J:</code> ROM disk</p>
-    <p>With 1 disk: 8 slices (A:-H:). With 3+ disks: 2 slices each.</p>
+    <h3>Drive Letters & Slices</h3>
+    <p>Hard disks are assigned first, then memory disks. The boot slice becomes A:.</p>
+    <p><strong>Auto slices:</strong> 1 disk = 8 slices | 2 disks = 4 each | 3+ disks = 2 each</p>
+    <p>Use the slice dropdown to override (e.g., set disk 0 to 6 slices for boot 2.4).</p>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
@@ -310,6 +326,8 @@
         term.write('\r\n');  // LF needs CR+LF for xterm
       } else if (ch === 8) {  // Backspace
         term.write('\b \b');
+      } else if (ch === 27) {  // ESC - pass through for ANSI sequences
+        term.write('\x1b');
       } else if (ch >= 32 && ch < 127) {
         term.write(String.fromCharCode(ch));
       }
@@ -750,19 +768,26 @@
     startBtn.addEventListener('click', async function() {
       startBtn.disabled = true;
 
+      // Check what's selected (empty string = None selected)
+      const disk0Selection = document.getElementById('disk0Select').value;
+      const disk1Selection = document.getElementById('disk1Select').value;
+      const disk0WantNone = (disk0Selection === '');
+      const disk1WantNone = (disk1Selection === '');
+
       // Check if we need to load anything
       const needRom = !romLoaded;
-      const needDisk0 = !diskLoaded[0];
-      const needDisk1 = !diskLoaded[1];
+      // Only auto-load if not already loaded AND user didn't select None
+      const needDisk0 = !diskLoaded[0] && !disk0WantNone;
+      const needDisk1 = !diskLoaded[1] && !disk1WantNone;
 
       // Show loading overlay if we need to download files
       if (needRom || needDisk0 || needDisk1) {
         showLoading();
 
-        // Mark items that are already loaded
+        // Mark items that are already loaded or skipped
         if (!needRom) updateLoadingProgress('load-rom', 100, 'cached');
-        if (!needDisk0) updateLoadingProgress('load-disk0', 100, 'cached');
-        if (!needDisk1) updateLoadingProgress('load-disk1', 100, 'cached');
+        if (!needDisk0) updateLoadingProgress('load-disk0', 100, disk0WantNone ? 'none' : 'cached');
+        if (!needDisk1) updateLoadingProgress('load-disk1', 100, disk1WantNone ? 'none' : 'cached');
       }
 
       try {
@@ -777,25 +802,21 @@
         // Reload any previously loaded disks (ROM load resets emulator state)
         reloadDisks();
 
-        // Auto-load default disk 0 if none loaded
-        if (needDisk0) {
-          const defaultDisk = 'hd1k_combo.img';
+        // Auto-load disk 0 from selection if not already loaded and not "None"
+        if (needDisk0 && disk0Selection && disk0Selection !== '__custom__') {
           try {
-            const data = await fetchWithProgress(defaultDisk, 'load-disk0');
-            loadDiskData(0, data, defaultDisk);
-            document.getElementById('disk0Select').value = defaultDisk;
+            const data = await fetchWithProgress(disk0Selection, 'load-disk0');
+            loadDiskData(0, data, disk0Selection);
           } catch (err) {
             updateLoadingProgress('load-disk0', 100, 'skipped');
           }
         }
 
-        // Auto-load default disk 1 if none loaded
-        if (needDisk1) {
-          const defaultDisk1 = 'hd1k_games.img';
+        // Auto-load disk 1 from selection if not already loaded and not "None"
+        if (needDisk1 && disk1Selection && disk1Selection !== '__custom__') {
           try {
-            const data = await fetchWithProgress(defaultDisk1, 'load-disk1');
-            loadDiskData(1, data, defaultDisk1);
-            document.getElementById('disk1Select').value = defaultDisk1;
+            const data = await fetchWithProgress(disk1Selection, 'load-disk1');
+            loadDiskData(1, data, disk1Selection);
           } catch (err) {
             updateLoadingProgress('load-disk1', 100, 'skipped');
           }
@@ -811,6 +832,14 @@
       term.clear();
       term.writeln('RomWBW Emulator v' + EMU_VERSION);
       term.writeln('');
+
+      // Set disk slice counts before starting
+      const disk0Slices = parseInt(document.getElementById('disk0Slices').value) || 0;
+      const disk1Slices = parseInt(document.getElementById('disk1Slices').value) || 0;
+      if (Module._romwbw_set_disk_slices) {
+        Module._romwbw_set_disk_slices(0, disk0Slices);
+        Module._romwbw_set_disk_slices(1, disk1Slices);
+      }
 
       // Set boot string if provided
       const bootStr = document.getElementById('bootString').value.trim();

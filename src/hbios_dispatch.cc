@@ -1621,16 +1621,25 @@ void HBIOSDispatch::handleSYS() {
         case SYSSET_SWITCH:
           // Set front panel switches - just ignore
           break;
-        case SYSSET_BOOTINFO:
-          // Set boot volume info (called by CPMLDR before loading CPM3.SYS)
+        case SYSSET_BOOTINFO: {
+          // Set boot volume info (called by romldr/CPMLDR before loading OS)
           // D = boot unit, E = boot slice, L = bank (always 0)
           saved_boot_unit = cpu->regs.DE.get_high();
           saved_boot_slice = cpu->regs.DE.get_low();
+          // Update CB_BOOTVOL in HCB at 0x010D. CBIOS may read this from ROM bank 0
+          // (which uses shadow RAM) or from RAM bank 0x80. Write via ROM bank 0 mode
+          // to set shadow bits, ensuring reads from either path get the updated value.
+          uint8_t saved_bank = memory->get_current_bank();
+          memory->select_bank(0x00);  // ROM bank 0 - writes go to shadow RAM + set shadow bit
+          memory->store_mem(0x010D, saved_boot_slice);  // CB_BOOTVOL low byte
+          memory->store_mem(0x010E, saved_boot_unit);   // CB_BOOTVOL high byte
+          memory->select_bank(saved_bank);  // Restore previous bank
           if (debug_log) {
-            emu_log("[SYSSET BOOTINFO] unit=%d slice=%d (bank=0x%02X ignored)\n",
-                    saved_boot_unit, saved_boot_slice, cpu->regs.HL.get_low());
+            emu_log("[SYSSET BOOTINFO] unit=%d slice=%d -> CB_BOOTVOL=0x%02X%02X\n",
+                    saved_boot_unit, saved_boot_slice, saved_boot_unit, saved_boot_slice);
           }
           break;
+        }
         default:
           if (debug_log) {
             emu_log("[HBIOS SYSSET] Unhandled subfunction 0x%02X\n", subfunc);
@@ -2327,6 +2336,20 @@ bool HBIOSDispatch::bootFromDevice(const char* cmd_str) {
   // Save boot info for SYSGET_BOOTINFO
   saved_boot_unit = boot_unit;
   saved_boot_slice = boot_slice;
+
+  // Update CB_BOOTVOL in HCB at 0x010D. CBIOS may read this from ROM bank 0
+  // (which uses shadow RAM) or from RAM bank 0x80. Write via ROM bank 0 mode
+  // to set shadow bits, ensuring reads from either path get the updated value.
+  uint8_t saved_bank = memory->get_current_bank();
+  memory->select_bank(0x00);  // ROM bank 0 - writes go to shadow RAM + set shadow bit
+  memory->store_mem(0x010D, boot_slice);  // CB_BOOTVOL low byte
+  memory->store_mem(0x010E, boot_unit);   // CB_BOOTVOL high byte
+  memory->select_bank(saved_bank);  // Restore previous bank
+
+  if (debug_log) {
+    emu_log("[SYSBOOT] Set CB_BOOTVOL=0x%02X%02X (unit=%d, slice=%d)\n",
+            boot_unit, boot_slice, boot_unit, boot_slice);
+  }
 
   // Read metadata from offset 0x5E0 (same format as ROM apps)
   uint8_t meta_buf[32];
