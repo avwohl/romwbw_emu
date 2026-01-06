@@ -102,8 +102,12 @@ initializes them from HCB_RAMD_BNKS and HCB_ROMD_BNKS settings in the ROM image.
 If a client wants to disable RAM/ROM disks, they would need a custom ROM image
 with those bank counts set to 0.
 
-### Slice Count Control
+### Slice Count and Drive Letters
 
 The CBIOS determines slice count based on disk capacity reported by DIOCAP.
-The emulator can limit apparent capacity via the `--max-slices` option or
-`setDiskSliceCount()` API to control how many slices appear for each disk.
+The emulator reports full disk capacity, allowing OS tools to see all slices.
+
+The `setDiskSliceCount()` API only affects how many drive letters are
+auto-assigned per disk (following the CBIOS formula above). It does not
+limit which slices can be accessed - users can always use ASSIGN or other
+OS tools to access any slice on the disk.

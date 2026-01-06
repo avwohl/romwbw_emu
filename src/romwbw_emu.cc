@@ -829,10 +829,8 @@ void print_usage(const char* prog) {
   fprintf(stderr, "  --debug           Enable debug output\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Disk options:\n");
-  fprintf(stderr, "  --disk0=FILE[:N]  Attach disk image to slot 0\n");
-  fprintf(stderr, "  --disk1=FILE[:N]  Attach disk image to slot 1\n");
-  fprintf(stderr, "    N = number of slices (1-8), or omit for auto (1 disk=8, 2 disks=4 each)\n");
-  fprintf(stderr, "    Example: --disk0=disk.img:1 uses only 1 slice\n");
+  fprintf(stderr, "  --disk0=FILE      Attach disk image to slot 0\n");
+  fprintf(stderr, "  --disk1=FILE      Attach disk image to slot 1\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "  Supported disk formats (auto-detected):\n");
   fprintf(stderr, "    hd1k  - Modern RomWBW format, 8MB per slice, 1024 dir entries\n");
@@ -871,7 +869,6 @@ int main(int argc, char** argv) {
   bool strict_io_mode = false;
   int sense = -1;
   std::string hbios_disks[16];  // For RomWBW disk images (HBIOS dispatch)
-  int hbios_disk_slices[16] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};  // -1 = auto
   std::string trace_file;
   std::string symbols_file;
   std::string romldr_path;  // RomWBW romldr boot menu
@@ -906,8 +903,7 @@ int main(int argc, char** argv) {
       start_addr = strtol(argv[i] + 8, nullptr, 0);
       start_addr_set = true;
     } else if (strncmp(argv[i], "--disk", 6) == 0) {
-      // Parse --disk0=file[:slices], --disk1=file[:slices] (preferred form)
-      // slices is optional, 1-8, defaults to 4
+      // Parse --disk0=file, --disk1=file (preferred form)
       const char* opt = argv[i] + 6;
       int unit = -1;
       const char* path_start = nullptr;
@@ -919,21 +915,7 @@ int main(int argc, char** argv) {
         path_start = opt + 3;
       }
       if (unit >= 0 && unit < 16 && path_start) {
-        // Check for :N slice count suffix (must be at end after the file path)
         std::string path_str(path_start);
-        int slice_count = 4;  // Default
-        size_t colon_pos = path_str.rfind(':');
-        if (colon_pos != std::string::npos && colon_pos > 0) {
-          // Check if what's after the colon is a single digit (slice count)
-          std::string suffix = path_str.substr(colon_pos + 1);
-          if (suffix.length() == 1 && isdigit(suffix[0])) {
-            int n = suffix[0] - '0';
-            if (n >= 1 && n <= 8) {
-              slice_count = n;
-              path_str = path_str.substr(0, colon_pos);
-            }
-          }
-        }
         // Validate disk image exists and has valid size
         size_t disk_size = 0;
         const char* err = validate_disk_image(path_str.c_str(), &disk_size);
@@ -942,10 +924,9 @@ int main(int argc, char** argv) {
           return 1;
         }
         hbios_disks[unit] = path_str;
-        hbios_disk_slices[unit] = slice_count;
-        fprintf(stderr, "[DISK] Validated disk%d: %s (%zu bytes, %d slices)\n", unit, path_str.c_str(), disk_size, slice_count);
+        fprintf(stderr, "[DISK] Validated disk%d: %s (%zu bytes)\n", unit, path_str.c_str(), disk_size);
       } else {
-        fprintf(stderr, "Invalid --disk option: %s (use --disk0=file[:slices] or --disk1=file[:slices])\n", argv[i]);
+        fprintf(stderr, "Invalid --disk option: %s (use --disk0=file or --disk1=file)\n", argv[i]);
         return 1;
       }
     } else if (strncmp(argv[i], "--romapp=", 9) == 0) {
@@ -1124,15 +1105,15 @@ int main(int argc, char** argv) {
     }
   }
 
-  // Calculate auto slice count based on disk count (matching CBIOS logic):
-  // 1 disk: 8 slices, 2 disks: 4 slices, 3+ disks: 2 slices
+  // Calculate slice count for drive letter assignment based on disk count
+  // (matching CBIOS logic): 1 disk = 8 slices, 2 disks = 4 each, 3+ = 2 each
+  // Note: This only affects drive letter assignment, not slice access limits
   int auto_slices = (disk_count <= 1) ? 8 : (disk_count == 2) ? 4 : 2;
 
-  // Apply slice counts (auto or explicit)
+  // Apply slice counts for drive letter assignment
   for (int i = 0; i < 16; i++) {
     if (emu.getHBIOS()->isDiskLoaded(i)) {
-      int slices = (hbios_disk_slices[i] < 0) ? auto_slices : hbios_disk_slices[i];
-      emu.getHBIOS()->setDiskSliceCount(i, slices);
+      emu.getHBIOS()->setDiskSliceCount(i, auto_slices);
     }
   }
 
@@ -1200,7 +1181,7 @@ int main(int argc, char** argv) {
     // 2. Copy HCB to RAM
     // 3. Set up HBIOS ident signatures
     // 4. Initialize memory disks and populate disk tables
-    emu_complete_init(&memory, emu.getHBIOS(), hbios_disk_slices);
+    emu_complete_init(&memory, emu.getHBIOS(), nullptr);
   }
 
   // Enable tracing if requested

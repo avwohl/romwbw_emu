@@ -257,7 +257,7 @@ struct HBDisk {
   bool file_backed = false;
   size_t size = 0;
   uint32_t current_lba = 0;   // Current LBA position (set by DIOSEEK)
-  int max_slices = 8;         // Max slices to expose (configurable via --disk0=file:N)
+  int max_slices = 8;         // Slices for drive letter assignment (not a limit on access)
 
   // Partition/slice info (detected from MBR on first EXTSLICE call)
   bool partition_probed = false;     // True if MBR has been parsed
@@ -319,7 +319,7 @@ public:
   void closeAllDisks();  // Close all disks (call before reconfiguring)
   bool isDiskLoaded(int unit) const;
   const HBDisk& getDisk(int unit) const;
-  void setDiskSliceCount(int unit, int slices);  // Set max slices for a disk (1-8)
+  void setDiskSliceCount(int unit, int slices);  // Set slices for drive letter assignment
 
   // Memory disk initialization (call after ROM is loaded)
   void initMemoryDisks();

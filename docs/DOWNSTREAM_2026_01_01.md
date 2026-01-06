@@ -51,9 +51,11 @@ Fixed EOF handling and slow I/O. These changes are in `emu_io_cli.cc` which is U
 - **EOF handling:** Don't treat "no data available" as EOF on TTY. Use select() with no timeout to wait for actual input.
 - **Input status check:** `emu_console_has_input()` should use 0 timeout (instant check), not 10ms delay which causes 300-baud-like slowdowns.
 
-## Default Slice Count Change
+## Slice Count Behavior
 
-The default `max_slices` in `HBDisk` struct (hbios_dispatch.h) is now 8 instead of 4. This only matters if you don't implement auto-calculation.
+The `max_slices` field in `HBDisk` struct now only controls drive letter assignment,
+not slice access limits. DIOCAP reports full disk capacity, and EXTSLICE allows
+access to any slice within actual disk capacity. OS tools can see all slices.
 
 ## Testing
 

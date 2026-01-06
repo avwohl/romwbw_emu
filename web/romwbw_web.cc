@@ -214,18 +214,6 @@ int romwbw_get_disk_size(int unit) {
   return emu->hbios.getDisk(unit).data.size();
 }
 
-// User-specified slice counts per disk (0 = auto-calculate)
-static int user_disk_slices[16] = {0};
-
-// Set max slices for a disk (call before romwbw_start)
-// slices=0 means auto-calculate based on disk count
-EMSCRIPTEN_KEEPALIVE
-void romwbw_set_disk_slices(int unit, int slices) {
-  if (unit >= 0 && unit < 16) {
-    user_disk_slices[unit] = slices;
-    emu_log("[WASM] Set disk %d max slices to %d\n", unit, slices);
-  }
-}
 
 // Reset callback for SYSRESET
 static void handle_sysreset(uint8_t reset_type) {
@@ -253,7 +241,9 @@ void romwbw_start() {
   // Register reset callback for SYSRESET (REBOOT command)
   emu->hbios.setResetCallback(handle_sysreset);
 
-  // Count loaded disks and calculate auto slice count (matching CBIOS logic)
+  // Count loaded disks and calculate slice count for drive letter assignment
+  // (matching CBIOS logic): 1 disk = 8 slices, 2 disks = 4 each, 3+ = 2 each
+  // Note: This only affects drive letter assignment, not slice access limits
   int disk_count = 0;
   for (int i = 0; i < 16; i++) {
     if (emu->hbios.isDiskLoaded(i)) {
@@ -261,19 +251,15 @@ void romwbw_start() {
     }
   }
 
-  // Calculate auto slice count: 1 disk = 8 slices, 2 disks = 4 each, 3+ = 2 each
   int auto_slices = (disk_count <= 1) ? 8 : (disk_count == 2) ? 4 : 2;
-  emu_log("[WASM] %d disk(s) loaded, auto_slices=%d\n", disk_count, auto_slices);
+  emu_log("[WASM] %d disk(s) loaded, %d drive letters per disk\n", disk_count, auto_slices);
 
-  // Build slice array - use user-specified if set, otherwise auto
+  // Apply slice counts for drive letter assignment
   int disk_slices[16];
   for (int i = 0; i < 16; i++) {
     if (emu->hbios.isDiskLoaded(i)) {
-      int slices = (user_disk_slices[i] > 0) ? user_disk_slices[i] : auto_slices;
-      disk_slices[i] = slices;
-      emu->hbios.setDiskSliceCount(i, slices);
-      emu_log("[WASM] Disk %d: %d slices%s\n", i, slices,
-              user_disk_slices[i] > 0 ? " (user)" : " (auto)");
+      disk_slices[i] = auto_slices;
+      emu->hbios.setDiskSliceCount(i, auto_slices);
     } else {
       disk_slices[i] = 0;
     }

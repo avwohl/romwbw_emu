@@ -1162,29 +1162,13 @@ void HBIOSDispatch::handleDIO() {
       break;
 
     case HBF_DIOCAP: {
-      // Get capacity (in sectors)
-      // NOTE: We lie about capacity to limit slice count based on max_slices
+      // Get capacity (in sectors) - report full disk capacity
       if (is_memdisk) {
         uint32_t sectors = md_disks[md_unit].total_sectors();
         cpu->regs.DE.set_pair16(sectors & 0xFFFF);
         cpu->regs.HL.set_pair16((sectors >> 16) & 0xFFFF);
       } else if (is_harddisk) {
-        uint32_t actual_sectors = disks[hd_unit].size / 512;
-        uint32_t sectors = actual_sectors;
-
-        // Limit reported capacity to max_slices worth of sectors
-        // Use slice_size from disk (set during EXTSLICE partition probe)
-        // Default: hd1k = 16384 sectors/slice, hd512 = 16640 sectors/slice
-        uint32_t slice_size = disks[hd_unit].slice_size;
-        if (slice_size == 0) slice_size = 16384;  // Default to hd1k
-        uint32_t max_sectors = (uint32_t)disks[hd_unit].max_slices * slice_size;
-
-        if (sectors > max_sectors) {
-          if (debug_log) debug_log("[DIOCAP] HD%d limiting: %u -> %u (max_slices=%d)\n",
-                  hd_unit, actual_sectors, max_sectors, disks[hd_unit].max_slices);
-          sectors = max_sectors;
-        }
-
+        uint32_t sectors = disks[hd_unit].size / 512;
         cpu->regs.DE.set_pair16(sectors & 0xFFFF);
         cpu->regs.HL.set_pair16((sectors >> 16) & 0xFFFF);
       } else {
@@ -2060,23 +2044,26 @@ void HBIOSDispatch::handleEXT() {
           }
         }
 
-        // Check if slice exceeds configured max_slices limit
-        if (slice >= disk.max_slices) {
-          // Slice beyond limit - return error to stop CBIOS enumeration
+        // Calculate slice LBA offset - no artificial slice limit
+        // Only reject if slice would exceed actual disk capacity
+        uint32_t disk_sectors = disk.size / 512;
+        uint32_t slice_start_sector = disk.partition_base_lba + ((uint32_t)slice * disk.slice_size);
+
+        if (slice_start_sector >= disk_sectors) {
+          // Slice beyond actual disk capacity
           media_id = 0;  // MID_NONE - signals no valid media
           result = HBR_FAILED;
-          emu_log("[EXTSLICE] unit=0x%02X slice=%d REJECTED (max=%d)\n",
-                  disk_unit, slice, disk.max_slices);
+          emu_log("[EXTSLICE] unit=0x%02X slice=%d REJECTED (beyond disk capacity)\n",
+                  disk_unit, slice);
         } else {
-          // Calculate slice LBA offset
-          slice_lba = disk.partition_base_lba + ((uint32_t)slice * disk.slice_size);
+          slice_lba = slice_start_sector;
 
           // Set media ID based on detected format
           if (disk.is_hd1k) {
             media_id = 0x0A;  // MID_HDNEW (hd1k format)
           }
-          emu_log("[EXTSLICE] unit=0x%02X slice=%d -> media=0x%02X LBA=%u (max=%d)\n",
-                  disk_unit, slice, media_id, slice_lba, disk.max_slices);
+          emu_log("[EXTSLICE] unit=0x%02X slice=%d -> media=0x%02X LBA=%u\n",
+                  disk_unit, slice, media_id, slice_lba);
         }
       } else {
         // Disk not open or invalid unit
