@@ -468,7 +468,14 @@ private:
   static constexpr uint16_t heap_end = 0x8000;
 
   // Bitmap tracking which RAM banks (0x80-0x8F) have been initialized
+  // Exposed via getter so port I/O and SYSSETBNK paths share one bitmap
   uint16_t initialized_ram_banks = 0;
+
+public:
+  // Get pointer to initialized banks bitmap (shared with port I/O path)
+  uint16_t* getInitializedBanksBitmap() { return &initialized_ram_banks; }
+
+private:
 
   // VDA state
   int vda_rows = 25;
