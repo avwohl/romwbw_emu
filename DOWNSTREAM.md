@@ -118,16 +118,22 @@ Your `HBIOSCPUDelegate` must implement `initializeRamBankIfNeeded`:
 
 ```cpp
 class MyEmulator : public HBIOSCPUDelegate {
-  uint16_t initialized_ram_banks = 0;  // Bitmap for banks 0x80-0x8F
+  HBIOSDispatch hbios;
 
   void initializeRamBankIfNeeded(uint8_t bank) override {
-    emu_init_ram_bank(&memory, bank, &initialized_ram_banks);
+    // Use HBIOSDispatch's shared bitmap - DO NOT create your own!
+    emu_init_ram_bank(&memory, bank, hbios.getInitializedBanksBitmap());
   }
   // ... other delegate methods
 };
 ```
 
 This is called automatically by hbios_cpu when switching to a RAM bank.
+
+**Important:** Use `hbios.getInitializedBanksBitmap()` to share the bitmap with
+HBIOSDispatch's SYSSETBNK handler. This ensures both port I/O and HBIOS function
+calls use the same initialization tracking. See "Unified RAM Bank Initialization"
+below for details.
 
 ## Platform-Specific emu_io Implementation
 
@@ -162,7 +168,7 @@ class Emulator : public HBIOSCPUDelegate {
   banked_mem memory;
   hbios_cpu cpu;
   HBIOSDispatch hbios;
-  uint16_t initialized_ram_banks = 0;
+  // NOTE: No local initialized_ram_banks - use hbios.getInitializedBanksBitmap()
 
 public:
   Emulator() : cpu(&memory, this) {
@@ -209,7 +215,8 @@ public:
   HBIOSDispatch* getHBIOS() override { return &hbios; }
 
   void initializeRamBankIfNeeded(uint8_t bank) override {
-    emu_init_ram_bank(&memory, bank, &initialized_ram_banks);
+    // Use shared bitmap from HBIOSDispatch for unified tracking
+    emu_init_ram_bank(&memory, bank, hbios.getInitializedBanksBitmap());
   }
 
   void onHalt() override { /* handle halt */ }
@@ -279,14 +286,73 @@ For CLI (blocking mode), CIOIN automatically flushes output before blocking.
 
 For web/WASM (non-blocking mode), output goes directly to the display.
 
+## Unified RAM Bank Initialization (January 2025)
+
+### The Problem
+
+Previously, there were two independent RAM bank initialization systems:
+
+1. **Port I/O path** - Called via `initializeRamBankIfNeeded()` delegate method when
+   hbios_cpu detected a bank switch via port I/O
+2. **SYSSETBNK path** - Called via HBIOS function 0xF1 in hbios_dispatch.cc
+
+Each had its own `initialized_ram_banks` bitmap. If a bank was initialized via one
+path, the other path didn't know and would re-initialize it. While harmless (same
+data copied twice), it was wasteful and the SYSSETBNK path was missing the CBIOS
+page zero stamp at 0x40-0x55 that tools like ASSIGN and MODE require.
+
+### The Fix
+
+Now there is a single shared bitmap owned by `HBIOSDispatch`:
+
+```cpp
+// In HBIOSDispatch (hbios_dispatch.h)
+uint16_t* getInitializedBanksBitmap() { return &initialized_ram_banks; }
+```
+
+Both initialization paths now use this shared bitmap:
+
+- **Port I/O**: Delegate calls `emu_init_ram_bank(&memory, bank, hbios.getInitializedBanksBitmap())`
+- **SYSSETBNK**: Calls `emu_init_ram_bank(memory, new_bank, &initialized_ram_banks)`
+
+### What You Need to Do
+
+**Remove any local `initialized_ram_banks` variable** from your emulator class.
+Instead, use `hbios.getInitializedBanksBitmap()`:
+
+```cpp
+// BEFORE (deprecated):
+class MyEmulator : public HBIOSCPUDelegate {
+  uint16_t initialized_ram_banks = 0;  // DON'T DO THIS
+  void initializeRamBankIfNeeded(uint8_t bank) override {
+    emu_init_ram_bank(&memory, bank, &initialized_ram_banks);
+  }
+};
+
+// AFTER (correct):
+class MyEmulator : public HBIOSCPUDelegate {
+  HBIOSDispatch hbios;
+  void initializeRamBankIfNeeded(uint8_t bank) override {
+    emu_init_ram_bank(&memory, bank, hbios.getInitializedBanksBitmap());
+  }
+};
+```
+
+This ensures:
+1. Single bitmap tracks all RAM bank initialization
+2. No redundant re-initialization
+3. CBIOS page zero stamp (0x40-0x55) is always installed correctly
+
 ## Migration Checklist
 
 - [ ] Pull latest `romwbw_mem.h` with shadow RAM fix
 - [ ] Pull latest `emu_init.cc` and `emu_init.h`
-- [ ] Pull latest `hbios_dispatch.cc`
+- [ ] Pull latest `hbios_dispatch.cc` and `hbios_dispatch.h`
 - [ ] Replace manual HCB patching with `emu_complete_init()`
-- [ ] Implement `initializeRamBankIfNeeded()` using `emu_init_ram_bank()`
+- [ ] Remove local `initialized_ram_banks` variable from your emulator class
+- [ ] Update `initializeRamBankIfNeeded()` to use `hbios.getInitializedBanksBitmap()`
 - [ ] Remove any manual HCB shadow setup (now handled by emu_complete_init)
 - [ ] Test device list with `D` command at boot menu
 - [ ] Test CP/M 3 boot and operation
 - [ ] Test REBOOT command
+- [ ] Test ASSIGN command (verifies CBIOS stamp at 0x40)

@@ -43,8 +43,8 @@ struct EmulatorState : public HBIOSCPUDelegate {
   long long instruction_count = 0;
   int batch_count = 0;
 
-  // RAM bank initialization tracking (for CP/M 3 bank switching)
-  uint16_t initialized_ram_banks = 0;
+  // RAM bank initialization now uses HBIOSDispatch's shared bitmap
+  // via hbios.getInitializedBanksBitmap()
 
   EmulatorState() : cpu(&memory, this) {
     memory.enable_banking();
@@ -58,8 +58,9 @@ struct EmulatorState : public HBIOSCPUDelegate {
   HBIOSDispatch* getHBIOS() override { return &hbios; }
 
   // Initialize RAM bank on first access (for CP/M 3 bank switching)
+  // Uses HBIOSDispatch's bitmap for unified tracking with SYSSETBNK
   void initializeRamBankIfNeeded(uint8_t bank) override {
-    emu_init_ram_bank(&memory, bank, &initialized_ram_banks);
+    emu_init_ram_bank(&memory, bank, hbios.getInitializedBanksBitmap());
   }
   void onHalt() override {
     emu_log("[HALT] at PC=0x%04X\n", cpu.regs.PC.get_pair16());

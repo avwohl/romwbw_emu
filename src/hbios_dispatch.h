@@ -312,6 +312,9 @@ public:
   bool getDebug() const { return debug_log != nullptr; }
   bool getBootInProgress() const { return boot_in_progress; }
 
+  // Get pointer to RAM bank initialization bitmap (for sharing with port I/O path)
+  uint16_t* getInitializedBanksBitmap() { return &initialized_ram_banks; }
+
   // Disk management
   bool loadDisk(int unit, const uint8_t* data, size_t size);
   bool loadDiskFromFile(int unit, const std::string& path);

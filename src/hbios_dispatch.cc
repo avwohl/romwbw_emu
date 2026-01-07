@@ -5,6 +5,7 @@
  */
 
 #include "hbios_dispatch.h"
+#include "emu_init.h"
 #include "emu_io.h"
 #include "qkz80.h"
 #include "qkz80_cpu_flags.h"
@@ -1286,29 +1287,10 @@ void HBIOSDispatch::handleSYS() {
       uint8_t new_bank = cpu->regs.BC.get_low();
       uint8_t prev_bank = memory->get_current_bank();
 
-      // When switching to a RAM bank for the first time, copy page zero and HCB
-      // from ROM bank 0. This ensures romldr can read HCB values like CB_APP_BNKS.
+      // When switching to a RAM bank for the first time, initialize it
+      // Uses shared emu_init_ram_bank() which copies page zero, HCB, and CBIOS stamp
       if ((new_bank & 0x80) && !(new_bank & 0x70)) {  // RAM bank 0x80-0x8F
-        uint8_t bank_idx = new_bank & 0x0F;
-        if (!(initialized_ram_banks & (1 << bank_idx))) {
-          // First time accessing this RAM bank - copy page zero and HCB
-          if (debug_log) {
-            emu_log("[HBIOS] SYSSETBNK initializing RAM bank 0x%02X\n", new_bank);
-          }
-          // Copy page zero (0x0000-0x0100) - contains RST vectors
-          for (uint16_t addr = 0x0000; addr < 0x0100; addr++) {
-            uint8_t byte = memory->read_bank(0x00, addr);
-            memory->write_bank(new_bank, addr, byte);
-          }
-          // Copy HCB (0x0100-0x0200) - system configuration
-          for (uint16_t addr = 0x0100; addr < 0x0200; addr++) {
-            uint8_t byte = memory->read_bank(0x00, addr);
-            memory->write_bank(new_bank, addr, byte);
-          }
-          // Patch APITYPE to HBIOS (0x00) instead of UNA (0xFF)
-          memory->write_bank(new_bank, 0x0112, 0x00);
-          initialized_ram_banks |= (1 << bank_idx);
-        }
+        emu_init_ram_bank(memory, new_bank, &initialized_ram_banks);
       }
 
       memory->select_bank(new_bank);

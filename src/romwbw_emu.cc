@@ -657,8 +657,8 @@ private:
   uint16_t next_pc = 0;                // Jump target for OUT redirect
   bool next_pc_valid = false;          // True if next_pc should be used
 
-  // RAM bank initialization tracking (bitmap for banks 0x80-0x8F)
-  uint16_t initialized_ram_banks = 0;
+  // RAM bank initialization now uses HBIOSDispatch's shared bitmap
+  // via hbios.getInitializedBanksBitmap()
 
 public:
   AltairEmulator(hbios_cpu* acpu, cpm_mem* amem, bool adebug = false)
@@ -774,15 +774,16 @@ public:
   }
 
   // Initialize a RAM bank if it hasn't been initialized yet
-  // Uses shared emu_init_ram_bank() which copies page zero and HCB from ROM bank 0
+  // Uses shared emu_init_ram_bank() with HBIOSDispatch's bitmap for unified tracking
   void initialize_ram_bank_if_needed(uint8_t bank) {
     banked_mem* bmem = dynamic_cast<banked_mem*>(memory);
     if (!bmem) return;
 
-    if (debug && emu_init_ram_bank(bmem, bank, &initialized_ram_banks)) {
+    uint16_t* bitmap = hbios.getInitializedBanksBitmap();
+    if (debug && emu_init_ram_bank(bmem, bank, bitmap)) {
       fprintf(stderr, "[BANK INIT] Initialized RAM bank 0x%02X\n", bank);
     } else {
-      emu_init_ram_bank(bmem, bank, &initialized_ram_banks);
+      emu_init_ram_bank(bmem, bank, bitmap);
     }
   }
 
