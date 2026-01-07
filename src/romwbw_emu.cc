@@ -829,6 +829,9 @@ void print_usage(const char* prog) {
   fprintf(stderr, "  --strict-io       Halt on unexpected I/O ports (for debugging)\n");
   fprintf(stderr, "  --debug           Enable debug output\n");
   fprintf(stderr, "\n");
+  fprintf(stderr, "Boot options:\n");
+  fprintf(stderr, "  --boot=CMD        Auto-boot with command (e.g., C, 2, 2.3)\n");
+  fprintf(stderr, "\n");
   fprintf(stderr, "Disk options:\n");
   fprintf(stderr, "  --disk0=FILE      Attach disk image to slot 0\n");
   fprintf(stderr, "  --disk1=FILE      Attach disk image to slot 1\n");
@@ -873,6 +876,7 @@ int main(int argc, char** argv) {
   std::string trace_file;
   std::string symbols_file;
   std::string romldr_path;  // RomWBW romldr boot menu
+  std::string boot_string;  // Auto-boot command (e.g., "C", "2", "2.3")
 
   // ROM application definitions: key=name:path
   struct RomAppDef {
@@ -970,6 +974,8 @@ int main(int argc, char** argv) {
       }
     } else if (strncmp(argv[i], "--romldr=", 9) == 0) {
       romldr_path = argv[i] + 9;
+    } else if (strncmp(argv[i], "--boot=", 7) == 0) {
+      boot_string = argv[i] + 7;
     } else if (strncmp(argv[i], "--trace=", 8) == 0) {
       trace_file = argv[i] + 8;
     } else if (strncmp(argv[i], "--symbols=", 10) == 0) {
@@ -1217,6 +1223,17 @@ int main(int argc, char** argv) {
     nmi_config.next_trigger = get_next_trigger(nmi_config, 0);
     fprintf(stderr, "NMI enabled: %u-%u cycles, jump to 0x0066\n",
             nmi_config.cycle_min, nmi_config.cycle_max);
+  }
+
+  // Queue auto-boot string if specified
+  if (!boot_string.empty()) {
+    fprintf(stderr, "Auto-boot: queueing '%s'\n", boot_string.c_str());
+    for (size_t i = 0; i < boot_string.size(); i++) {
+      int ch = boot_string[i] & 0xFF;
+      if (ch == '\n') ch = '\r';
+      emu_console_queue_char(ch);
+    }
+    emu_console_queue_char('\r');  // Add CR to submit
   }
 
   // Main execution loop
