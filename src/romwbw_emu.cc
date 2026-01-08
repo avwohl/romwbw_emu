@@ -1129,6 +1129,14 @@ int main(int argc, char** argv) {
     emu.getHBIOS()->addRomApp(def.name, def.path, def.key);
   }
 
+  // Configure NVRAM boot option if specified
+  // This sets up emulated RTC NVRAM switches so the ROM loader
+  // automatically boots without user interaction
+  if (!boot_string.empty()) {
+    emu.getHBIOS()->setBootOption(boot_string);
+    fprintf(stderr, "Auto-boot: configured NVRAM for '%s'\n", boot_string.c_str());
+  }
+
   // Set romldr path if specified
   if (!romldr_path.empty()) {
     emu.set_romldr_path(romldr_path);
@@ -1223,17 +1231,6 @@ int main(int argc, char** argv) {
     nmi_config.next_trigger = get_next_trigger(nmi_config, 0);
     fprintf(stderr, "NMI enabled: %u-%u cycles, jump to 0x0066\n",
             nmi_config.cycle_min, nmi_config.cycle_max);
-  }
-
-  // Queue auto-boot string if specified
-  if (!boot_string.empty()) {
-    fprintf(stderr, "Auto-boot: queueing '%s'\n", boot_string.c_str());
-    for (size_t i = 0; i < boot_string.size(); i++) {
-      int ch = boot_string[i] & 0xFF;
-      if (ch == '\n') ch = '\r';
-      emu_console_queue_char(ch);
-    }
-    emu_console_queue_char('\r');  // Add CR to submit
   }
 
   // Main execution loop

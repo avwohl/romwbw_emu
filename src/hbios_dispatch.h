@@ -203,6 +203,25 @@ enum HBiosSysSetFunc {
   SYSSET_PANEL    = 0xF4,  // Set front panel LEDs
 };
 
+// NVRAM switch numbers (D register for SYSGET_SWITCH/SYSSET_SWITCH)
+enum HBiosNVSwitchNum {
+  NVSW_STATUS     = 0xFF,  // Get NVRAM status ('W' if initialized)
+  NVSW_BOOTOPTS   = 1,     // Boot options: L=slice/app char, H=flags+unit
+  NVSW_AUTOBOOT   = 3,     // Autoboot: L=flags+timeout
+};
+
+// NVRAM boot option flags (H register bits for NVSW_BOOTOPTS)
+enum HBiosBootOptFlags {
+  BOPTS_ROM       = 0x80,  // Bit 7: 1=ROM app, 0=disk
+  BOPTS_UNIT      = 0x7F,  // Bits 0-6: disk unit number (when BOPTS_ROM=0)
+};
+
+// NVRAM autoboot flags (L register bits for NVSW_AUTOBOOT)
+enum HBiosAutoBootFlags {
+  ABOOT_AUTO      = 0x20,  // Bit 5: 1=auto boot enabled
+  ABOOT_TIMEOUT   = 0x0F,  // Bits 0-3: timeout in seconds (0=immediate)
+};
+
 // Media ID values
 enum HBiosMediaId {
   MID_NONE   = 0,
@@ -335,6 +354,11 @@ public:
   // ROM application management
   void addRomApp(const std::string& name, const std::string& path, char key);
   void clearRomApps();
+
+  // NVRAM boot option configuration (replaces character queueing approach)
+  // Parse boot string and set NVRAM switches for automatic boot
+  // Format: "C" for ROM app C, "2" for disk unit 2 slice 0, "2.3" for unit 2 slice 3
+  void setBootOption(const std::string& boot_str);
 
   // Host file transfer (EMU extension)
   void setHostCmdLine(const std::string& cmdline) { host_cmd_line = cmdline; }
@@ -497,6 +521,13 @@ private:
   int saved_boot_unit = 0;
   int saved_boot_slice = 0;
   bool boot_in_progress = false;  // Set when boot starts, for debugging
+
+  // NVRAM switches for boot configuration (emulates RTC NVRAM)
+  // [0] = status: 'W' if initialized, 0 if not
+  // [1] = boot char (L) or disk slice
+  // [2] = boot options (H): BOPTS_ROM | unit
+  // [3] = autoboot: ABOOT_AUTO | timeout
+  uint8_t nvram_switches[4] = {0, 'H', BOPTS_ROM, 0};
 
   // Disks
   HBDisk disks[16];

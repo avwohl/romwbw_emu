@@ -1470,10 +1470,65 @@ void HBIOSDispatch::handleSYS() {
           }
           break;
 
-        case SYSGET_SWITCH:
-          // Get non-volatile switch value - match CLI (0 = no switches)
-          cpu->regs.HL.set_low(0x00);
+        case SYSGET_SWITCH: {
+          // Get non-volatile switch value (emulates RTC NVRAM)
+          // D register contains switch number:
+          //   0xFF = get NVRAM status (returns 'W' in A if initialized)
+          //   1 = boot options: L=app char/slice, H=flags+unit
+          //   3 = autoboot: L=flags+timeout
+          uint8_t switch_num = cpu->regs.DE.get_high();
+          if (switch_num == 0xFF) {
+            // Return NVRAM status in A (Z flag set if 'W')
+            // IMPORTANT: Must return early to preserve A register
+            // (setResult would overwrite A with result code)
+            uint8_t status = nvram_switches[0];
+            cpu->regs.AF.set_high(status);
+            if (status == 'W') {
+              cpu->regs.AF.set_low(cpu->regs.AF.get_low() | 0x40);  // Set Z flag
+            } else {
+              cpu->regs.AF.set_low(cpu->regs.AF.get_low() & ~0x40); // Clear Z flag
+            }
+            if (debug_log) {
+              emu_log("[SYSGET_SWITCH] status check: A=0x%02X ('%c') %s\n",
+                      status, status >= 0x20 ? status : '?',
+                      status == 'W' ? "INITIALIZED" : "NOT INITIALIZED");
+            }
+            doRet();
+            return;  // Return early to preserve A register
+          } else if (switch_num == NVSW_BOOTOPTS) {
+            // Boot options: L=app char or slice, H=flags+unit
+            cpu->regs.HL.set_low(nvram_switches[1]);   // L = app char or slice
+            cpu->regs.HL.set_high(nvram_switches[2]);  // H = BOPTS_ROM | unit
+            if (debug_log) {
+              bool is_rom = (nvram_switches[2] & BOPTS_ROM) != 0;
+              if (is_rom) {
+                emu_log("[SYSGET_SWITCH] BOOTOPTS: ROM app '%c' (H=0x%02X L=0x%02X)\n",
+                        nvram_switches[1], nvram_switches[2], nvram_switches[1]);
+              } else {
+                emu_log("[SYSGET_SWITCH] BOOTOPTS: Disk unit=%d slice=%d (H=0x%02X L=0x%02X)\n",
+                        nvram_switches[2] & BOPTS_UNIT, nvram_switches[1],
+                        nvram_switches[2], nvram_switches[1]);
+              }
+            }
+          } else if (switch_num == NVSW_AUTOBOOT) {
+            // Autoboot settings: L=flags+timeout
+            cpu->regs.HL.set_low(nvram_switches[3]);
+            cpu->regs.HL.set_high(0);
+            if (debug_log) {
+              bool auto_enabled = (nvram_switches[3] & ABOOT_AUTO) != 0;
+              int timeout = nvram_switches[3] & ABOOT_TIMEOUT;
+              emu_log("[SYSGET_SWITCH] AUTOBOOT: %s, timeout=%d sec (L=0x%02X)\n",
+                      auto_enabled ? "ENABLED" : "DISABLED", timeout, nvram_switches[3]);
+            }
+          } else {
+            // Unknown switch number - return 0
+            cpu->regs.HL.set_pair16(0);
+            if (debug_log) {
+              emu_log("[SYSGET_SWITCH] Unknown switch %d, returning 0\n", switch_num);
+            }
+          }
           break;
+        }
 
         case SYSGET_CPUINFO:
           // CPU info: DE = CPU type/speed, HL = clock speed in KHz
@@ -2389,4 +2444,86 @@ bool HBIOSDispatch::bootFromDevice(const char* cmd_str) {
   cpu->regs.PC.set_pair16(entry_addr);
   setResult(HBR_SUCCESS);
   return true;
+}
+
+//=============================================================================
+// setBootOption - Configure NVRAM switches for automatic boot
+//=============================================================================
+//
+// Parses the boot string and sets NVRAM switches so the ROM loader
+// will automatically boot without user interaction.
+//
+// Format:
+//   "C", "Z", "B" etc.  - Boot ROM app with that key (letter)
+//   "H"                 - Show help menu (default)
+//   "2"                 - Boot from disk unit 2, slice 0
+//   "2.3"               - Boot from disk unit 2, slice 3
+//
+void HBIOSDispatch::setBootOption(const std::string& boot_str) {
+  if (boot_str.empty()) {
+    // No boot option - leave NVRAM uninitialized
+    nvram_switches[0] = 0;  // Not initialized
+    if (debug_log) {
+      emu_log("[BOOT] No boot option, NVRAM not initialized\n");
+    }
+    return;
+  }
+
+  // Initialize NVRAM
+  nvram_switches[0] = 'W';  // Fully initialized
+
+  // Parse boot string
+  char first_char = boot_str[0];
+
+  if (isalpha(first_char)) {
+    // ROM app boot - use the letter as the app selection
+    char app_char = toupper(first_char);
+    nvram_switches[1] = app_char;         // L = app character
+    nvram_switches[2] = BOPTS_ROM;        // H = ROM boot flag (bit 7)
+    nvram_switches[3] = ABOOT_AUTO;       // Enable autoboot, 0 timeout (immediate)
+
+    if (debug_log) {
+      emu_log("[BOOT] ROM app boot: '%c' (switches: %02X %02X %02X %02X)\n",
+              app_char, nvram_switches[0], nvram_switches[1],
+              nvram_switches[2], nvram_switches[3]);
+    }
+  } else if (isdigit(first_char)) {
+    // Disk boot - parse unit and optional slice
+    int unit = 0;
+    int slice = 0;
+
+    // Check for unit.slice format
+    size_t dot_pos = boot_str.find('.');
+    if (dot_pos != std::string::npos) {
+      unit = atoi(boot_str.substr(0, dot_pos).c_str());
+      slice = atoi(boot_str.substr(dot_pos + 1).c_str());
+    } else {
+      unit = atoi(boot_str.c_str());
+    }
+
+    // Clamp values to valid ranges
+    if (unit < 0) unit = 0;
+    if (unit > 127) unit = 127;
+    if (slice < 0) slice = 0;
+    if (slice > 255) slice = 255;
+
+    nvram_switches[1] = (uint8_t)slice;            // L = slice number
+    nvram_switches[2] = (uint8_t)(unit & BOPTS_UNIT);  // H = unit (bit 7 clear = disk)
+    nvram_switches[3] = ABOOT_AUTO;                // Enable autoboot, 0 timeout
+
+    if (debug_log) {
+      emu_log("[BOOT] Disk boot: unit=%d slice=%d (switches: %02X %02X %02X %02X)\n",
+              unit, slice, nvram_switches[0], nvram_switches[1],
+              nvram_switches[2], nvram_switches[3]);
+    }
+  } else {
+    // Invalid format - treat as help request
+    nvram_switches[1] = 'H';              // L = help
+    nvram_switches[2] = BOPTS_ROM;        // H = ROM boot flag
+    nvram_switches[3] = 0;                // Disable autoboot (show menu)
+
+    if (debug_log) {
+      emu_log("[BOOT] Invalid boot string '%s', defaulting to Help\n", boot_str.c_str());
+    }
+  }
 }
