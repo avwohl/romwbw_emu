@@ -471,10 +471,6 @@ private:
   // Exposed via getter so port I/O and SYSSETBNK paths share one bitmap
   uint16_t initialized_ram_banks = 0;
 
-public:
-  // Get pointer to initialized banks bitmap (shared with port I/O path)
-  uint16_t* getInitializedBanksBitmap() { return &initialized_ram_banks; }
-
 private:
 
   // VDA state
