@@ -109,6 +109,11 @@ void emu_copy_hcb_to_shadow_ram(banked_mem* memory);
 // Required for REBOOT and other utilities to recognize HBIOS
 void emu_setup_hbios_ident(banked_mem* memory);
 
+// Copy ROM app images from ROM banks to RAM banks
+// The romldr expects apps in RAM banks 0x89+ (as configured by CB_BIDAPP0)
+// These are copied from ROM banks 2, 3, etc. (after HBIOS and romldr)
+void emu_copy_rom_apps_to_ram(banked_mem* memory);
+
 //=============================================================================
 // RAM Bank Initialization (for CP/M 3 bank switching)
 //=============================================================================

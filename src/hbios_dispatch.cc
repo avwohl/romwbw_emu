@@ -714,6 +714,9 @@ void HBIOSDispatch::handleCIO() {
       // Write character to output buffer (caller retrieves and displays)
       // This is needed for web/WASM where output is polled from main loop
       uint8_t ch = cpu->regs.DE.get_low();
+      if (debug_log) {
+        emu_log("[CIOOUT] char: %d (0x%02X) '%c'\n", ch, ch, (ch >= 32 && ch < 127) ? ch : '?');
+      }
       output_buffer.push_back(ch);
       break;
     }

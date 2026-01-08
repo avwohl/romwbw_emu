@@ -471,6 +471,49 @@ const char* emu_validate_disk_image(const char* path, size_t* out_size) {
 }
 
 //=============================================================================
+// ROM App Bank Initialization
+//=============================================================================
+
+// Copy OS application images from ROM banks to RAM banks
+// The romldr expects apps in RAM banks 0x89+ (as configured by CB_BIDAPP0)
+// These are copied from ROM banks 2, 3, etc. (after HBIOS and romldr)
+void emu_copy_rom_apps_to_ram(banked_mem* memory) {
+  if (!memory) return;
+
+  // Read CB_BIDAPP0 and CB_APP_BNKS from ROM bank 0
+  uint8_t app_ram_start = memory->read_bank(0x00, 0x1E0);  // CB_BIDAPP0
+  uint8_t app_count = memory->read_bank(0x00, 0x1E1);      // CB_APP_BNKS
+
+  if (app_count == 0) {
+    emu_log("[EMU_INIT] No ROM apps configured (CB_APP_BNKS=0)\n");
+    return;
+  }
+
+  // ROM apps start at bank 2 (after HBIOS bank 0 and romldr bank 1)
+  const uint8_t ROM_APP_START_BANK = 2;
+
+  emu_log("[EMU_INIT] Copying %d ROM apps: ROM banks 0x%02X+ -> RAM banks 0x%02X+\n",
+          app_count, ROM_APP_START_BANK, app_ram_start);
+
+  for (int i = 0; i < app_count; i++) {
+    uint8_t rom_bank = ROM_APP_START_BANK + i;
+    uint8_t ram_bank = app_ram_start + i;
+
+    // Copy entire 32KB bank from ROM to RAM
+    for (uint16_t addr = 0; addr < 0x8000; addr++) {
+      uint8_t byte = memory->read_bank(rom_bank, addr);
+      memory->write_bank(ram_bank, addr, byte);
+    }
+
+    // Check for valid app signature at start of bank
+    // First few bytes should be Z80 code (JP or JR instruction typically)
+    uint8_t first_byte = memory->read_bank(ram_bank, 0);
+    emu_log("[EMU_INIT]   App %d: ROM bank 0x%02X -> RAM bank 0x%02X (first byte: 0x%02X)\n",
+            i, rom_bank, ram_bank, first_byte);
+  }
+}
+
+//=============================================================================
 // Complete Initialization Sequence
 //=============================================================================
 
@@ -492,7 +535,10 @@ void emu_complete_init(banked_mem* memory, HBIOSDispatch* hbios,
   // 3. Set up HBIOS ident signatures
   emu_setup_hbios_ident(memory);
 
-  // 4. Populate disk tables (if hbios provided)
+  // 4. Copy ROM app images to RAM banks (for romldr boot menu)
+  emu_copy_rom_apps_to_ram(memory);
+
+  // 5. Populate disk tables (if hbios provided)
   if (hbios) {
     // Initialize memory disks from HCB configuration
     // Note: initMemoryDisks() calls populateDiskUnitTable() internally
@@ -513,7 +559,7 @@ void emu_complete_init(banked_mem* memory, HBIOSDispatch* hbios,
     }
   }
 
-  // 5. Final HCB copy to shadow RAM with shadow bits set
+  // 6. Final HCB copy to shadow RAM with shadow bits set
   // This must be done AFTER all ROM modifications (disk tables, drive map, etc.)
   // so that reads from ROM bank 0 addresses 0x000-0x1FF return the final values.
   // This is required for the romwbw_mem.h shadow RAM fix (shadow only applies to bank 0).
