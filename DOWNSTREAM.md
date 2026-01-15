@@ -462,21 +462,38 @@ To support NVRAM in your platform:
    hbios.setBootOption("H");  // or setBootOption("")
    ```
 
-3. **Add persistence** (optional but recommended):
+3. **Add persistence** (recommended):
+
+   The `HBIOSDispatch` class provides these methods for NVRAM persistence:
    ```cpp
-   // Save NVRAM to user preferences when emulator stops:
-   // (Requires adding a getter method to HBIOSDispatch, or use HBIOS calls)
+   // Get pointer to 5-byte NVRAM array (for saving)
+   const uint8_t* getNvram() const;
 
-   // Option A: Add public method to HBIOSDispatch:
-   //   const uint8_t* getNvram() const { return nvram_switches; }
-   //   void setNvram(const uint8_t* data) { memcpy(nvram_switches, data, 5); }
+   // Set NVRAM from 5-byte array (for restoring, recalculates checksum)
+   void setNvram(const uint8_t* data);
 
-   // Option B: Use existing HBIOS interface (messier but works now):
-   // Read: Set up registers for BF_RTCGETBLK, call handleRTC()
-   // Write: Set up registers for BF_RTCSETBLK, call handleRTC()
-
-   // Then save/restore the 5 bytes via NSUserDefaults, SharedPreferences, etc.
+   // Check if NVRAM has been initialized (signature = 'W')
+   bool isNvramInitialized() const;
    ```
+
+   **Example: Save on exit, restore on startup**
+   ```cpp
+   // On app shutdown - save to platform storage:
+   const uint8_t* nvram = hbios.getNvram();
+   // Save nvram[0..4] to NSUserDefaults, SharedPreferences, localStorage, etc.
+
+   // On app startup - restore before starting emulator:
+   uint8_t saved_nvram[5];
+   // Load saved_nvram from storage...
+   if (have_saved_nvram) {
+       hbios.setNvram(saved_nvram);
+   }
+   ```
+
+   **Platform-specific storage examples:**
+   - iOS/macOS: `UserDefaults.standard.set(Data(bytes: nvram, count: 5), forKey: "nvram")`
+   - Android: `SharedPreferences` with Base64-encoded bytes
+   - Web: `localStorage.setItem("nvram", JSON.stringify(Array.from(nvram)))`
 
 4. **Example: iOS/Swift boot picker**:
    ```swift
