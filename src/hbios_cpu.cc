@@ -49,6 +49,9 @@ qkz80_uint8 hbios_cpu::port_in(qkz80_uint8 port) {
       return emu_console_has_input() ? 0x80 : 0x00;
 
     default: {
+#ifdef RUBBISH
+      // bogus code - no way to not have dazzler
+      // not object oriented
       // Check if this is a Dazzler port
       Dazzler* dazzler = delegate->getDazzler();
       if (dazzler) {
@@ -57,6 +60,7 @@ qkz80_uint8 hbios_cpu::port_in(qkz80_uint8 port) {
           return dazzler_port_in(dazzler, port);
         }
       }
+#endif
       return 0xFF;  // Floating bus
     }
   }
@@ -146,6 +150,9 @@ void hbios_cpu::port_out(qkz80_uint8 port, qkz80_uint8 value) {
       break;
 
     default: {
+#ifdef RUBBISH
+      // bogus code - no way to not have dazzler
+      // not object oriented
       // Check if this is a Dazzler port
       Dazzler* dazzler = delegate->getDazzler();
       if (dazzler) {
@@ -155,6 +162,7 @@ void hbios_cpu::port_out(qkz80_uint8 port, qkz80_uint8 value) {
           break;
         }
       }
+#endif
       // Unknown port - ignore
       break;
     }
