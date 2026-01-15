@@ -352,174 +352,81 @@ This ensures:
 
 ## NVRAM Boot Configuration (January 2025)
 
-RomWBW stores boot configuration in RTC NVRAM. The emulator now fully supports
-this, allowing both the `--boot` command-line option AND the ROM's built-in
-SYSCONF utility (the 'W' command at the boot menu) to configure boot options.
+RomWBW stores boot configuration in RTC NVRAM. The emulator supports both
+programmatic configuration via the C++ API and interactive configuration via
+the ROM's built-in SYSCONF utility ('W' command at the boot menu).
 
-### NVRAM Layout
+### String-Based API
 
-The emulator maintains a 5-byte NVRAM buffer that matches the RomWBW layout:
-
-| Byte | Name        | Description                                    |
-|------|-------------|------------------------------------------------|
-| 0    | Signature   | 'W' (0x57) if initialized, 0 otherwise         |
-| 1    | Boot L      | App char for ROM boot, or slice # for disk     |
-| 2    | Boot H      | 0x80 = ROM boot, 0x00-0x7F = disk unit number  |
-| 3    | Autoboot    | 0x20 = enabled, bits 0-3 = timeout in seconds  |
-| 4    | Checksum    | XOR of bytes 0-3 XOR with version bytes        |
-
-### Setting Boot Options Programmatically
-
-Use `HBIOSDispatch::setBootOption()` to configure boot options:
+The NVRAM interface uses printable strings for all get/set operations:
 
 ```cpp
-// Boot ROM app 'C' (typically CP/M 2.2):
-hbios.setBootOption("C");
+// Set boot option - accepts these formats:
+hbios.setNvramSetting("C");     // Boot ROM app C (CP/M 2.2)
+hbios.setNvramSetting("Z");     // Boot ROM app Z (ZSDOS)
+hbios.setNvramSetting("0");     // Boot from disk unit 0, slice 0
+hbios.setNvramSetting("2.3");   // Boot from disk unit 2, slice 3
+hbios.setNvramSetting("H");     // Show boot menu (help)
+hbios.setNvramSetting("");      // Clear - uninitialized, shows menu
 
-// Boot from disk unit 0, slice 0:
-hbios.setBootOption("0");
+// Get current boot option - returns same format
+std::string setting = hbios.getNvramSetting();
+// Returns: "C", "Z", "0", "2.3", etc. or "" if uninitialized
 
-// Boot from disk unit 2, slice 3:
-hbios.setBootOption("2.3");
+// Check if NVRAM needs to be persisted (modified since last read)
+if (hbios.hasNvramChange()) {
+    std::string setting = hbios.getNvramSetting();  // clears dirty flag
+    saveToStorage(setting);  // your persistence code
+}
 
-// Show boot menu (default):
-hbios.setBootOption("H");
-
-// Clear boot option (show menu, no autoboot):
-hbios.setBootOption("");
+// Check if NVRAM has a valid boot option set
+bool initialized = hbios.isNvramInitialized();
 ```
 
-### HBIOS Functions Implemented
+### Persistence
 
-The following RTC functions are now implemented for NVRAM access:
+NVRAM is NOT persisted across sessions by default. To add persistence:
 
-| Function       | Code | Description                              |
-|----------------|------|------------------------------------------|
-| BF_RTCGETBYT   | 0x22 | Get NVRAM byte: C=index, returns E=value |
-| BF_RTCSETBYT   | 0x23 | Set NVRAM byte: C=index, E=value         |
-| BF_RTCGETBLK   | 0x24 | Get NVRAM block: HL=buffer (5 bytes)     |
-| BF_RTCSETBLK   | 0x25 | Set NVRAM block: HL=buffer (5 bytes)     |
-| BF_RTCDEVICE   | 0x28 | Device info: returns C=0x40 (emulated)   |
+```cpp
+// On app startup - restore saved setting:
+std::string saved = loadFromStorage();  // your storage code
+if (!saved.empty()) {
+    hbios.setNvramSetting(saved);
+}
 
-Plus the system-level switch functions:
+// Periodically or on shutdown - check for changes and save:
+if (hbios.hasNvramChange()) {
+    std::string setting = hbios.getNvramSetting();
+    saveToStorage(setting);
+}
+```
 
-| Function        | Code        | Description                              |
-|-----------------|-------------|------------------------------------------|
-| SYSGET_SWITCH   | F8/C0       | Get switch: D=switch#, returns HL        |
-| SYSSET_SWITCH   | F9/C0       | Set switch: D=switch#, HL=value          |
+Platform-specific storage examples:
+- iOS/macOS: `UserDefaults.standard.string(forKey: "nvram")`
+- Android: `SharedPreferences.getString("nvram", "")`
+- Web: `localStorage.getItem("nvram")`
 
-Switch numbers:
-- 0xFF: Get/reset status ('W' = initialized)
-- 0x01: Boot options (H=flags+unit, L=app/slice)
-- 0x03: Autoboot (L=flags+timeout)
+### Example: iOS/Swift Boot Picker
 
-### How the ROM Uses NVRAM
+```swift
+Picker("Boot Device", selection: $bootSelection) {
+    Text("Show Menu").tag("H")
+    Text("CP/M 2.2").tag("C")
+    Text("ZSDOS").tag("Z")
+    ForEach(0..<diskCount, id: \.self) { disk in
+        Text("Disk \(disk)").tag("\(disk)")
+    }
+}
+.onChange(of: bootSelection) { newValue in
+    emulator.hbios.setNvramSetting(newValue)
+}
+```
 
-1. **Boot loader (romldr)** calls `SYSGET_SWITCH` with D=0xFF to check if NVRAM
-   is initialized. If A='W', it reads BOOTOPTS and AUTOBOOT switches.
+### ROM SYSCONF Utility
 
-2. **SYSCONF utility** (accessible via 'W' at boot menu) uses the RTC byte
-   functions (`BF_RTCGETBYT`/`BF_RTCSETBYT`) to read and modify NVRAM directly.
-
-3. Both paths now work correctly in the emulator.
-
-### Boot Configuration Methods
-
-There are two ways to configure boot options:
-
-1. **Programmatic (recommended for GUI apps)**: Call `hbios.setBootOption()`
-   before starting emulation. Your app can provide a UI (picker, settings screen)
-   and translate user choices into this call.
-
-2. **Interactive (via ROM)**: The user presses 'W' at the boot menu to access
-   RomWBW's built-in SYSCONF utility. Changes persist for the session.
-
-Both methods work and can coexist. The ROM's SYSCONF uses the RTC NVRAM
-functions (`BF_RTCGETBYT`/`BF_RTCSETBYT`) which are now fully implemented.
-
-Note: NVRAM is NOT persisted across sessions by default. Each time the emulator
-starts, NVRAM is uninitialized unless your app calls `setBootOption()` or
-implements persistence (see below).
-
-### Implementation for Downstream Platforms
-
-To support NVRAM in your platform:
-
-1. **No code changes needed** - The implementation is in `hbios_dispatch.cc`
-   which all platforms share.
-
-2. **Provide boot configuration UI** (recommended):
-   ```cpp
-   // In your app's settings or boot screen:
-
-   // User selects "CP/M 2.2" from a picker:
-   hbios.setBootOption("C");
-
-   // User selects "Disk 0, Slice 2":
-   hbios.setBootOption("0.2");
-
-   // User wants to see the boot menu:
-   hbios.setBootOption("H");  // or setBootOption("")
-   ```
-
-3. **Add persistence** (recommended):
-
-   The `HBIOSDispatch` class provides these methods for NVRAM persistence:
-   ```cpp
-   // Get pointer to 5-byte NVRAM array (for saving)
-   const uint8_t* getNvram() const;
-
-   // Set NVRAM from 5-byte array (for restoring, recalculates checksum)
-   void setNvram(const uint8_t* data);
-
-   // Check if NVRAM has been initialized (signature = 'W')
-   bool isNvramInitialized() const;
-   ```
-
-   **Example: Save on exit, restore on startup**
-   ```cpp
-   // On app shutdown - save to platform storage:
-   const uint8_t* nvram = hbios.getNvram();
-   // Save nvram[0..4] to NSUserDefaults, SharedPreferences, localStorage, etc.
-
-   // On app startup - restore before starting emulator:
-   uint8_t saved_nvram[5];
-   // Load saved_nvram from storage...
-   if (have_saved_nvram) {
-       hbios.setNvram(saved_nvram);
-   }
-   ```
-
-   **Platform-specific storage examples:**
-   - iOS/macOS: `UserDefaults.standard.set(Data(bytes: nvram, count: 5), forKey: "nvram")`
-   - Android: `SharedPreferences` with Base64-encoded bytes
-   - Web: `localStorage.setItem("nvram", JSON.stringify(Array.from(nvram)))`
-
-4. **Example: iOS/Swift boot picker**:
-   ```swift
-   // In your SwiftUI view:
-   Picker("Boot Device", selection: $bootSelection) {
-       Text("Show Menu").tag("H")
-       Text("CP/M 2.2").tag("C")
-       Text("ZSDOS").tag("Z")
-       ForEach(0..<diskCount, id: \.self) { disk in
-           Text("Disk \(disk)").tag("\(disk)")
-       }
-   }
-   .onChange(of: bootSelection) { newValue in
-       emulator.hbios.setBootOption(newValue)
-   }
-   ```
-
-### Testing NVRAM Support
-
-1. Start emulator without calling `setBootOption()`: Should show boot menu
-2. Press 'W' at boot menu: Should show SYSCONF utility
-3. Use SYSCONF to set boot device and enable autoboot
-4. Press 'Q' to quit SYSCONF: Should return to boot menu
-5. Settings should be remembered until emulator session ends
-6. Test `setBootOption("C")`: Should auto-boot to CP/M
-7. Test `setBootOption("0")`: Should auto-boot from disk 0
+Users can also configure boot options interactively by pressing 'W' at the
+boot menu. The ROM's SYSCONF utility reads and writes NVRAM directly, and
+changes are visible via `getNvramSetting()` / `hasNvramChange()`.
 
 ## Manifest Disk Write Warning (January 2025)
 
@@ -603,7 +510,9 @@ bool pollManifestWriteWarning();
 - [ ] Test REBOOT command
 - [ ] Test ASSIGN command (verifies CBIOS stamp at 0x40)
 - [ ] Test SYSCONF utility ('W' command at boot menu)
-- [ ] Test `setBootOption()` API for programmatic boot configuration
+- [ ] Update NVRAM code to use new string-based API:
+  - [ ] Replace `setBootOption()` with `setNvramSetting()`
+  - [ ] Replace raw byte access with `getNvramSetting()` / `hasNvramChange()`
 - [ ] Implement manifest disk write warning UI (optional but recommended)
   - [ ] Call `setDiskIsManifest()` when loading manifest-managed disks
   - [ ] Poll `pollManifestWriteWarning()` in UI loop

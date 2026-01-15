@@ -373,17 +373,27 @@ public:
   void addRomApp(const std::string& name, const std::string& path, char key);
   void clearRomApps();
 
-  // NVRAM boot option configuration (replaces character queueing approach)
-  // Parse boot string and set NVRAM switches for automatic boot
-  // Format: "C" for ROM app C, "2" for disk unit 2 slice 0, "2.3" for unit 2 slice 3
-  void setBootOption(const std::string& boot_str);
+  // NVRAM boot option configuration - string-based API
+  //
+  // Set boot option from printable string:
+  //   "C"   - Boot ROM app C (CP/M 2.2)
+  //   "Z"   - Boot ROM app Z (ZSDOS)
+  //   "2"   - Boot from disk unit 2, slice 0
+  //   "2.3" - Boot from disk unit 2, slice 3
+  //   "H"   - Show boot menu (help)
+  //   ""    - Clear boot option (uninitialized, shows menu)
+  void setNvramSetting(const std::string& setting);
 
-  // Direct NVRAM access for persistence
-  // Returns pointer to 5-byte NVRAM array (read-only)
-  const uint8_t* getNvram() const { return nvram_switches; }
-  // Set NVRAM from 5-byte array (recalculates checksum)
-  void setNvram(const uint8_t* data);
-  // Check if NVRAM has been modified from defaults
+  // Get current boot option as printable string
+  // Returns same format as setNvramSetting accepts
+  // Clears the dirty flag (call hasNvramChange first if you need to check)
+  std::string getNvramSetting();
+
+  // Check if NVRAM has been modified and needs to be persisted
+  // Returns true once per change, cleared when getNvramSetting is called
+  bool hasNvramChange();
+
+  // Check if NVRAM is initialized (has a valid boot option set)
   bool isNvramInitialized() const { return nvram_switches[0] == 'W'; }
 
   // Host file transfer (EMU extension)
@@ -568,8 +578,9 @@ private:
   // See RomWBW Source/Doc/SystemGuide.md for full documentation.
   static constexpr int NVRAM_SIZE = 5;
   uint8_t nvram_switches[NVRAM_SIZE] = {0, 'H', BOPTS_ROM, 0, 0};
+  bool nvram_dirty = false;  // Set when NVRAM modified, cleared by getNvramSetting()
 
-  // Helper to recalculate NVRAM checksum (byte 4)
+  // Helper to recalculate NVRAM checksum (byte 4) and set dirty flag
   void recalcNvramChecksum();
 
   // Disks

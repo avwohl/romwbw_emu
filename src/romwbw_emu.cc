@@ -42,83 +42,43 @@
 static volatile bool stop_requested = false;
 
 //=============================================================================
-// NVRAM Persistence (JSON format)
+// NVRAM Persistence
 //=============================================================================
 
-// Get default NVRAM path: ~/.config/romwbw_emu/nvram.json
+// Get default NVRAM path: ~/.config/romwbw_emu/nvram
 static std::string get_nvram_path() {
   const char* home = getenv("HOME");
   if (!home) home = ".";
   std::string dir = std::string(home) + "/.config/romwbw_emu";
-  // Create directory if it doesn't exist
   mkdir(dir.c_str(), 0755);
-  return dir + "/nvram.json";
+  return dir + "/nvram";
 }
 
-// Load NVRAM from JSON file
-// Format: { "nvram": ["57", "48", "80", "00", "XX"] }
-static bool load_nvram_json(const std::string& path, uint8_t* nvram) {
+// Load NVRAM setting from file (just a printable string like "C" or "0.2")
+static std::string load_nvram_setting(const std::string& path) {
   FILE* f = fopen(path.c_str(), "r");
-  if (!f) return false;
+  if (!f) return "";
 
-  char buf[256];
-  size_t len = fread(buf, 1, sizeof(buf) - 1, f);
-  fclose(f);
-  buf[len] = '\0';
-
-  // Simple JSON parsing - look for array of hex strings
-  // Find opening bracket
-  char* p = strchr(buf, '[');
-  if (!p) return false;
-  p++;
-
-  for (int i = 0; i < 5; i++) {
-    // Find opening quote
-    while (*p && *p != '"') p++;
-    if (!*p) return false;
-    p++;
-    // Parse hex value
-    unsigned int val;
-    if (sscanf(p, "%2x", &val) != 1) return false;
-    nvram[i] = val;
-    // Skip to closing quote
-    while (*p && *p != '"') p++;
-    if (*p) p++;
+  char buf[64];
+  if (!fgets(buf, sizeof(buf), f)) {
+    fclose(f);
+    return "";
   }
+  fclose(f);
 
-  return true;
+  // Strip trailing whitespace
+  size_t len = strlen(buf);
+  while (len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r' || buf[len-1] == ' ')) {
+    buf[--len] = '\0';
+  }
+  return std::string(buf);
 }
 
-// Save NVRAM to JSON file
-static bool save_nvram_json(const std::string& path, const uint8_t* nvram) {
+// Save NVRAM setting to file
+static bool save_nvram_setting(const std::string& path, const std::string& setting) {
   FILE* f = fopen(path.c_str(), "w");
   if (!f) return false;
-
-  fprintf(f, "{\n");
-  fprintf(f, "  \"description\": \"RomWBW NVRAM boot configuration\",\n");
-  fprintf(f, "  \"nvram\": [\"%02X\", \"%02X\", \"%02X\", \"%02X\", \"%02X\"],\n",
-          nvram[0], nvram[1], nvram[2], nvram[3], nvram[4]);
-  fprintf(f, "  \"decoded\": {\n");
-
-  // Add human-readable decoded values
-  bool is_rom = (nvram[2] & 0x80) != 0;
-  bool autoboot = (nvram[3] & 0x20) != 0;
-  int timeout = nvram[3] & 0x0F;
-
-  fprintf(f, "    \"initialized\": %s,\n", nvram[0] == 'W' ? "true" : "false");
-  if (is_rom) {
-    fprintf(f, "    \"boot_type\": \"rom\",\n");
-    fprintf(f, "    \"boot_app\": \"%c\",\n", nvram[1]);
-  } else {
-    fprintf(f, "    \"boot_type\": \"disk\",\n");
-    fprintf(f, "    \"boot_unit\": %d,\n", nvram[2] & 0x7F);
-    fprintf(f, "    \"boot_slice\": %d,\n", nvram[1]);
-  }
-  fprintf(f, "    \"autoboot\": %s,\n", autoboot ? "true" : "false");
-  fprintf(f, "    \"timeout\": %d\n", timeout);
-  fprintf(f, "  }\n");
-  fprintf(f, "}\n");
-
+  fprintf(f, "%s\n", setting.c_str());
   fclose(f);
   return true;
 }
@@ -1215,21 +1175,17 @@ int main(int argc, char** argv) {
     emu.getHBIOS()->addRomApp(def.name, def.path, def.key);
   }
 
-  // Load persisted NVRAM from ~/.config/romwbw_emu/nvram.json
+  // Load persisted NVRAM from ~/.config/romwbw_emu/nvram
   std::string nvram_path = get_nvram_path();
-  uint8_t loaded_nvram[5];
-  if (load_nvram_json(nvram_path, loaded_nvram)) {
-    emu.getHBIOS()->setNvram(loaded_nvram);
-    if (loaded_nvram[0] == 'W') {
-      fprintf(stderr, "Loaded NVRAM from %s\n", nvram_path.c_str());
-    }
+  std::string loaded_setting = load_nvram_setting(nvram_path);
+  if (!loaded_setting.empty()) {
+    emu.getHBIOS()->setNvramSetting(loaded_setting);
+    fprintf(stderr, "Loaded NVRAM setting '%s' from %s\n", loaded_setting.c_str(), nvram_path.c_str());
   }
 
   // Configure NVRAM boot option if specified (overrides persisted settings)
-  // This sets up emulated RTC NVRAM switches so the ROM loader
-  // automatically boots without user interaction
   if (!boot_string.empty()) {
-    emu.getHBIOS()->setBootOption(boot_string);
+    emu.getHBIOS()->setNvramSetting(boot_string);
     fprintf(stderr, "Auto-boot: configured NVRAM for '%s'\n", boot_string.c_str());
   }
 
@@ -1490,8 +1446,9 @@ int main(int argc, char** argv) {
 
   // Save NVRAM if it was initialized (either by --boot, SYSCONF, or loaded from file)
   if (emu.getHBIOS()->isNvramInitialized()) {
-    if (save_nvram_json(nvram_path, emu.getHBIOS()->getNvram())) {
-      fprintf(stderr, "Saved NVRAM to %s\n", nvram_path.c_str());
+    std::string setting = emu.getHBIOS()->getNvramSetting();
+    if (save_nvram_setting(nvram_path, setting)) {
+      fprintf(stderr, "Saved NVRAM setting '%s' to %s\n", setting.c_str(), nvram_path.c_str());
     }
   }
 

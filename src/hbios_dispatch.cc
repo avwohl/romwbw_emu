@@ -682,6 +682,7 @@ void HBIOSDispatch::recalcNvramChecksum() {
   xsum ^= 0x35;  // (3 << 4) | 5 = RMJ.RMN
   xsum ^= 0x10;  // (1 << 4) | 0 = RUP.RTP
   nvram_switches[4] = xsum;
+  nvram_dirty = true;
 }
 
 void HBIOSDispatch::doRet() {
@@ -2633,24 +2634,16 @@ bool HBIOSDispatch::bootFromDevice(const char* cmd_str) {
 }
 
 //=============================================================================
-// setBootOption - Configure NVRAM switches for automatic boot
+// NVRAM Boot Configuration - String-based API
 //=============================================================================
-//
-// Parses the boot string and sets NVRAM switches so the ROM loader
-// will automatically boot without user interaction.
-//
-// Format:
-//   "C", "Z", "B" etc.  - Boot ROM app with that key (letter)
-//   "H"                 - Show help menu (default)
-//   "2"                 - Boot from disk unit 2, slice 0
-//   "2.3"               - Boot from disk unit 2, slice 3
-//
-void HBIOSDispatch::setBootOption(const std::string& boot_str) {
-  if (boot_str.empty()) {
-    // No boot option - leave NVRAM uninitialized
+
+void HBIOSDispatch::setNvramSetting(const std::string& setting) {
+  if (setting.empty()) {
+    // Clear boot option - leave NVRAM uninitialized (shows menu)
     nvram_switches[0] = 0;  // Not initialized
+    nvram_dirty = true;
     if (debug_log) {
-      emu_log("[BOOT] No boot option, NVRAM not initialized\n");
+      emu_log("[NVRAM] Cleared (uninitialized)\n");
     }
     return;
   }
@@ -2658,8 +2651,7 @@ void HBIOSDispatch::setBootOption(const std::string& boot_str) {
   // Initialize NVRAM
   nvram_switches[0] = 'W';  // Fully initialized
 
-  // Parse boot string
-  char first_char = boot_str[0];
+  char first_char = setting[0];
 
   if (isalpha(first_char)) {
     // ROM app boot - use the letter as the app selection
@@ -2669,9 +2661,7 @@ void HBIOSDispatch::setBootOption(const std::string& boot_str) {
     nvram_switches[3] = ABOOT_AUTO;       // Enable autoboot, 0 timeout (immediate)
 
     if (debug_log) {
-      emu_log("[BOOT] ROM app boot: '%c' (switches: %02X %02X %02X %02X)\n",
-              app_char, nvram_switches[0], nvram_switches[1],
-              nvram_switches[2], nvram_switches[3]);
+      emu_log("[NVRAM] Set ROM app '%c'\n", app_char);
     }
   } else if (isdigit(first_char)) {
     // Disk boot - parse unit and optional slice
@@ -2679,12 +2669,12 @@ void HBIOSDispatch::setBootOption(const std::string& boot_str) {
     int slice = 0;
 
     // Check for unit.slice format
-    size_t dot_pos = boot_str.find('.');
+    size_t dot_pos = setting.find('.');
     if (dot_pos != std::string::npos) {
-      unit = atoi(boot_str.substr(0, dot_pos).c_str());
-      slice = atoi(boot_str.substr(dot_pos + 1).c_str());
+      unit = atoi(setting.substr(0, dot_pos).c_str());
+      slice = atoi(setting.substr(dot_pos + 1).c_str());
     } else {
-      unit = atoi(boot_str.c_str());
+      unit = atoi(setting.c_str());
     }
 
     // Clamp values to valid ranges
@@ -2698,9 +2688,7 @@ void HBIOSDispatch::setBootOption(const std::string& boot_str) {
     nvram_switches[3] = ABOOT_AUTO;                // Enable autoboot, 0 timeout
 
     if (debug_log) {
-      emu_log("[BOOT] Disk boot: unit=%d slice=%d (switches: %02X %02X %02X %02X)\n",
-              unit, slice, nvram_switches[0], nvram_switches[1],
-              nvram_switches[2], nvram_switches[3]);
+      emu_log("[NVRAM] Set disk unit=%d slice=%d\n", unit, slice);
     }
   } else {
     // Invalid format - treat as help request
@@ -2709,24 +2697,45 @@ void HBIOSDispatch::setBootOption(const std::string& boot_str) {
     nvram_switches[3] = 0;                // Disable autoboot (show menu)
 
     if (debug_log) {
-      emu_log("[BOOT] Invalid boot string '%s', defaulting to Help\n", boot_str.c_str());
+      emu_log("[NVRAM] Invalid setting '%s', defaulting to menu\n", setting.c_str());
     }
   }
 
-  // Calculate checksum for the NVRAM data
+  // Calculate checksum (also sets dirty flag)
   recalcNvramChecksum();
 }
 
-void HBIOSDispatch::setNvram(const uint8_t* data) {
-  if (!data) return;
-  // Copy first 4 bytes (signature + data), then recalculate checksum
-  for (int i = 0; i < 4; i++) {
-    nvram_switches[i] = data[i];
+std::string HBIOSDispatch::getNvramSetting() {
+  // Clear dirty flag - caller is reading the value
+  nvram_dirty = false;
+
+  // Check if NVRAM is initialized
+  if (nvram_switches[0] != 'W') {
+    return "";  // Uninitialized
   }
-  recalcNvramChecksum();
-  if (debug_log) {
-    emu_log("[NVRAM] Loaded: %02X %02X %02X %02X %02X\n",
-            nvram_switches[0], nvram_switches[1], nvram_switches[2],
-            nvram_switches[3], nvram_switches[4]);
+
+  bool is_rom = (nvram_switches[2] & BOPTS_ROM) != 0;
+
+  if (is_rom) {
+    // ROM app - return the app character
+    char app_char = nvram_switches[1];
+    if (app_char >= 'A' && app_char <= 'Z') {
+      return std::string(1, app_char);
+    }
+    return "H";  // Default to help menu
+  } else {
+    // Disk boot - return "unit" or "unit.slice"
+    int unit = nvram_switches[2] & BOPTS_UNIT;
+    int slice = nvram_switches[1];
+
+    if (slice == 0) {
+      return std::to_string(unit);
+    } else {
+      return std::to_string(unit) + "." + std::to_string(slice);
+    }
   }
+}
+
+bool HBIOSDispatch::hasNvramChange() {
+  return nvram_dirty;
 }
