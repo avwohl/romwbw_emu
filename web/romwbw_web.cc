@@ -215,6 +215,27 @@ int romwbw_get_disk_size(int unit) {
   return emu->hbios.getDisk(unit).data.size();
 }
 
+// Mark disk as manifest-controlled (can be auto-updated, changes may be lost)
+EMSCRIPTEN_KEEPALIVE
+void romwbw_set_disk_is_manifest(int unit, int is_manifest) {
+  if (!emu || unit < 0 || unit >= 16) return;
+  emu->hbios.setDiskIsManifest(unit, is_manifest != 0);
+}
+
+// Suppress manifest disk write warning for this disk
+EMSCRIPTEN_KEEPALIVE
+void romwbw_set_disk_warning_suppressed(int unit, int suppressed) {
+  if (!emu || unit < 0 || unit >= 16) return;
+  emu->hbios.setDiskWarningSuppressed(unit, suppressed != 0);
+}
+
+// Poll for manifest disk write warning - returns 1 once per session on first write
+EMSCRIPTEN_KEEPALIVE
+int romwbw_poll_manifest_warning() {
+  if (!emu) return 0;
+  return emu->hbios.pollManifestWriteWarning() ? 1 : 0;
+}
+
 
 // Reset callback for SYSRESET
 static void handle_sysreset(uint8_t reset_type) {

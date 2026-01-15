@@ -144,9 +144,64 @@
     .progress-bar-fill.done {
       background: #0a0;
     }
+    /* Warning modal */
+    #warning-modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.7);
+      z-index: 1001;
+      justify-content: center;
+      align-items: center;
+    }
+    #warning-modal.visible {
+      display: flex;
+    }
+    .warning-content {
+      background: #1a1a2e;
+      border: 2px solid #cc6600;
+      border-radius: 12px;
+      padding: 25px 35px;
+      max-width: 500px;
+      text-align: center;
+    }
+    .warning-content h3 {
+      color: #ffaa00;
+      margin: 0 0 15px 0;
+    }
+    .warning-content p {
+      margin: 10px 0;
+      line-height: 1.5;
+    }
+    .warning-content button {
+      margin-top: 15px;
+      background: #cc6600;
+    }
+    .warning-content button:hover {
+      background: #ee8800;
+    }
+    .warn-checkbox {
+      font-size: 11px;
+      margin-left: 4px;
+      color: #888;
+    }
   </style>
 </head>
 <body>
+  <!-- Manifest disk write warning modal -->
+  <div id="warning-modal">
+    <div class="warning-content">
+      <h3>Disk Write Warning</h3>
+      <p>This disk is loaded from the server and may be replaced when the page reloads or the app updates.</p>
+      <p>Any changes you make (save files, etc.) could be lost.</p>
+      <p>To preserve your changes, use the <strong>Download</strong> button (↓) to save a local copy.</p>
+      <button id="warningOkBtn">OK, I understand</button>
+    </div>
+  </div>
+
   <!-- Loading overlay -->
   <div id="loading-overlay">
     <div class="loading-content">
@@ -213,6 +268,7 @@
       </select>
       <input type="file" id="disk0File" accept=".img,.dsk" style="width:160px;">
       <button id="downloadDisk0Btn" disabled title="Download modified disk">↓</button>
+      <label class="warn-checkbox"><input type="checkbox" id="disk0NoWarn"> Don't warn</label>
     </div>
     <div class="file-input">
       <label>Disk 1:</label>
@@ -235,6 +291,7 @@
       </select>
       <input type="file" id="disk1File" accept=".img,.dsk" style="width:160px;">
       <button id="downloadDisk1Btn" disabled title="Download modified disk">↓</button>
+      <label class="warn-checkbox"><input type="checkbox" id="disk1NoWarn"> Don't warn</label>
     </div>
     <div class="file-input">
       <button id="startBtn">Start</button>
@@ -317,6 +374,8 @@
     // Store disk data so we can reload after ROM changes
     let diskData = [null, null];
     let diskNames = ['', ''];
+    // Track which disks are from server (manifest) vs local file upload
+    let diskIsManifest = [false, false];
 
     // Console output from emulator
     Module.onConsoleOutput = function(ch) {
@@ -574,15 +633,21 @@
     }
 
     // Helper to load disk data into emulator
-    function loadDiskData(unit, data, name) {
+    // isManifest: true if loaded from server dropdown (can be auto-updated)
+    function loadDiskData(unit, data, name, isManifest = false) {
       // Store disk data so we can reload after ROM changes
       diskData[unit] = data;
       diskNames[unit] = name;
+      diskIsManifest[unit] = isManifest;
       // Actually load into emulator
       const ptr = Module._malloc(data.length);
       Module.HEAPU8.set(data, ptr);
       Module._romwbw_load_disk(unit, ptr, data.length);
       Module._free(ptr);
+      // Mark as manifest disk in emulator
+      if (Module._romwbw_set_disk_is_manifest) {
+        Module._romwbw_set_disk_is_manifest(unit, isManifest ? 1 : 0);
+      }
       diskLoaded[unit] = true;
       if (unit === 0) downloadDisk0Btn.disabled = false;
       if (unit === 1) downloadDisk1Btn.disabled = false;
@@ -597,6 +662,10 @@
           Module.HEAPU8.set(diskData[unit], ptr);
           Module._romwbw_load_disk(unit, ptr, diskData[unit].length);
           Module._free(ptr);
+          // Re-mark as manifest disk
+          if (Module._romwbw_set_disk_is_manifest) {
+            Module._romwbw_set_disk_is_manifest(unit, diskIsManifest[unit] ? 1 : 0);
+          }
         }
       }
     }
@@ -627,53 +696,53 @@
       reader.readAsArrayBuffer(file);
     });
 
-    // Load disk 0 from server select
+    // Load disk 0 from server select (manifest disk)
     document.getElementById('disk0Select').addEventListener('change', function(e) {
       const filename = e.target.value;
-      if (!filename) return;
+      if (!filename || filename === '__custom__') return;
       statusDiv.textContent = 'Loading ' + filename + '...';
       fetch(filename)
         .then(r => r.arrayBuffer())
         .then(buf => {
-          loadDiskData(0, new Uint8Array(buf), filename);
+          loadDiskData(0, new Uint8Array(buf), filename, true);  // isManifest = true
           disk0File.value = '';
         })
         .catch(err => { statusDiv.textContent = 'Error loading disk: ' + err; });
     });
 
-    // Load disk 0 file from local
+    // Load disk 0 file from local (user-owned, not manifest)
     disk0File.addEventListener('change', function(e) {
       const file = e.target.files[0];
       if (!file) return;
       const reader = new FileReader();
       reader.onload = function(e) {
-        loadDiskData(0, new Uint8Array(e.target.result), file.name);
+        loadDiskData(0, new Uint8Array(e.target.result), file.name, false);  // isManifest = false
         document.getElementById('disk0Select').value = '__custom__';
       };
       reader.readAsArrayBuffer(file);
     });
 
-    // Load disk 1 from server select
+    // Load disk 1 from server select (manifest disk)
     document.getElementById('disk1Select').addEventListener('change', function(e) {
       const filename = e.target.value;
-      if (!filename) return;
+      if (!filename || filename === '__custom__') return;
       statusDiv.textContent = 'Loading ' + filename + '...';
       fetch(filename)
         .then(r => r.arrayBuffer())
         .then(buf => {
-          loadDiskData(1, new Uint8Array(buf), filename);
+          loadDiskData(1, new Uint8Array(buf), filename, true);  // isManifest = true
           disk1File.value = '';
         })
         .catch(err => { statusDiv.textContent = 'Error loading disk: ' + err; });
     });
 
-    // Load disk 1 file from local
+    // Load disk 1 file from local (user-owned, not manifest)
     disk1File.addEventListener('change', function(e) {
       const file = e.target.files[0];
       if (!file) return;
       const reader = new FileReader();
       reader.onload = function(e) {
-        loadDiskData(1, new Uint8Array(e.target.result), file.name);
+        loadDiskData(1, new Uint8Array(e.target.result), file.name, false);  // isManifest = false
         document.getElementById('disk1Select').value = '__custom__';
       };
       reader.readAsArrayBuffer(file);
@@ -686,6 +755,42 @@
         Module._romwbw_set_debug(debugCheckbox.checked ? 1 : 0);
       }
     });
+
+    // "Don't warn" checkboxes for manifest disk write warning
+    document.getElementById('disk0NoWarn').addEventListener('change', function() {
+      if (Module._romwbw_set_disk_warning_suppressed) {
+        Module._romwbw_set_disk_warning_suppressed(0, this.checked ? 1 : 0);
+      }
+    });
+    document.getElementById('disk1NoWarn').addEventListener('change', function() {
+      if (Module._romwbw_set_disk_warning_suppressed) {
+        Module._romwbw_set_disk_warning_suppressed(1, this.checked ? 1 : 0);
+      }
+    });
+
+    // Warning modal
+    const warningModal = document.getElementById('warning-modal');
+    document.getElementById('warningOkBtn').addEventListener('click', function() {
+      warningModal.classList.remove('visible');
+      term.focus();
+    });
+
+    // Poll for manifest disk write warning
+    let manifestWarningInterval = null;
+    function startManifestWarningPolling() {
+      if (manifestWarningInterval) return;
+      manifestWarningInterval = setInterval(() => {
+        if (Module._romwbw_poll_manifest_warning && Module._romwbw_poll_manifest_warning()) {
+          warningModal.classList.add('visible');
+        }
+      }, 500);
+    }
+    function stopManifestWarningPolling() {
+      if (manifestWarningInterval) {
+        clearInterval(manifestWarningInterval);
+        manifestWarningInterval = null;
+      }
+    }
 
     // Loading overlay helpers
     const loadingOverlay = document.getElementById('loading-overlay');
@@ -806,7 +911,7 @@
         if (needDisk0 && disk0Selection && disk0Selection !== '__custom__') {
           try {
             const data = await fetchWithProgress(disk0Selection, 'load-disk0');
-            loadDiskData(0, data, disk0Selection);
+            loadDiskData(0, data, disk0Selection, true);  // isManifest = true
           } catch (err) {
             updateLoadingProgress('load-disk0', 100, 'skipped');
           }
@@ -816,7 +921,7 @@
         if (needDisk1 && disk1Selection && disk1Selection !== '__custom__') {
           try {
             const data = await fetchWithProgress(disk1Selection, 'load-disk1');
-            loadDiskData(1, data, disk1Selection);
+            loadDiskData(1, data, disk1Selection, true);  // isManifest = true
           } catch (err) {
             updateLoadingProgress('load-disk1', 100, 'skipped');
           }
@@ -841,6 +946,12 @@
         Module._romwbw_set_disk_slices(1, disk1Slices);
       }
 
+      // Apply warning suppression state from checkboxes
+      if (Module._romwbw_set_disk_warning_suppressed) {
+        Module._romwbw_set_disk_warning_suppressed(0, document.getElementById('disk0NoWarn').checked ? 1 : 0);
+        Module._romwbw_set_disk_warning_suppressed(1, document.getElementById('disk1NoWarn').checked ? 1 : 0);
+      }
+
       // Set boot string if provided
       const bootStr = document.getElementById('bootString').value.trim();
       if (bootStr && Module._romwbw_set_boot_string) {
@@ -858,6 +969,7 @@
 
       Module._romwbw_start();
       if (debugCheckbox.checked) startDebugMonitor();  // Start monitoring only if debug enabled
+      startManifestWarningPolling();  // Start polling for manifest disk write warning
       stopBtn.disabled = false;
       term.focus();
     });
@@ -866,6 +978,7 @@
     stopBtn.addEventListener('click', function() {
       Module._romwbw_stop();
       stopDebugMonitor();  // Stop monitoring
+      stopManifestWarningPolling();  // Stop polling for manifest disk write warning
       startBtn.disabled = false;
       stopBtn.disabled = true;
       statusDiv.textContent = 'Stopped';
