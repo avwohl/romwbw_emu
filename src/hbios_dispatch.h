@@ -283,6 +283,13 @@ struct HBDisk {
   uint32_t partition_base_lba = 0;   // Start of RomWBW partition (2048 for hd1k, 0 for hd512)
   uint32_t slice_size = 16640;       // Sectors per slice (16384 for hd1k, 16640 for hd512)
   bool is_hd1k = false;              // True for hd1k format (MID_HDNEW=10), false for hd512 (MID_HD=4)
+
+  // Manifest disk flag - set true for disks managed by app manifest (can be auto-updated)
+  // UI should warn user before writing to manifest disks since changes may be lost
+  bool is_manifest = false;
+
+  // Warning suppression - set true if user checked "Don't warn about overwrites" in disk selector
+  bool warning_suppressed = false;
 };
 
 //=============================================================================
@@ -317,6 +324,9 @@ public:
   // Initialize/reset state
   void reset();
 
+  // Clear input waiting state (used by SYSRESET to avoid stale state after reboot)
+  void clearWaitingState();
+
   // Set CPU and memory references (must be called before use)
   void setCPU(qkz80* cpu) { this->cpu = cpu; }
   void setMemory(banked_mem* mem) { this->memory = mem; }
@@ -343,6 +353,14 @@ public:
   const HBDisk& getDisk(int unit) const;
   void setDiskSliceCount(int unit, int slices);  // Set slices for drive letter assignment
 
+  // Manifest disk write warning - for UI to warn about ephemeral changes
+  // Call setDiskIsManifest(unit, true) when loading disks from app manifest
+  // Call setDiskWarningSuppressed(unit, true) if user checked "Don't warn" checkbox
+  // Poll pollManifestWriteWarning() to check if UI should show warning dialog
+  void setDiskIsManifest(int unit, bool is_manifest);
+  void setDiskWarningSuppressed(int unit, bool suppressed);
+  bool pollManifestWriteWarning();  // Returns true once per session on first manifest disk write
+
   // Memory disk initialization (call after ROM is loaded)
   void initMemoryDisks();
 
@@ -359,6 +377,14 @@ public:
   // Parse boot string and set NVRAM switches for automatic boot
   // Format: "C" for ROM app C, "2" for disk unit 2 slice 0, "2.3" for unit 2 slice 3
   void setBootOption(const std::string& boot_str);
+
+  // Direct NVRAM access for persistence
+  // Returns pointer to 5-byte NVRAM array (read-only)
+  const uint8_t* getNvram() const { return nvram_switches; }
+  // Set NVRAM from 5-byte array (recalculates checksum)
+  void setNvram(const uint8_t* data);
+  // Check if NVRAM has been modified from defaults
+  bool isNvramInitialized() const { return nvram_switches[0] == 'W'; }
 
   // Host file transfer (EMU extension)
   void setHostCmdLine(const std::string& cmdline) { host_cmd_line = cmdline; }
@@ -474,6 +500,10 @@ private:
   bool blocking_allowed = true;    // Can we block for I/O? (false for web/WASM)
   uint16_t main_entry = 0xFFF0;    // Main HBIOS entry point
 
+  // Manifest disk write warning - set true on first write to manifest disk (non-suppressed)
+  // Cleared after pollManifestWriteWarning() returns true
+  bool manifest_write_pending = false;
+
   // Signal port state machine
   uint8_t signal_state = 0;
   uint16_t signal_addr = 0;
@@ -523,11 +553,23 @@ private:
   bool boot_in_progress = false;  // Set when boot starts, for debugging
 
   // NVRAM switches for boot configuration (emulates RTC NVRAM)
-  // [0] = status: 'W' if initialized, 0 if not
-  // [1] = boot char (L) or disk slice
-  // [2] = boot options (H): BOPTS_ROM | unit
-  // [3] = autoboot: ABOOT_AUTO | timeout
-  uint8_t nvram_switches[4] = {0, 'H', BOPTS_ROM, 0};
+  // This emulates the RTC NVRAM layout used by RomWBW for boot configuration.
+  // The ROM's SYSCONF utility (W command) reads/writes this via RTCGETBYT/RTCSETBYT.
+  // The boot loader reads this via SYSGET_SWITCH.
+  //
+  // NVRAM Layout (5 bytes):
+  // [0] = Header signature 'W' (0x57)
+  // [1] = Boot char (L) - app char for ROM boot, slice number for disk boot
+  // [2] = Boot options (H) - BOPTS_ROM (0x80) | unit number (0-127)
+  // [3] = Autoboot flags - ABOOT_AUTO (0x20) | timeout (0x0F)
+  // [4] = Checksum - XOR of bytes 0-3 XOR with version bytes
+  //
+  // See RomWBW Source/Doc/SystemGuide.md for full documentation.
+  static constexpr int NVRAM_SIZE = 5;
+  uint8_t nvram_switches[NVRAM_SIZE] = {0, 'H', BOPTS_ROM, 0, 0};
+
+  // Helper to recalculate NVRAM checksum (byte 4)
+  void recalcNvramChecksum();
 
   // Disks
   HBDisk disks[16];

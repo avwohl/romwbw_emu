@@ -29,6 +29,7 @@
 // Forward declarations
 class banked_mem;
 class HBIOSDispatch;
+class qkz80;
 
 //=============================================================================
 // Disk Size Constants (shared across all platforms)
@@ -196,5 +197,18 @@ const char* emu_validate_disk_image(const char* path, size_t* out_size = nullptr
 // disk_slices: per-disk slice counts (can be nullptr for defaults)
 void emu_complete_init(banked_mem* memory, HBIOSDispatch* hbios = nullptr,
                        const int* disk_slices = nullptr);
+
+//=============================================================================
+// Reset Callback Setup
+//=============================================================================
+
+// Set up the SYSRESET callback for ROM reboot command ('R' at boot menu)
+// This must be called after emu_complete_init() to enable reboot functionality.
+// The callback switches to ROM bank 0 and resets PC to 0x0000.
+//
+// memory: banked memory
+// cpu: Z80 CPU instance
+// hbios: HBIOS dispatch to register callback with
+void emu_setup_reset_callback(banked_mem* memory, qkz80* cpu, HBIOSDispatch* hbios);
 
 #endif // EMU_INIT_H

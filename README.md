@@ -130,6 +130,63 @@ make           # Requires emscripten
 - **Console:** Full terminal emulation with escape sequences
 - **WebAssembly:** Run RomWBW in any modern browser
 
+## Boot Configuration
+
+The emulator supports automatic boot configuration via NVRAM. Settings persist across sessions in `~/.config/romwbw_emu/nvram.json`.
+
+### Quick Boot Examples
+
+```bash
+# Auto-boot to CP/M (ROM app 'C')
+./romwbw_emu --romwbw=roms/emu_avw.rom --boot=C
+
+# Auto-boot from disk 0, slice 0
+./romwbw_emu --romwbw=roms/emu_avw.rom --disk0=disk.img --boot=0
+
+# Auto-boot from disk 2, slice 3
+./romwbw_emu --romwbw=roms/emu_avw.rom --disk0=d0.img --disk1=d1.img --disk2=d2.img --boot=2.3
+
+# Show boot menu (default)
+./romwbw_emu --romwbw=roms/emu_avw.rom --boot=H
+```
+
+### Using SYSCONF (Interactive Configuration)
+
+Press `W` at the boot menu to access the RomWBW SYSCONF utility:
+
+```
+Boot [H=Help]: W
+
+RomWBW System Config Utility, Version 1.0
+
+Commands:
+  P           - Print current settings
+  S BO D,u,s  - Set boot to Disk unit u, slice s
+  S BO R,app  - Set boot to ROM app (C=CP/M, Z=ZSDOS, etc.)
+  S AB E,t    - Enable autoboot with t second timeout (0=immediate)
+  S AB D      - Disable autoboot
+  R           - Reset NVRAM to defaults
+  Q           - Quit
+
+Examples:
+  S BO D,2,3  - Boot from disk 2, slice 3
+  S BO R,C    - Boot CP/M from ROM
+  S AB E,5    - Enable autoboot with 5 second countdown
+  S AB E,0    - Enable autoboot immediately (no countdown)
+```
+
+Settings configured via SYSCONF are saved automatically when the emulator exits.
+
+### Boot Format Reference
+
+| Format | Description |
+|--------|-------------|
+| `--boot=C` | Boot ROM app C (CP/M 2.2) |
+| `--boot=Z` | Boot ROM app Z (ZSDOS) |
+| `--boot=0` | Boot disk 0, slice 0 |
+| `--boot=2.3` | Boot disk 2, slice 3 |
+| `--boot=H` | Show boot menu |
+
 ## Command Line Options
 
 ```
@@ -137,6 +194,7 @@ make           # Requires emscripten
 
 Options:
   --romwbw=FILE     Enable RomWBW mode with ROM file
+  --boot=CMD        Auto-boot command (C, Z, 0, 2.3, H, etc.)
   --debug           Enable debug output
   --strict-io       Halt on unexpected I/O ports
 
@@ -148,6 +206,10 @@ Other options:
   --escape=CHAR     Console escape char (default ^E)
   --trace=FILE      Write execution trace
   --symbols=FILE    Load symbol table (.sym)
+
+NVRAM persistence:
+  Boot settings are saved to ~/.config/romwbw_emu/nvram.json
+  Use SYSCONF (W at boot menu) to configure interactively.
 ```
 
 ## Examples
@@ -182,11 +244,11 @@ romwbw_emu/
 
 ## Documentation
 
+- `docs/BOOT_CONFIGURATION.md` - Boot options, SYSCONF utility, NVRAM persistence
 - `docs/DISK_FORMATS.md` - Disk formats, SIMH compatibility, and cpmtools usage
 - `docs/ROMWBW_INTEGRATION.md` - RomWBW architecture and HBIOS details
 - `docs/HBIOS_Implementation_Guide.md` - How HBIOS is implemented
 - `docs/HBIOS_DATA_EXPORTS.md` - HBIOS data structures
-- `docs/IOS_README.md` - iOS/WebAssembly disk support notes
 
 ## Related Projects
 

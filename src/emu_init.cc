@@ -9,6 +9,7 @@
 #include "emu_init.h"
 #include "romwbw_mem.h"
 #include "hbios_dispatch.h"
+#include "qkz80.h"
 #include "emu_io.h"
 #include <cstdio>
 #include <cstring>
@@ -573,4 +574,44 @@ void emu_complete_init(banked_mem* memory, HBIOSDispatch* hbios,
   emu_copy_hcb_to_shadow_ram(memory);
 
   emu_log("[EMU_INIT] Complete initialization finished\n");
+}
+
+//=============================================================================
+// Reset Callback Setup
+//=============================================================================
+
+// Static pointers for the reset callback (captured by lambda)
+static banked_mem* s_reset_memory = nullptr;
+static qkz80* s_reset_cpu = nullptr;
+static HBIOSDispatch* s_reset_hbios = nullptr;
+
+void emu_setup_reset_callback(banked_mem* memory, qkz80* cpu, HBIOSDispatch* hbios) {
+  if (!memory || !cpu || !hbios) {
+    emu_error("[EMU_INIT] Invalid parameters to emu_setup_reset_callback\n");
+    return;
+  }
+
+  // Store pointers for callback
+  s_reset_memory = memory;
+  s_reset_cpu = cpu;
+  s_reset_hbios = hbios;
+
+  // Register the reset callback with HBIOS
+  // Keep this minimal - just switch bank and set PC, same as Android
+  hbios->setResetCallback([](uint8_t reset_type) {
+    emu_log("[SYSRESET] %s boot - restarting\n",
+            reset_type == 0x01 ? "Warm" : "Cold");
+
+    // Switch to ROM bank 0
+    if (s_reset_memory) {
+      s_reset_memory->select_bank(0x00);
+    }
+
+    // Set PC to 0 to restart from ROM
+    if (s_reset_cpu) {
+      s_reset_cpu->regs.PC.set_pair16(0x0000);
+    }
+  });
+
+  emu_log("[EMU_INIT] Reset callback registered\n");
 }

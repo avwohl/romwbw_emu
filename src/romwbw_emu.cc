@@ -41,6 +41,88 @@
 // Global for signal handler to request stop
 static volatile bool stop_requested = false;
 
+//=============================================================================
+// NVRAM Persistence (JSON format)
+//=============================================================================
+
+// Get default NVRAM path: ~/.config/romwbw_emu/nvram.json
+static std::string get_nvram_path() {
+  const char* home = getenv("HOME");
+  if (!home) home = ".";
+  std::string dir = std::string(home) + "/.config/romwbw_emu";
+  // Create directory if it doesn't exist
+  mkdir(dir.c_str(), 0755);
+  return dir + "/nvram.json";
+}
+
+// Load NVRAM from JSON file
+// Format: { "nvram": ["57", "48", "80", "00", "XX"] }
+static bool load_nvram_json(const std::string& path, uint8_t* nvram) {
+  FILE* f = fopen(path.c_str(), "r");
+  if (!f) return false;
+
+  char buf[256];
+  size_t len = fread(buf, 1, sizeof(buf) - 1, f);
+  fclose(f);
+  buf[len] = '\0';
+
+  // Simple JSON parsing - look for array of hex strings
+  // Find opening bracket
+  char* p = strchr(buf, '[');
+  if (!p) return false;
+  p++;
+
+  for (int i = 0; i < 5; i++) {
+    // Find opening quote
+    while (*p && *p != '"') p++;
+    if (!*p) return false;
+    p++;
+    // Parse hex value
+    unsigned int val;
+    if (sscanf(p, "%2x", &val) != 1) return false;
+    nvram[i] = val;
+    // Skip to closing quote
+    while (*p && *p != '"') p++;
+    if (*p) p++;
+  }
+
+  return true;
+}
+
+// Save NVRAM to JSON file
+static bool save_nvram_json(const std::string& path, const uint8_t* nvram) {
+  FILE* f = fopen(path.c_str(), "w");
+  if (!f) return false;
+
+  fprintf(f, "{\n");
+  fprintf(f, "  \"description\": \"RomWBW NVRAM boot configuration\",\n");
+  fprintf(f, "  \"nvram\": [\"%02X\", \"%02X\", \"%02X\", \"%02X\", \"%02X\"],\n",
+          nvram[0], nvram[1], nvram[2], nvram[3], nvram[4]);
+  fprintf(f, "  \"decoded\": {\n");
+
+  // Add human-readable decoded values
+  bool is_rom = (nvram[2] & 0x80) != 0;
+  bool autoboot = (nvram[3] & 0x20) != 0;
+  int timeout = nvram[3] & 0x0F;
+
+  fprintf(f, "    \"initialized\": %s,\n", nvram[0] == 'W' ? "true" : "false");
+  if (is_rom) {
+    fprintf(f, "    \"boot_type\": \"rom\",\n");
+    fprintf(f, "    \"boot_app\": \"%c\",\n", nvram[1]);
+  } else {
+    fprintf(f, "    \"boot_type\": \"disk\",\n");
+    fprintf(f, "    \"boot_unit\": %d,\n", nvram[2] & 0x7F);
+    fprintf(f, "    \"boot_slice\": %d,\n", nvram[1]);
+  }
+  fprintf(f, "    \"autoboot\": %s,\n", autoboot ? "true" : "false");
+  fprintf(f, "    \"timeout\": %d\n", timeout);
+  fprintf(f, "  }\n");
+  fprintf(f, "}\n");
+
+  fclose(f);
+  return true;
+}
+
 // Interrupt configuration for scheduled interrupts
 struct InterruptConfig {
   bool enabled;
@@ -831,6 +913,10 @@ void print_usage(const char* prog) {
   fprintf(stderr, "\n");
   fprintf(stderr, "Boot options:\n");
   fprintf(stderr, "  --boot=CMD        Auto-boot with command (e.g., C, 2, 2.3)\n");
+  fprintf(stderr, "                    Overrides persisted NVRAM settings\n");
+  fprintf(stderr, "\n");
+  fprintf(stderr, "  NVRAM is persisted to ~/.config/romwbw_emu/nvram.json\n");
+  fprintf(stderr, "  Use 'W' at boot menu to configure via SYSCONF utility.\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Disk options:\n");
   fprintf(stderr, "  --disk0=FILE      Attach disk image to slot 0\n");
@@ -1129,7 +1215,17 @@ int main(int argc, char** argv) {
     emu.getHBIOS()->addRomApp(def.name, def.path, def.key);
   }
 
-  // Configure NVRAM boot option if specified
+  // Load persisted NVRAM from ~/.config/romwbw_emu/nvram.json
+  std::string nvram_path = get_nvram_path();
+  uint8_t loaded_nvram[5];
+  if (load_nvram_json(nvram_path, loaded_nvram)) {
+    emu.getHBIOS()->setNvram(loaded_nvram);
+    if (loaded_nvram[0] == 'W') {
+      fprintf(stderr, "Loaded NVRAM from %s\n", nvram_path.c_str());
+    }
+  }
+
+  // Configure NVRAM boot option if specified (overrides persisted settings)
   // This sets up emulated RTC NVRAM switches so the ROM loader
   // automatically boots without user interaction
   if (!boot_string.empty()) {
@@ -1198,6 +1294,9 @@ int main(int argc, char** argv) {
     // 4. Initialize memory disks and populate disk tables
     emu_complete_init(&memory, emu.getHBIOS(), nullptr);
   }
+
+  // Register reset callback for SYSRESET (ROM reboot command 'R')
+  emu_setup_reset_callback(&memory, &cpu, emu.getHBIOS());
 
   // Enable tracing if requested
   if (!trace_file.empty()) {
@@ -1387,6 +1486,13 @@ int main(int argc, char** argv) {
   // Write trace file if tracing was enabled
   if (!trace_file.empty()) {
     memory.write_trace_script(trace_file.c_str(), load_addr);
+  }
+
+  // Save NVRAM if it was initialized (either by --boot, SYSCONF, or loaded from file)
+  if (emu.getHBIOS()->isNvramInitialized()) {
+    if (save_nvram_json(nvram_path, emu.getHBIOS()->getNvram())) {
+      fprintf(stderr, "Saved NVRAM to %s\n", nvram_path.c_str());
+    }
   }
 
   return 0;

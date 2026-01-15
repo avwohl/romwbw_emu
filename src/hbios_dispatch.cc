@@ -46,9 +46,19 @@ HBIOSDispatch::~HBIOSDispatch() {
   emu_host_file_close_write();
 }
 
+void HBIOSDispatch::clearWaitingState() {
+  // Clear input waiting state without full reset
+  // Used by SYSRESET to ensure clean state after reboot
+  waiting_for_input = false;
+  emu_state = HBIOS_RUNNING;
+  output_buffer.clear();
+  input_buffer.clear();
+}
+
 void HBIOSDispatch::reset() {
   trapping_enabled = false;
   waiting_for_input = false;
+  manifest_write_pending = false;  // Clear warning flag for new session
   emu_state = HBIOS_RUNNING;
   output_buffer.clear();
   input_buffer.clear();
@@ -238,6 +248,24 @@ void HBIOSDispatch::setDiskSliceCount(int unit, int slices) {
   if (slices > 8) slices = 8;
   emu_log("[HBIOS] setDiskSliceCount: unit=%d slices=%d (was %d)\n", unit, slices, disks[unit].max_slices);
   disks[unit].max_slices = slices;
+}
+
+void HBIOSDispatch::setDiskIsManifest(int unit, bool is_manifest) {
+  if (unit < 0 || unit >= 16) return;
+  disks[unit].is_manifest = is_manifest;
+}
+
+void HBIOSDispatch::setDiskWarningSuppressed(int unit, bool suppressed) {
+  if (unit < 0 || unit >= 16) return;
+  disks[unit].warning_suppressed = suppressed;
+}
+
+bool HBIOSDispatch::pollManifestWriteWarning() {
+  if (manifest_write_pending) {
+    manifest_write_pending = false;
+    return true;
+  }
+  return false;
 }
 
 //=============================================================================
@@ -638,6 +666,17 @@ void HBIOSDispatch::setResult(uint8_t result) {
   } else {
     cpu->regs.clear_flag_bits(qkz80_cpu_flags::Z);
   }
+}
+
+void HBIOSDispatch::recalcNvramChecksum() {
+  // Calculate NVRAM checksum (byte 4)
+  // The checksum is XOR of bytes 0-3 XOR with RomWBW version bytes
+  // Version 3.5.1.0: RMJ=3, RMN=5, RUP=1, RTP=0
+  // Checksum = (byte0 ^ byte1 ^ byte2 ^ byte3) ^ ((RMJ << 4) | RMN) ^ ((RUP << 4) | RTP)
+  uint8_t xsum = nvram_switches[0] ^ nvram_switches[1] ^ nvram_switches[2] ^ nvram_switches[3];
+  xsum ^= 0x35;  // (3 << 4) | 5 = RMJ.RMN
+  xsum ^= 0x10;  // (1 << 4) | 0 = RUP.RTP
+  nvram_switches[4] = xsum;
 }
 
 void HBIOSDispatch::doRet() {
@@ -1074,6 +1113,11 @@ void HBIOSDispatch::handleDIO() {
         // Hard disk write
         uint32_t lba = disks[hd_unit].current_lba;
 
+        // Check for manifest disk write warning (first write triggers once per session)
+        if (disks[hd_unit].is_manifest && !disks[hd_unit].warning_suppressed) {
+          manifest_write_pending = true;
+        }
+
         if (disks[hd_unit].file_backed && disks[hd_unit].handle) {
           uint8_t sector_buf[512];
           for (int s = 0; s < count; s++) {
@@ -1238,8 +1282,89 @@ void HBIOSDispatch::handleRTC() {
       // Set time - ignored in emulator
       break;
 
+    case HBF_RTCGETBYT: {
+      // Get NVRAM byte by index
+      // Input: C = byte index (0-4 for NVRAM switches)
+      // Output: E = byte value
+      uint8_t idx = cpu->regs.BC.get_low();
+      uint8_t value = 0;
+      if (idx < NVRAM_SIZE) {
+        value = nvram_switches[idx];
+      }
+      cpu->regs.DE.set_low(value);
+      if (debug_log) {
+        emu_log("[RTC GETBYT] idx=%d -> value=0x%02X ('%c')\n",
+                idx, value, (value >= 0x20 && value < 0x7F) ? value : '.');
+      }
+      break;
+    }
+
+    case HBF_RTCSETBYT: {
+      // Set NVRAM byte by index
+      // Input: C = byte index, E = byte value
+      uint8_t idx = cpu->regs.BC.get_low();
+      uint8_t value = cpu->regs.DE.get_low();
+      if (idx < NVRAM_SIZE) {
+        nvram_switches[idx] = value;
+        // Recalculate checksum if data bytes were modified (not checksum itself)
+        if (idx < 4) {
+          recalcNvramChecksum();
+        }
+        if (debug_log) {
+          emu_log("[RTC SETBYT] idx=%d <- value=0x%02X ('%c')\n",
+                  idx, value, (value >= 0x20 && value < 0x7F) ? value : '.');
+        }
+      } else {
+        if (debug_log) {
+          emu_log("[RTC SETBYT] idx=%d out of range (max %d)\n", idx, NVRAM_SIZE - 1);
+        }
+      }
+      break;
+    }
+
+    case HBF_RTCGETBLK: {
+      // Get NVRAM data block
+      // Input: HL = buffer address
+      // Output: buffer filled with NVRAM data (5 bytes)
+      uint16_t buffer = cpu->regs.HL.get_pair16();
+      for (int i = 0; i < NVRAM_SIZE; i++) {
+        memory->store_mem(buffer + i, nvram_switches[i]);
+      }
+      if (debug_log) {
+        emu_log("[RTC GETBLK] -> buffer at 0x%04X: %02X %02X %02X %02X %02X\n",
+                buffer, nvram_switches[0], nvram_switches[1],
+                nvram_switches[2], nvram_switches[3], nvram_switches[4]);
+      }
+      break;
+    }
+
+    case HBF_RTCSETBLK: {
+      // Set NVRAM data block
+      // Input: HL = buffer address with 5 bytes of NVRAM data
+      uint16_t buffer = cpu->regs.HL.get_pair16();
+      for (int i = 0; i < NVRAM_SIZE; i++) {
+        nvram_switches[i] = memory->fetch_mem(buffer + i);
+      }
+      // Recalculate checksum to ensure consistency
+      recalcNvramChecksum();
+      if (debug_log) {
+        emu_log("[RTC SETBLK] <- buffer at 0x%04X: %02X %02X %02X %02X %02X\n",
+                buffer, nvram_switches[0], nvram_switches[1],
+                nvram_switches[2], nvram_switches[3], nvram_switches[4]);
+      }
+      break;
+    }
+
+    case HBF_RTCDEVICE: {
+      // RTC device info report
+      // Output: C = device type (0x40 = emulated), DE = device data address
+      cpu->regs.BC.set_low(0x40);  // Emulated RTC
+      cpu->regs.DE.set_pair16(0x0000);  // No device data
+      break;
+    }
+
     default:
-      emu_fatal("[HBIOS RTC] Unhandled function 0x%02X\n", func);
+      emu_log("[HBIOS RTC] Unhandled function 0x%02X\n", func);
   }
 
   setResult(result);
@@ -1473,7 +1598,10 @@ void HBIOSDispatch::handleSYS() {
         case SYSGET_SWITCH: {
           // Get non-volatile switch value (emulates RTC NVRAM)
           // D register contains switch number:
-          //   0xFF = get NVRAM status (returns 'W' in A if initialized)
+          //   0xFF = get NVRAM status:
+          //          A=0, NZ = No RTC/NVRAM hardware
+          //          A=1, NZ = RTC/NVRAM present but not initialized
+          //          A='W', Z = RTC/NVRAM present and initialized
           //   1 = boot options: L=app char/slice, H=flags+unit
           //   3 = autoboot: L=flags+timeout
           uint8_t switch_num = cpu->regs.DE.get_high();
@@ -1482,15 +1610,19 @@ void HBIOSDispatch::handleSYS() {
             // IMPORTANT: Must return early to preserve A register
             // (setResult would overwrite A with result code)
             uint8_t status = nvram_switches[0];
-            cpu->regs.AF.set_high(status);
             if (status == 'W') {
+              // Initialized - return 'W' with Z flag set
+              cpu->regs.AF.set_high('W');
               cpu->regs.AF.set_low(cpu->regs.AF.get_low() | 0x40);  // Set Z flag
             } else {
+              // Not initialized - return 1 (not 0!) with NZ flag
+              // A=0 means "no NVRAM hardware", A=1 means "present but uninitialized"
+              cpu->regs.AF.set_high(1);
               cpu->regs.AF.set_low(cpu->regs.AF.get_low() & ~0x40); // Clear Z flag
             }
             if (debug_log) {
-              emu_log("[SYSGET_SWITCH] status check: A=0x%02X ('%c') %s\n",
-                      status, status >= 0x20 ? status : '?',
+              emu_log("[SYSGET_SWITCH] status check: A=0x%02X %s\n",
+                      cpu->regs.AF.get_high(),
                       status == 'W' ? "INITIALIZED" : "NOT INITIALIZED");
             }
             doRet();
@@ -1642,9 +1774,58 @@ void HBIOSDispatch::handleSYS() {
     case HBF_SYSSET: {
       // Set system info - subfunc in C
       switch (subfunc) {
-        case SYSSET_SWITCH:
-          // Set front panel switches - just ignore
+        case SYSSET_SWITCH: {
+          // Set non-volatile switch value (emulates RTC NVRAM)
+          // D register contains switch number:
+          //   0xFF = reset NVRAM to defaults
+          //   1 = boot options: HL = (H:flags+unit, L:app char/slice)
+          //   3 = autoboot: L = flags+timeout
+          uint8_t switch_num = cpu->regs.DE.get_high();
+          if (switch_num == 0xFF) {
+            // Reset NVRAM to defaults
+            nvram_switches[0] = 'W';         // Signature
+            nvram_switches[1] = 'H';         // Help app
+            nvram_switches[2] = BOPTS_ROM;   // ROM boot
+            nvram_switches[3] = 0;           // No autoboot
+            recalcNvramChecksum();
+            if (debug_log) {
+              emu_log("[SYSSET_SWITCH] RESET to defaults\n");
+            }
+          } else if (switch_num == NVSW_BOOTOPTS) {
+            // Set boot options: L=app char/slice, H=flags+unit
+            nvram_switches[0] = 'W';  // Ensure initialized
+            nvram_switches[1] = cpu->regs.HL.get_low();   // App char or slice
+            nvram_switches[2] = cpu->regs.HL.get_high();  // BOPTS_ROM | unit
+            recalcNvramChecksum();
+            if (debug_log) {
+              bool is_rom = (nvram_switches[2] & BOPTS_ROM) != 0;
+              if (is_rom) {
+                emu_log("[SYSSET_SWITCH] BOOTOPTS: ROM app '%c' (H=0x%02X L=0x%02X)\n",
+                        nvram_switches[1], nvram_switches[2], nvram_switches[1]);
+              } else {
+                emu_log("[SYSSET_SWITCH] BOOTOPTS: Disk unit=%d slice=%d (H=0x%02X L=0x%02X)\n",
+                        nvram_switches[2] & BOPTS_UNIT, nvram_switches[1],
+                        nvram_switches[2], nvram_switches[1]);
+              }
+            }
+          } else if (switch_num == NVSW_AUTOBOOT) {
+            // Set autoboot: L=flags+timeout
+            nvram_switches[0] = 'W';  // Ensure initialized
+            nvram_switches[3] = cpu->regs.HL.get_low();
+            recalcNvramChecksum();
+            if (debug_log) {
+              bool auto_enabled = (nvram_switches[3] & ABOOT_AUTO) != 0;
+              int timeout = nvram_switches[3] & ABOOT_TIMEOUT;
+              emu_log("[SYSSET_SWITCH] AUTOBOOT: %s, timeout=%d sec (L=0x%02X)\n",
+                      auto_enabled ? "ENABLED" : "DISABLED", timeout, nvram_switches[3]);
+            }
+          } else {
+            if (debug_log) {
+              emu_log("[SYSSET_SWITCH] Unknown switch %d, ignoring\n", switch_num);
+            }
+          }
           break;
+        }
         case SYSSET_BOOTINFO: {
           // Set boot volume info (called by romldr/CPMLDR before loading OS)
           // D = boot unit, E = boot slice, L = bank (always 0)
@@ -2525,5 +2706,22 @@ void HBIOSDispatch::setBootOption(const std::string& boot_str) {
     if (debug_log) {
       emu_log("[BOOT] Invalid boot string '%s', defaulting to Help\n", boot_str.c_str());
     }
+  }
+
+  // Calculate checksum for the NVRAM data
+  recalcNvramChecksum();
+}
+
+void HBIOSDispatch::setNvram(const uint8_t* data) {
+  if (!data) return;
+  // Copy first 4 bytes (signature + data), then recalculate checksum
+  for (int i = 0; i < 4; i++) {
+    nvram_switches[i] = data[i];
+  }
+  recalcNvramChecksum();
+  if (debug_log) {
+    emu_log("[NVRAM] Loaded: %02X %02X %02X %02X %02X\n",
+            nvram_switches[0], nvram_switches[1], nvram_switches[2],
+            nvram_switches[3], nvram_switches[4]);
   }
 }

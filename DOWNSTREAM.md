@@ -72,7 +72,13 @@ The `emu_complete_init()` function now:
 2. Copies HCB to RAM (simple copy)
 3. Sets up HBIOS ident signatures
 4. Populates disk tables
-5. **NEW**: Copies HCB to shadow RAM with shadow bits set (must be last!)
+5. Copies HCB to shadow RAM with shadow bits set (must be last!)
+
+**After `emu_complete_init()`**, call `emu_setup_reset_callback()` to enable reboot:
+```cpp
+emu_complete_init(&memory, &hbios, disk_slices);
+emu_setup_reset_callback(&memory, &cpu, &hbios);  // Enable 'R' reboot command
+```
 
 ## Initialization Sequence
 
@@ -183,6 +189,7 @@ public:
       return false;
     }
     emu_complete_init(&memory, &hbios, nullptr);
+    emu_setup_reset_callback(&memory, &cpu, &hbios);  // Enable 'R' reboot
     return true;
   }
 
@@ -343,6 +350,226 @@ This ensures:
 2. No redundant re-initialization
 3. CBIOS page zero stamp (0x40-0x55) is always installed correctly
 
+## NVRAM Boot Configuration (January 2025)
+
+RomWBW stores boot configuration in RTC NVRAM. The emulator now fully supports
+this, allowing both the `--boot` command-line option AND the ROM's built-in
+SYSCONF utility (the 'W' command at the boot menu) to configure boot options.
+
+### NVRAM Layout
+
+The emulator maintains a 5-byte NVRAM buffer that matches the RomWBW layout:
+
+| Byte | Name        | Description                                    |
+|------|-------------|------------------------------------------------|
+| 0    | Signature   | 'W' (0x57) if initialized, 0 otherwise         |
+| 1    | Boot L      | App char for ROM boot, or slice # for disk     |
+| 2    | Boot H      | 0x80 = ROM boot, 0x00-0x7F = disk unit number  |
+| 3    | Autoboot    | 0x20 = enabled, bits 0-3 = timeout in seconds  |
+| 4    | Checksum    | XOR of bytes 0-3 XOR with version bytes        |
+
+### Setting Boot Options Programmatically
+
+Use `HBIOSDispatch::setBootOption()` to configure boot options:
+
+```cpp
+// Boot ROM app 'C' (typically CP/M 2.2):
+hbios.setBootOption("C");
+
+// Boot from disk unit 0, slice 0:
+hbios.setBootOption("0");
+
+// Boot from disk unit 2, slice 3:
+hbios.setBootOption("2.3");
+
+// Show boot menu (default):
+hbios.setBootOption("H");
+
+// Clear boot option (show menu, no autoboot):
+hbios.setBootOption("");
+```
+
+### HBIOS Functions Implemented
+
+The following RTC functions are now implemented for NVRAM access:
+
+| Function       | Code | Description                              |
+|----------------|------|------------------------------------------|
+| BF_RTCGETBYT   | 0x22 | Get NVRAM byte: C=index, returns E=value |
+| BF_RTCSETBYT   | 0x23 | Set NVRAM byte: C=index, E=value         |
+| BF_RTCGETBLK   | 0x24 | Get NVRAM block: HL=buffer (5 bytes)     |
+| BF_RTCSETBLK   | 0x25 | Set NVRAM block: HL=buffer (5 bytes)     |
+| BF_RTCDEVICE   | 0x28 | Device info: returns C=0x40 (emulated)   |
+
+Plus the system-level switch functions:
+
+| Function        | Code        | Description                              |
+|-----------------|-------------|------------------------------------------|
+| SYSGET_SWITCH   | F8/C0       | Get switch: D=switch#, returns HL        |
+| SYSSET_SWITCH   | F9/C0       | Set switch: D=switch#, HL=value          |
+
+Switch numbers:
+- 0xFF: Get/reset status ('W' = initialized)
+- 0x01: Boot options (H=flags+unit, L=app/slice)
+- 0x03: Autoboot (L=flags+timeout)
+
+### How the ROM Uses NVRAM
+
+1. **Boot loader (romldr)** calls `SYSGET_SWITCH` with D=0xFF to check if NVRAM
+   is initialized. If A='W', it reads BOOTOPTS and AUTOBOOT switches.
+
+2. **SYSCONF utility** (accessible via 'W' at boot menu) uses the RTC byte
+   functions (`BF_RTCGETBYT`/`BF_RTCSETBYT`) to read and modify NVRAM directly.
+
+3. Both paths now work correctly in the emulator.
+
+### Boot Configuration Methods
+
+There are two ways to configure boot options:
+
+1. **Programmatic (recommended for GUI apps)**: Call `hbios.setBootOption()`
+   before starting emulation. Your app can provide a UI (picker, settings screen)
+   and translate user choices into this call.
+
+2. **Interactive (via ROM)**: The user presses 'W' at the boot menu to access
+   RomWBW's built-in SYSCONF utility. Changes persist for the session.
+
+Both methods work and can coexist. The ROM's SYSCONF uses the RTC NVRAM
+functions (`BF_RTCGETBYT`/`BF_RTCSETBYT`) which are now fully implemented.
+
+Note: NVRAM is NOT persisted across sessions by default. Each time the emulator
+starts, NVRAM is uninitialized unless your app calls `setBootOption()` or
+implements persistence (see below).
+
+### Implementation for Downstream Platforms
+
+To support NVRAM in your platform:
+
+1. **No code changes needed** - The implementation is in `hbios_dispatch.cc`
+   which all platforms share.
+
+2. **Provide boot configuration UI** (recommended):
+   ```cpp
+   // In your app's settings or boot screen:
+
+   // User selects "CP/M 2.2" from a picker:
+   hbios.setBootOption("C");
+
+   // User selects "Disk 0, Slice 2":
+   hbios.setBootOption("0.2");
+
+   // User wants to see the boot menu:
+   hbios.setBootOption("H");  // or setBootOption("")
+   ```
+
+3. **Add persistence** (optional but recommended):
+   ```cpp
+   // Save NVRAM to user preferences when emulator stops:
+   // (Requires adding a getter method to HBIOSDispatch, or use HBIOS calls)
+
+   // Option A: Add public method to HBIOSDispatch:
+   //   const uint8_t* getNvram() const { return nvram_switches; }
+   //   void setNvram(const uint8_t* data) { memcpy(nvram_switches, data, 5); }
+
+   // Option B: Use existing HBIOS interface (messier but works now):
+   // Read: Set up registers for BF_RTCGETBLK, call handleRTC()
+   // Write: Set up registers for BF_RTCSETBLK, call handleRTC()
+
+   // Then save/restore the 5 bytes via NSUserDefaults, SharedPreferences, etc.
+   ```
+
+4. **Example: iOS/Swift boot picker**:
+   ```swift
+   // In your SwiftUI view:
+   Picker("Boot Device", selection: $bootSelection) {
+       Text("Show Menu").tag("H")
+       Text("CP/M 2.2").tag("C")
+       Text("ZSDOS").tag("Z")
+       ForEach(0..<diskCount, id: \.self) { disk in
+           Text("Disk \(disk)").tag("\(disk)")
+       }
+   }
+   .onChange(of: bootSelection) { newValue in
+       emulator.hbios.setBootOption(newValue)
+   }
+   ```
+
+### Testing NVRAM Support
+
+1. Start emulator without calling `setBootOption()`: Should show boot menu
+2. Press 'W' at boot menu: Should show SYSCONF utility
+3. Use SYSCONF to set boot device and enable autoboot
+4. Press 'Q' to quit SYSCONF: Should return to boot menu
+5. Settings should be remembered until emulator session ends
+6. Test `setBootOption("C")`: Should auto-boot to CP/M
+7. Test `setBootOption("0")`: Should auto-boot from disk 0
+
+## Manifest Disk Write Warning (January 2025)
+
+Apps that download disk images from a manifest (auto-updates) face a UX challenge:
+users may write data (save games, files) to these disks, but their changes can be
+lost when the app updates and re-downloads the disk images.
+
+The emulator now provides a simple polling mechanism to help UIs warn users about
+this scenario.
+
+### How It Works
+
+1. **Mark manifest disks** when loading them:
+   ```cpp
+   hbios.loadDisk(0, disk_data, disk_size);
+   hbios.setDiskIsManifest(0, true);  // This disk is from the manifest
+   ```
+
+2. **Allow per-disk warning suppression** (for "Don't warn again" checkbox):
+   ```cpp
+   hbios.setDiskWarningSuppressed(0, true);  // User checked "Don't warn"
+   ```
+
+3. **Poll for write warning** in your UI loop:
+   ```cpp
+   // In your run loop or frame callback:
+   if (hbios.pollManifestWriteWarning()) {
+       showWarningDialog("Changes to this disk may be lost when the app updates. "
+                         "Use 'Copy Disk' to preserve your changes.");
+   }
+   ```
+
+### Behavior
+
+- `pollManifestWriteWarning()` returns `true` **once** per session, on the first
+  write to a manifest disk that doesn't have warning suppressed
+- After returning `true`, it returns `false` until the next session (reset)
+- Writes to non-manifest disks don't trigger the warning
+- Writes to manifest disks with `warning_suppressed=true` don't trigger it
+- The flag resets on `hbios.reset()` (new session)
+
+### API Reference
+
+```cpp
+// Mark a disk as managed by app manifest (can be overwritten on update)
+void setDiskIsManifest(int unit, bool is_manifest);
+
+// Suppress warning for this disk (user checked "Don't warn about overwrites")
+void setDiskWarningSuppressed(int unit, bool suppressed);
+
+// Poll for manifest write warning - returns true once per session
+bool pollManifestWriteWarning();
+```
+
+### UI Implementation Suggestions
+
+1. **Disk selector**: Add a checkbox "Don't warn about overwrites" per disk
+   - When checked, call `setDiskWarningSuppressed(unit, true)`
+   - Persist this preference locally
+
+2. **Warning dialog**: Show a clear message like:
+   > "This disk may be replaced when the app updates. Any changes you make could
+   > be lost. To keep changes permanently, copy this disk to your local storage."
+
+3. **Copy disk feature**: Provide a way for users to copy a manifest disk to
+   local storage, creating a user-owned version that won't be overwritten
+
 ## Migration Checklist
 
 - [ ] Pull latest `romwbw_mem.h` with shadow RAM fix
@@ -352,7 +579,15 @@ This ensures:
 - [ ] Remove local `initialized_ram_banks` variable from your emulator class
 - [ ] Update `initializeRamBankIfNeeded()` to use `hbios.getInitializedBanksBitmap()`
 - [ ] Remove any manual HCB shadow setup (now handled by emu_complete_init)
+- [ ] Add `emu_setup_reset_callback()` call after `emu_complete_init()` for reboot support
 - [ ] Test device list with `D` command at boot menu
 - [ ] Test CP/M 3 boot and operation
 - [ ] Test REBOOT command
 - [ ] Test ASSIGN command (verifies CBIOS stamp at 0x40)
+- [ ] Test SYSCONF utility ('W' command at boot menu)
+- [ ] Test `setBootOption()` API for programmatic boot configuration
+- [ ] Implement manifest disk write warning UI (optional but recommended)
+  - [ ] Call `setDiskIsManifest()` when loading manifest-managed disks
+  - [ ] Poll `pollManifestWriteWarning()` in UI loop
+  - [ ] Show warning dialog when poll returns true
+  - [ ] Add "Don't warn" checkbox with `setDiskWarningSuppressed()`
