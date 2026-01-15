@@ -19,6 +19,9 @@
 // Optional debug log file - defined in platform-specific code, nullptr for CLI
 static FILE* debug_log_file = nullptr;
 
+// Static member definition - survives object recreation within session
+bool HBIOSDispatch::manifest_warning_shown = false;
+
 // Log to debug file if available (deep debugging, file only)
 static void dlog(const char* fmt, ...) {
   if (!debug_log_file) return;
@@ -58,7 +61,8 @@ void HBIOSDispatch::clearWaitingState() {
 void HBIOSDispatch::reset() {
   trapping_enabled = false;
   waiting_for_input = false;
-  manifest_write_pending = false;  // Clear warning flag for new session
+  manifest_write_pending = false;  // Clear pending flag
+  // Note: manifest_warning_shown is static, persists across resets within session
   emu_state = HBIOS_RUNNING;
   output_buffer.clear();
   input_buffer.clear();
@@ -263,6 +267,7 @@ void HBIOSDispatch::setDiskWarningSuppressed(int unit, bool suppressed) {
 bool HBIOSDispatch::pollManifestWriteWarning() {
   if (manifest_write_pending) {
     manifest_write_pending = false;
+    manifest_warning_shown = true;  // Don't trigger again this session
     return true;
   }
   return false;
@@ -1114,7 +1119,7 @@ void HBIOSDispatch::handleDIO() {
         uint32_t lba = disks[hd_unit].current_lba;
 
         // Check for manifest disk write warning (first write triggers once per session)
-        if (disks[hd_unit].is_manifest && !disks[hd_unit].warning_suppressed) {
+        if (disks[hd_unit].is_manifest && !disks[hd_unit].warning_suppressed && !manifest_warning_shown) {
           manifest_write_pending = true;
         }
 

@@ -503,6 +503,7 @@ private:
   // Manifest disk write warning - set true on first write to manifest disk (non-suppressed)
   // Cleared after pollManifestWriteWarning() returns true
   bool manifest_write_pending = false;
+  static bool manifest_warning_shown;  // Static: survives object recreation within session
 
   // Signal port state machine
   uint8_t signal_state = 0;
