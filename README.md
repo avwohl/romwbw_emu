@@ -190,10 +190,11 @@ romwbw_emu/
 
 ## Related Projects
 
-- [RomWBW](https://github.com/wwarthen/RomWBW) - Z80/Z180 ROM-based system software
-- [cpmemu-bdos](https://github.com/avwohl/cpmemu-bdos) - CP/M BDOS translator for Linux
+- [RomWBW](https://github.com/wwarthen/RomWBW) - The original RomWBW project by Wayne Warthen
+- [cpmemu](https://github.com/avwohl/cpmemu) - Portable Z80 CPU emulator core
 - [ioscpm](https://github.com/avwohl/ioscpm) - iOS/macOS version
-- [z80cpmw](https://github.com/avwohl/z80cpmw) - windows version
+- [z80cpmw](https://github.com/avwohl/z80cpmw) - Windows GUI version
+- [cpmdroid](https://github.com/avwohl/cpmdroid) - Android version
 
 ## License
 

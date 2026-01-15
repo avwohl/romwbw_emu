@@ -9,6 +9,13 @@
 #include <cstdio>
 #include <cstdarg>
 
+// Forward declare Dazzler methods we need (extern "C" to match Dazzler.cpp)
+class Dazzler;
+extern "C" {
+    void dazzler_port_out(Dazzler* dazzler, uint8_t port, uint8_t value);
+    uint8_t dazzler_port_in(Dazzler* dazzler, uint8_t port);
+}
+
 //=============================================================================
 // Port IN handler
 //=============================================================================
@@ -19,12 +26,39 @@ qkz80_uint8 hbios_cpu::port_in(qkz80_uint8 port) {
   banked_mem* memory = delegate->getMemory();
 
   switch (port) {
+    case 0x00:  // Console status port (UART-style)
+      // Bit 0: RX ready (input available)
+      // Bit 1: TX ready (always ready)
+      return (emu_console_has_input() ? 0x01 : 0x00) | 0x02;
+
+    case 0x01:  // Console data port (UART-style)
+      // Read character from console queue
+      if (emu_console_has_input()) {
+        int ch = emu_console_read_char();
+        return (ch >= 0) ? (uint8_t)ch : 0;
+      }
+      return 0;
+
     case 0x78:  // Bank register (RAM)
     case 0x7C:  // Bank register (ROM)
       return memory ? memory->get_current_bank() : 0xFF;
 
-    default:
+    case 0xFF:  // Sense switches / keyboard state
+      // Return console status in high bits for Dazzler programs
+      // D7: input available, D6-D0: 0 (or could map to last key)
+      return emu_console_has_input() ? 0x80 : 0x00;
+
+    default: {
+      // Check if this is a Dazzler port
+      Dazzler* dazzler = delegate->getDazzler();
+      if (dazzler) {
+        uint8_t basePort = dazzler_port_in(dazzler, 0xFF);  // Get base port
+        if (port >= basePort && port < basePort + 2) {
+          return dazzler_port_in(dazzler, port);
+        }
+      }
       return 0xFF;  // Floating bus
+    }
   }
 }
 
@@ -39,6 +73,10 @@ void hbios_cpu::port_out(qkz80_uint8 port, qkz80_uint8 value) {
   banked_mem* memory = delegate->getMemory();
 
   switch (port) {
+    case 0x01:  // Console data port (UART-style output)
+      emu_console_write_char(value);
+      break;
+
     case 0x78:  // RAM bank select
     case 0x7C:  // ROM bank select
       delegate->initializeRamBankIfNeeded(value);
@@ -107,9 +145,19 @@ void hbios_cpu::port_out(qkz80_uint8 port, qkz80_uint8 value) {
       hbios->setSkipRet(false);
       break;
 
-    default:
+    default: {
+      // Check if this is a Dazzler port
+      Dazzler* dazzler = delegate->getDazzler();
+      if (dazzler) {
+        uint8_t basePort = dazzler_port_in(dazzler, 0xFF);  // Get base port
+        if (port >= basePort && port < basePort + 2) {
+          dazzler_port_out(dazzler, port, value);
+          break;
+        }
+      }
       // Unknown port - ignore
       break;
+    }
   }
 }
 

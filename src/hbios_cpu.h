@@ -12,6 +12,9 @@
 #include "romwbw_mem.h"
 #include "hbios_dispatch.h"
 
+// Forward declaration for Dazzler
+class Dazzler;
+
 // Interface that emulator must implement to receive callbacks
 class HBIOSCPUDelegate {
 public:
@@ -34,6 +37,9 @@ public:
 
   // Debug logging (optional, can be no-op)
   virtual void logDebug(const char* fmt, ...) = 0;
+
+  // Get Dazzler instance (optional, can return nullptr)
+  virtual Dazzler* getDazzler() { return nullptr; }
 };
 
 // Z80 CPU with HBIOS port I/O support

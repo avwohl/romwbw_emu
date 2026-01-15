@@ -303,20 +303,8 @@ int emu_populate_drive_map(banked_mem* memory, HBIOSDispatch* hbios,
     memory->write_bank(0x80, DRVMAP_BASE + i, 0xFF);
   }
 
-  // Assign memory disks
-  // A: = MD0 (RAM disk) if enabled
-  if (ramd_banks > 0 && drive_letter < 16) {
-    rom[DRVMAP_BASE + drive_letter] = 0x00;  // Unit 0, slice 0
-    memory->write_bank(0x80, DRVMAP_BASE + drive_letter, 0x00);
-    drive_letter++;
-  }
-
-  // B: = MD1 (ROM disk) if enabled
-  if (romd_banks > 0 && drive_letter < 16) {
-    rom[DRVMAP_BASE + drive_letter] = 0x01;  // Unit 1, slice 0
-    memory->write_bank(0x80, DRVMAP_BASE + drive_letter, 0x01);
-    drive_letter++;
-  }
+  // IMPORTANT: Hard disks are assigned FIRST so boot disk is A:
+  // This matches real RomWBW behavior where the boot device becomes A:
 
   // Assign hard disk slices (if hbios provided)
   if (hbios) {
@@ -335,10 +323,29 @@ int emu_populate_drive_map(banked_mem* memory, HBIOSDispatch* hbios,
           uint8_t map_value = ((slice & 0x0F) << 4) | (unit & 0x0F);
           rom[DRVMAP_BASE + drive_letter] = map_value;
           memory->write_bank(0x80, DRVMAP_BASE + drive_letter, map_value);
+          emu_log("[EMU_INIT] Drive %c: = HDSK%d:%d (unit=%d, map=0x%02X)\n",
+                  'A' + drive_letter, hd, slice, unit, map_value);
           drive_letter++;
         }
       }
     }
+  }
+
+  // Assign memory disks AFTER hard disks
+  // MD0 (RAM disk) if enabled
+  if (ramd_banks > 0 && drive_letter < 16) {
+    rom[DRVMAP_BASE + drive_letter] = 0x00;  // Unit 0, slice 0
+    memory->write_bank(0x80, DRVMAP_BASE + drive_letter, 0x00);
+    emu_log("[EMU_INIT] Drive %c: = MD0 (RAM disk)\n", 'A' + drive_letter);
+    drive_letter++;
+  }
+
+  // MD1 (ROM disk) if enabled
+  if (romd_banks > 0 && drive_letter < 16) {
+    rom[DRVMAP_BASE + drive_letter] = 0x01;  // Unit 1, slice 0
+    memory->write_bank(0x80, DRVMAP_BASE + drive_letter, 0x01);
+    emu_log("[EMU_INIT] Drive %c: = MD1 (ROM disk)\n", 'A' + drive_letter);
+    drive_letter++;
   }
 
   emu_log("[EMU_INIT] Drive map: assigned %d drive letters\n", drive_letter);

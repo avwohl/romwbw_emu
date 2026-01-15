@@ -5,6 +5,10 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
+#include <functional>
+
+// Memory write callback type (for Dazzler framebuffer updates etc)
+using MemoryWriteCallback = std::function<void(uint16_t addr, uint8_t value)>;
 
 /*
  * RomWBW Banked Memory
@@ -54,6 +58,9 @@ private:
     uint8_t* data_read_bitmap;
     uint8_t* data_write_bitmap;
     bool tracing_enabled;
+
+    // Memory write callback (for Dazzler etc)
+    MemoryWriteCallback write_callback;
 
 public:
     banked_mem() :
@@ -139,6 +146,9 @@ public:
 
     bool is_tracing() const { return tracing_enabled; }
 
+    // Set memory write callback (for Dazzler framebuffer updates)
+    void set_write_callback(MemoryWriteCallback cb) { write_callback = cb; }
+
     // Memory access
     qkz80_uint8 fetch_mem(qkz80_uint16 addr, bool is_instruction = false) override {
         if (tracing_enabled) {
@@ -175,6 +185,8 @@ public:
                 return;  // Ignore writes to ROM
             }
             qkz80_cpu_mem::store_mem(addr, byte);
+            // Call write callback if set
+            if (write_callback) write_callback(addr, byte);
             return;
         }
 
@@ -190,6 +202,9 @@ public:
             uint32_t phys = ((COMMON_BANK & 0x0F) * BANK_SIZE) + (addr - BANK_BOUNDARY);
             ram[phys] = byte;
         }
+
+        // Call write callback if set (for Dazzler framebuffer updates)
+        if (write_callback) write_callback(addr, byte);
     }
 
     // Load ROM image
