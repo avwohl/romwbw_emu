@@ -539,10 +539,11 @@ this scenario.
 
 - `pollManifestWriteWarning()` returns `true` **once** per session, on the first
   write to a manifest disk that doesn't have warning suppressed
-- After returning `true`, it returns `false` until the next session (reset)
+- After returning `true`, it returns `false` for the rest of the session
 - Writes to non-manifest disks don't trigger the warning
 - Writes to manifest disks with `warning_suppressed=true` don't trigger it
-- The flag resets on `hbios.reset()` (new session)
+- The "shown" flag is **static** - it persists across `hbios.reset()` and object
+  recreation, only resetting when the app/page is fully restarted
 
 ### API Reference
 
