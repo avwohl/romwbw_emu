@@ -144,19 +144,27 @@ void romwbw_key_input(int ch) {
   if (emu) emu->hbios.clearWaitingForInput();
 }
 
-// Set boot string for auto-boot feature
-// The string is fed to console input before user keyboard input
-// A CR is automatically appended to submit the boot command
+// Set boot string - configures NVRAM for auto-boot
+// Format: "C" for ROM app, "2" for disk unit 2, "2.3" for unit 2 slice 3
+// Empty string or "H" clears autoboot (shows menu)
 EMSCRIPTEN_KEEPALIVE
 void romwbw_set_boot_string(const char* str) {
-  if (!str) return;
-  // Queue boot string to emu_console (poll_input will move to hbios)
-  for (size_t i = 0; str[i]; i++) {
-    int ch = str[i] & 0xFF;
-    if (ch == '\n') ch = '\r';
-    emu_console_queue_char(ch);
+  ensure_emu();
+  if (!str || !*str) {
+    // Empty string - clear NVRAM autoboot
+    emu->hbios.setNvramSetting("");
+  } else {
+    // Set NVRAM to auto-boot with this option
+    emu->hbios.setNvramSetting(str);
   }
-  emu_console_queue_char('\r');  // Add CR to submit
+}
+
+// Clear NVRAM boot configuration - forces boot menu to display
+EMSCRIPTEN_KEEPALIVE
+void romwbw_clear_nvram() {
+  ensure_emu();
+  emu->hbios.setNvramSetting("");
+  emu_log("[WASM] NVRAM cleared\n");
 }
 
 // Load ROM image - creates fresh emulator state

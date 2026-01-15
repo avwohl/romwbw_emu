@@ -246,6 +246,7 @@
       </select>
       <input type="file" id="romFile" accept=".rom,.bin" style="width:180px;">
       <label style="margin-left:12px;">Boot:</label><input type="text" id="bootString" placeholder="2=disk, C=CPM" style="width:100px;" value="2">
+      <button id="clearNvramBtn" title="Clear boot config set by SYSCONF">Clear</button>
     </div>
     <div class="file-input">
       <label>Disk 0:</label>
@@ -982,6 +983,15 @@
       startBtn.disabled = false;
       stopBtn.disabled = true;
       statusDiv.textContent = 'Stopped';
+    });
+
+    // Clear NVRAM button - clears boot config set by ROM's SYSCONF utility
+    document.getElementById('clearNvramBtn').addEventListener('click', function() {
+      if (Module._romwbw_clear_nvram) {
+        Module._romwbw_clear_nvram();
+        document.getElementById('bootString').value = '';
+        statusDiv.textContent = 'NVRAM cleared - boot menu will show';
+      }
     });
 
     // Download disk 0

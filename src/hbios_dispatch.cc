@@ -1669,9 +1669,10 @@ void HBIOSDispatch::handleSYS() {
         }
 
         case SYSGET_CPUINFO:
-          // CPU info: DE = CPU type/speed, HL = clock speed in KHz
-          cpu->regs.DE.set_pair16(0x0004);  // Z80 @ 4MHz
-          cpu->regs.HL.set_pair16(4000);    // 4000 KHz
+          // CPU info: H = CPU variant, L = speed in MHz, DE = speed in KHz
+          cpu->regs.HL.set_high(0x00);      // Z80 variant
+          cpu->regs.HL.set_low(4);          // 4 MHz
+          cpu->regs.DE.set_pair16(4000);    // 4000 KHz
           break;
 
         case SYSGET_MEMINFO:
