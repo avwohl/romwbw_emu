@@ -9,13 +9,6 @@
 #include <cstdio>
 #include <cstdarg>
 
-// Forward declare Dazzler methods we need (extern "C" to match Dazzler.cpp)
-class Dazzler;
-extern "C" {
-    void dazzler_port_out(Dazzler* dazzler, uint8_t port, uint8_t value);
-    uint8_t dazzler_port_in(Dazzler* dazzler, uint8_t port);
-}
-
 //=============================================================================
 // Port IN handler
 //=============================================================================
@@ -48,21 +41,9 @@ qkz80_uint8 hbios_cpu::port_in(qkz80_uint8 port) {
       // D7: input available, D6-D0: 0 (or could map to last key)
       return emu_console_has_input() ? 0x80 : 0x00;
 
-    default: {
-#ifdef RUBBISH
-      // bogus code - no way to not have dazzler
-      // not object oriented
-      // Check if this is a Dazzler port
-      Dazzler* dazzler = delegate->getDazzler();
-      if (dazzler) {
-        uint8_t basePort = dazzler_port_in(dazzler, 0xFF);  // Get base port
-        if (port >= basePort && port < basePort + 2) {
-          return dazzler_port_in(dazzler, port);
-        }
-      }
-#endif
-      return 0xFF;  // Floating bus
-    }
+    default:
+      // Delegate to client for unknown ports (e.g., Dazzler)
+      return delegate->handleUnknownPortIn(port);
   }
 }
 
@@ -149,23 +130,10 @@ void hbios_cpu::port_out(qkz80_uint8 port, qkz80_uint8 value) {
       hbios->setSkipRet(false);
       break;
 
-    default: {
-#ifdef RUBBISH
-      // bogus code - no way to not have dazzler
-      // not object oriented
-      // Check if this is a Dazzler port
-      Dazzler* dazzler = delegate->getDazzler();
-      if (dazzler) {
-        uint8_t basePort = dazzler_port_in(dazzler, 0xFF);  // Get base port
-        if (port >= basePort && port < basePort + 2) {
-          dazzler_port_out(dazzler, port, value);
-          break;
-        }
-      }
-#endif
-      // Unknown port - ignore
+    default:
+      // Delegate to client for unknown ports (e.g., Dazzler)
+      delegate->handleUnknownPortOut(port, value);
       break;
-    }
   }
 }
 
