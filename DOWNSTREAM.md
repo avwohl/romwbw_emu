@@ -274,6 +274,17 @@ public:
 
 **Fix**: Pull latest romwbw_mem.h with the `current_bank == 0x00` check.
 
+### Boot Countdown Very Slow (Fixed January 2025)
+
+**Symptom**: Autoboot countdown (3, 2, 1...) takes 10+ seconds per number instead
+of 1 second. The 'R' reboot command also takes 30+ seconds.
+
+**Cause**: Bug in `SYSGET_CPUINFO` returned `HL=4000` (KHz) but romldr reads `L`
+for MHz. With L=160, the delay loop ran 80x too many iterations.
+
+**Fix**: Pull latest `hbios_dispatch.cc`. Now returns `H=0` (CPU variant),
+`L=4` (MHz), `DE=4000` (KHz) matching RomWBW's expected format.
+
 ## ROM Requirements
 
 The emulator requires a ROM with port 0xEF HBIOS proxy code.
@@ -427,6 +438,19 @@ Picker("Boot Device", selection: $bootSelection) {
 Users can also configure boot options interactively by pressing 'W' at the
 boot menu. The ROM's SYSCONF utility reads and writes NVRAM directly, and
 changes are visible via `getNvramSetting()` / `hasNvramChange()`.
+
+### Clear NVRAM UI (Recommended)
+
+If a user configures autoboot via SYSCONF with zero timeout, they may get
+stuck unable to access the boot menu. Provide a "Clear Boot Config" button
+or menu option that calls:
+
+```cpp
+hbios.setNvramSetting("");  // Clears NVRAM, boot menu will display
+```
+
+This is especially important for GUI apps where users can't easily restart
+the emulator with different command-line options.
 
 ## Manifest Disk Write Warning (January 2025)
 
