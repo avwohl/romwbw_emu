@@ -121,6 +121,9 @@ static void run_batch() {
     emu->instruction_count++;
   }
 
+  // Check periodic disk flush (flushes if writes pending and 20s elapsed)
+  emu->hbios.checkPeriodicFlush();
+
   // Flush any pending output characters to display
   flush_output();
 }
@@ -251,6 +254,10 @@ static void handle_sysreset(uint8_t reset_type) {
   if (emu->debug) {
     emu_log("[SYSRESET] %s boot - restarting\n",
             reset_type == 0x01 ? "Warm" : "Cold");
+  }
+  // Flush disk data on warm boot (program ended)
+  if (reset_type == 0x01) {
+    emu_disk_flush_all();
   }
   // Switch to ROM bank 0
   emu->memory.select_bank(0x00);
