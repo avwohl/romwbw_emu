@@ -290,6 +290,9 @@ struct HBDisk {
 
   // Warning suppression - set true if user checked "Don't warn about overwrites" in disk selector
   bool warning_suppressed = false;
+
+  // Dirty flag - set true when disk data has been modified (for persistence)
+  bool dirty = false;
 };
 
 //=============================================================================
@@ -361,6 +364,12 @@ public:
   void setDiskIsManifest(int unit, bool is_manifest);
   void setDiskWarningSuppressed(int unit, bool suppressed);
   bool pollManifestWriteWarning();  // Returns true once per session on first manifest disk write
+
+  // Disk persistence - for saving modified disks
+  bool isDiskDirty(int unit) const;           // Check if disk has been modified
+  void clearDiskDirty(int unit);              // Clear dirty flag after saving
+  const uint8_t* getDiskData(int unit) const; // Get pointer to disk data (in-memory only)
+  size_t getDiskDataSize(int unit) const;     // Get size of disk data
 
   // Memory disk initialization (call after ROM is loaded)
   void initMemoryDisks();

@@ -281,6 +281,29 @@ bool HBIOSDispatch::pollManifestWriteWarning() {
   return false;
 }
 
+bool HBIOSDispatch::isDiskDirty(int unit) const {
+  if (unit < 0 || unit >= 16) return false;
+  return disks[unit].is_open && !disks[unit].file_backed && disks[unit].dirty;
+}
+
+void HBIOSDispatch::clearDiskDirty(int unit) {
+  if (unit < 0 || unit >= 16) return;
+  disks[unit].dirty = false;
+}
+
+const uint8_t* HBIOSDispatch::getDiskData(int unit) const {
+  if (unit < 0 || unit >= 16) return nullptr;
+  if (!disks[unit].is_open || disks[unit].file_backed) return nullptr;
+  if (disks[unit].data.empty()) return nullptr;
+  return disks[unit].data.data();
+}
+
+size_t HBIOSDispatch::getDiskDataSize(int unit) const {
+  if (unit < 0 || unit >= 16) return 0;
+  if (!disks[unit].is_open || disks[unit].file_backed) return 0;
+  return disks[unit].data.size();
+}
+
 //=============================================================================
 // Memory Disk Initialization
 //=============================================================================
@@ -1154,6 +1177,8 @@ void HBIOSDispatch::handleDIO() {
             }
             blocks_written++;
           }
+          // Mark disk as dirty for persistence
+          disks[hd_unit].dirty = true;
         } else {
           emu_fatal("[HBIOS DIOWRITE] HD%d is_open but no data (file_backed=%d, data.empty=%d)\n",
                     hd_unit, disks[hd_unit].file_backed, disks[hd_unit].data.empty());
