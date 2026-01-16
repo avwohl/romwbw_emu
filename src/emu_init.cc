@@ -602,6 +602,11 @@ void emu_setup_reset_callback(banked_mem* memory, qkz80* cpu, HBIOSDispatch* hbi
     emu_log("[SYSRESET] %s boot - restarting\n",
             reset_type == 0x01 ? "Warm" : "Cold");
 
+    // Flush disk data on warm boot (program ended)
+    if (reset_type == 0x01) {
+      emu_disk_flush_all();
+    }
+
     // Switch to ROM bank 0
     if (s_reset_memory) {
       s_reset_memory->select_bank(0x00);

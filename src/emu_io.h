@@ -119,6 +119,9 @@ void emu_error(const char* fmt, ...);
 // Log a status message (for user feedback)
 void emu_status(const char* fmt, ...);
 
+// Flush all disk data to persistent storage (called on warm boot)
+void emu_disk_flush_all();
+
 //=============================================================================
 // File I/O - for loading ROMs and disk images
 //=============================================================================
