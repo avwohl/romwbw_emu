@@ -13,6 +13,7 @@
 #define HBIOS_DISPATCH_H
 
 #include <cstdint>
+#include <ctime>
 #include <string>
 #include <vector>
 #include <functional>
@@ -371,6 +372,12 @@ public:
   const uint8_t* getDiskData(int unit) const; // Get pointer to disk data (in-memory only)
   size_t getDiskDataSize(int unit) const;     // Get size of disk data
 
+  // Periodic disk flush - call from main loop or timer (every frame/tick is fine)
+  // If any disk writes occurred and 20+ seconds have passed since last flush,
+  // flushes all disks and returns true. Otherwise returns false.
+  // Safe to call frequently - only flushes when both conditions are met.
+  bool checkPeriodicFlush();
+
   // Memory disk initialization (call after ROM is loaded)
   void initMemoryDisks();
 
@@ -524,6 +531,11 @@ private:
   // Cleared after pollManifestWriteWarning() returns true
   bool manifest_write_pending = false;
   static bool manifest_warning_shown;  // Static: survives object recreation within session
+
+  // Periodic disk flush tracking (20-second interval)
+  bool disk_writes_pending = false;     // Set true on any disk write
+  time_t last_periodic_flush = 0;       // Time of last periodic flush
+  static constexpr int PERIODIC_FLUSH_INTERVAL = 20;  // Seconds between flushes
 
   // Signal port state machine
   uint8_t signal_state = 0;

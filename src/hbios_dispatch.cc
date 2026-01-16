@@ -304,6 +304,32 @@ size_t HBIOSDispatch::getDiskDataSize(int unit) const {
   return disks[unit].data.size();
 }
 
+bool HBIOSDispatch::checkPeriodicFlush() {
+  // Only flush if there are pending writes
+  if (!disk_writes_pending) {
+    return false;
+  }
+
+  // Check if enough time has passed since last flush
+  time_t now = time(nullptr);
+  if (last_periodic_flush == 0) {
+    // First time - initialize the timer
+    last_periodic_flush = now;
+    return false;
+  }
+
+  if (now - last_periodic_flush < PERIODIC_FLUSH_INTERVAL) {
+    return false;  // Not enough time elapsed
+  }
+
+  // Time to flush - call emu_disk_flush_all()
+  emu_disk_flush_all();
+  disk_writes_pending = false;
+  last_periodic_flush = now;
+  if (debug_log) debug_log("[HBIOS] Periodic disk flush (20s interval)\n");
+  return true;
+}
+
 //=============================================================================
 // Memory Disk Initialization
 //=============================================================================
@@ -1189,6 +1215,11 @@ void HBIOSDispatch::handleDIO() {
       }
 
       cpu->regs.DE.set_low(blocks_written);
+
+      // Mark that disk writes occurred for periodic flush
+      if (blocks_written > 0) {
+        disk_writes_pending = true;
+      }
       break;
     }
 

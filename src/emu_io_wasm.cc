@@ -16,6 +16,7 @@
 #include <ctime>
 #include <queue>
 #include <random>
+#include <set>
 #include <strings.h>
 
 //=============================================================================
@@ -382,6 +383,9 @@ struct disk_file {
   size_t size;
 };
 
+// Track all open disk handles for emu_disk_flush_all()
+static std::set<disk_file*> open_disk_handles;
+
 emu_disk_handle emu_disk_open(const std::string& path, const char* mode) {
   const char* fmode;
   if (strcmp(mode, "r") == 0) {
@@ -400,6 +404,7 @@ emu_disk_handle emu_disk_open(const std::string& path, const char* mode) {
     disk->fp = f;
     fseek(f, 0, SEEK_END);
     disk->size = ftell(f);
+    open_disk_handles.insert(disk);
     return disk;
   } else {
     return nullptr;
@@ -412,12 +417,14 @@ emu_disk_handle emu_disk_open(const std::string& path, const char* mode) {
   disk->fp = f;
   fseek(f, 0, SEEK_END);
   disk->size = ftell(f);
+  open_disk_handles.insert(disk);
   return disk;
 }
 
 void emu_disk_close(emu_disk_handle handle) {
   if (!handle) return;
   disk_file* disk = static_cast<disk_file*>(handle);
+  open_disk_handles.erase(disk);
   if (disk->fp) fclose(disk->fp);
   delete disk;
 }
@@ -453,6 +460,14 @@ void emu_disk_flush(emu_disk_handle handle) {
   if (!handle) return;
   disk_file* disk = static_cast<disk_file*>(handle);
   if (disk->fp) fflush(disk->fp);
+}
+
+void emu_disk_flush_all() {
+  for (disk_file* disk : open_disk_handles) {
+    if (disk && disk->fp) {
+      fflush(disk->fp);
+    }
+  }
 }
 
 size_t emu_disk_size(emu_disk_handle handle) {

@@ -519,6 +519,47 @@ bool pollManifestWriteWarning();
 3. **Copy disk feature**: Provide a way for users to copy a manifest disk to
    local storage, creating a user-owned version that won't be overwritten
 
+## Disk Commit System (January 2025)
+
+The emulator ensures disk writes are reliably committed to storage through multiple
+mechanisms:
+
+### Automatic Flush Points
+
+1. **Warm boot flush**: When a CP/M program ends (warm boot / SYSRESET type 0x01),
+   all disk data is flushed via `emu_disk_flush_all()`. This happens automatically
+   in `emu_init.cc` - no action needed from downstream clients.
+
+2. **Per-write flush**: Each individual disk write calls `emu_disk_flush()` on the
+   file handle immediately. This ensures data safety even if the app crashes.
+
+3. **Periodic flush**: Call `checkPeriodicFlush()` from your main loop or timer.
+   If any writes have occurred and 20+ seconds have passed since the last flush,
+   it flushes all disks. Safe to call frequently - it only does work when needed.
+
+### Implementation
+
+```cpp
+// In your main run loop or frame callback:
+hbios.checkPeriodicFlush();  // Call every frame/tick - internally rate-limited
+```
+
+The function returns `true` if a flush was performed, `false` otherwise.
+
+### API Reference
+
+```cpp
+// Check and perform periodic flush (call from main loop)
+// Returns true if flush was performed, false otherwise
+bool checkPeriodicFlush();
+```
+
+### Notes
+
+- `emu_disk_flush_all()` is implemented in both `emu_io_cli.cc` and `emu_io_wasm.cc`
+- The warm boot hook is already set up by `emu_setup_reset_callback()`
+- Downstream clients just need to call `checkPeriodicFlush()` periodically
+
 ## Migration Checklist
 
 - [ ] Pull latest `romwbw_mem.h` with shadow RAM fix
@@ -542,3 +583,4 @@ bool pollManifestWriteWarning();
   - [ ] Poll `pollManifestWriteWarning()` in UI loop
   - [ ] Show warning dialog when poll returns true
   - [ ] Add "Don't warn" checkbox with `setDiskWarningSuppressed()`
+- [ ] Call `checkPeriodicFlush()` from main loop or timer (ensures disk commits)

@@ -1404,6 +1404,9 @@ int main(int argc, char** argv) {
     // This allows ^E to work even in tight loops that don't do I/O
     if (instruction_count % 10000 == 0) {
       check_console_escape_async();
+
+      // Check periodic disk flush (flushes if writes pending and 20s elapsed)
+      emu.getHBIOS()->checkPeriodicFlush();
     }
 
     // Debug: trace PC every 10M instructions to see where stuck
