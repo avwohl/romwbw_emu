@@ -235,6 +235,14 @@ void HBIOSDispatch::closeAllDisks() {
   }
 }
 
+void HBIOSDispatch::flushAllDisks() {
+  for (int i = 0; i < 16; i++) {
+    if (disks[i].is_open && disks[i].handle) {
+      emu_disk_flush((emu_disk_handle)disks[i].handle);
+    }
+  }
+}
+
 bool HBIOSDispatch::isDiskLoaded(int unit) const {
   if (unit < 0 || unit >= 16) return false;
   return disks[unit].is_open;

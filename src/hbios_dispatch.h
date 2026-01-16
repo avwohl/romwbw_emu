@@ -349,6 +349,7 @@ public:
   bool loadDiskFromFile(int unit, const std::string& path);
   void closeDisk(int unit);
   void closeAllDisks();  // Close all disks (call before reconfiguring)
+  void flushAllDisks();  // Flush all disk writes to storage
   bool isDiskLoaded(int unit) const;
   const HBDisk& getDisk(int unit) const;
   void setDiskSliceCount(int unit, int slices);  // Set slices for drive letter assignment
