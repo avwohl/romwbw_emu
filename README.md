@@ -250,17 +250,10 @@ romwbw_emu/
 - `docs/HBIOS_Implementation_Guide.md` - How HBIOS is implemented
 - `docs/HBIOS_DATA_EXPORTS.md` - HBIOS data structures
 
-## Related Projects
-
-- [RomWBW](https://github.com/wwarthen/RomWBW) - The original RomWBW project by Wayne Warthen
-- [cpmemu](https://github.com/avwohl/cpmemu) - Portable Z80 CPU emulator core
-- [ioscpm](https://github.com/avwohl/ioscpm) - iOS/macOS version
-- [z80cpmw](https://github.com/avwohl/z80cpmw) - Windows GUI version
-- [cpmdroid](https://github.com/avwohl/cpmdroid) - Android version
-
 ## License
 
 GNU General Public License v3.0 - see [LICENSE](LICENSE).
+
 ## Related Projects
 
 - [80un](https://github.com/avwohl/80un) - Unpacker for CP/M compression and archive formats (LBR, ARC, squeeze, crunch, CrLZH)
@@ -280,4 +273,5 @@ GNU General Public License v3.0 - see [LICENSE](LICENSE).
 - [upeepz80](https://github.com/avwohl/upeepz80) - Universal peephole optimizer for Z80 compilers
 - [uplm80](https://github.com/avwohl/uplm80) - PL/M-80 compiler targeting Intel 8080 and Zilog Z80 assembly language
 - [z80cpmw](https://github.com/avwohl/z80cpmw) - Z80 CP/M emulator for Windows (RomWBW)
+- [RomWBW](https://github.com/wwarthen/RomWBW) - The original RomWBW project by Wayne Warthen
 
