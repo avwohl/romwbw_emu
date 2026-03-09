@@ -9,7 +9,7 @@
  */
 
 // Version info
-#define EMU_VERSION "1.29"
+#define EMU_VERSION "1.30"
 #define EMU_VERSION_DATE "2026-03-09"
 
 #include "qkz80.h"
@@ -1361,6 +1361,12 @@ int main(int argc, char** argv) {
 
     // Flush output from HBIOSDispatch to stdout
     emu.flush_output();
+
+    // Sleep when guest is idle (polling console with no input available)
+    // to reduce CPU usage and power draw.
+    if (emu.getHBIOS()->isConsoleIdle()) {
+      usleep(10000);  // 10ms — imperceptible latency, significant power savings
+    }
 
     // Check if strict I/O mode halted us during port operations
     if (emu.is_halted()) {
