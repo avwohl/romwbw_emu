@@ -61,6 +61,7 @@ void HBIOSDispatch::clearWaitingState() {
 void HBIOSDispatch::reset() {
   trapping_enabled = false;
   waiting_for_input = false;
+  idle_poll_count = 0;
   manifest_write_pending = false;  // Clear pending flag
   // Note: manifest_warning_shown is static, persists across resets within session
   emu_state = HBIOS_RUNNING;
@@ -809,6 +810,7 @@ void HBIOSDispatch::handleCIO() {
       }
       cpu->regs.DE.set_low(ch & 0xFF);
       waiting_for_input = false;
+      idle_poll_count = 0;
       break;
     }
 
@@ -820,6 +822,7 @@ void HBIOSDispatch::handleCIO() {
         emu_log("[CIOOUT] char: %d (0x%02X) '%c'\n", ch, ch, (ch >= 32 && ch < 127) ? ch : '?');
       }
       output_buffer.push_back(ch);
+      idle_poll_count = 0;
       break;
     }
 
@@ -830,6 +833,8 @@ void HBIOSDispatch::handleCIO() {
       bool has_input = emu_console_has_input();
       result = has_input ? 0xFF : 0;  // Non-zero if input ready
       cpu->regs.DE.set_low(has_input ? 0xFF : 0);  // E = pending count
+      // Track consecutive "no input" polls for idle detection
+      if (has_input) idle_poll_count = 0; else idle_poll_count++;
       break;
     }
 
@@ -919,6 +924,7 @@ static uint8_t get_md_index(uint8_t unit) {
 
 void HBIOSDispatch::handleDIO() {
   if (!cpu || !memory) return;
+  idle_poll_count = 0;  // Disk I/O = real work
 
   uint8_t func = cpu->regs.BC.get_high();  // B = function
   uint8_t raw_unit = cpu->regs.BC.get_low();   // C = unit
@@ -2087,7 +2093,10 @@ void HBIOSDispatch::handleVDA() {
 
     case HBF_VDAKST: {
       // Keyboard status - check emu_console input
-      cpu->regs.DE.set_low(emu_console_has_input() ? 0xFF : 0x00);
+      bool has_key = emu_console_has_input();
+      cpu->regs.DE.set_low(has_key ? 0xFF : 0x00);
+      // Track consecutive "no input" polls for idle detection
+      if (has_key) idle_poll_count = 0; else idle_poll_count++;
       break;
     }
 
@@ -2099,6 +2108,7 @@ void HBIOSDispatch::handleVDA() {
       }
       int ch = emu_console_read_char();
       cpu->regs.DE.set_low(ch & 0xFF);
+      idle_poll_count = 0;
       break;
     }
 

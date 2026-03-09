@@ -9,8 +9,8 @@
  */
 
 // Version info
-#define EMU_VERSION "1.28"
-#define EMU_VERSION_DATE "2026-02-10"
+#define EMU_VERSION "1.29"
+#define EMU_VERSION_DATE "2026-03-09"
 
 #include "qkz80.h"
 #include "romwbw_mem.h"

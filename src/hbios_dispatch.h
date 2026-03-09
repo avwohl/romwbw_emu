@@ -445,6 +445,12 @@ public:
   bool isWaitingForInput() const { return waiting_for_input; }
   void clearWaitingForInput() { waiting_for_input = false; }
 
+  // Console idle detection for power management.
+  // Returns true when guest is polling console status with no input available
+  // (consecutive CIOIST/VDAKST calls returning "no key").
+  // Host run loop should sleep longer when idle (e.g., 10ms instead of 0.1ms).
+  bool isConsoleIdle() const { return idle_poll_count >= IDLE_POLL_THRESHOLD; }
+
   //==========================================================================
   // State Machine I/O Interface
   // The emulator is a pure state machine. Instead of calling external functions,
@@ -526,6 +532,12 @@ private:
   bool skip_ret = false;           // Skip synthetic RET (for I/O port dispatch)
   bool blocking_allowed = true;    // Can we block for I/O? (false for web/WASM)
   uint16_t main_entry = 0xFFF0;    // Main HBIOS entry point
+
+  // Console idle detection: counts consecutive CIOIST/VDAKST polls returning
+  // "no input". Reset when input is consumed, output is written, or disk I/O
+  // occurs. When count >= threshold, isConsoleIdle() returns true.
+  int idle_poll_count = 0;
+  static constexpr int IDLE_POLL_THRESHOLD = 8;
 
   // Manifest disk write warning - set true on first write to manifest disk (non-suppressed)
   // Cleared after pollManifestWriteWarning() returns true
