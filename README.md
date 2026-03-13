@@ -268,6 +268,7 @@ GNU General Public License v3.0 - see [LICENSE](LICENSE).
 - [mpm2](https://github.com/avwohl/mpm2) - MP/M II multi-user CP/M emulator with SSH terminal access and SFTP file transfer
 - [scelbal](https://github.com/avwohl/scelbal) - SCELBAL BASIC interpreter - 8008 to 8080 translation
 - [uada80](https://github.com/avwohl/uada80) - Ada compiler targeting Z80 processor and CP/M 2.2 operating system
+- [uc80](https://github.com/avwohl/uc80) - ANSI C compiler targeting Z80 processor and CP/M 2.2 operating system
 - [ucow](https://github.com/avwohl/ucow) - Unix/Linux Cowgol to Z80 compiler
 - [um80_and_friends](https://github.com/avwohl/um80_and_friends) - Microsoft MACRO-80 compatible toolchain for Linux: assembler, linker, librarian, disassembler
 - [upeepz80](https://github.com/avwohl/upeepz80) - Universal peephole optimizer for Z80 compilers
