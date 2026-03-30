@@ -32,9 +32,26 @@ This document describes the architecture of the RomWBW emulator, focusing on the
 │                            │                                         │
 │  ┌─────────────────────────┴─────────────────────────┐              │
 │  │              emu_io.h (Interface)                  │              │
-│  │  • emu_console_write_char()  • emu_get_time()     │              │
-│  │  • emu_console_read_char()   • emu_log()          │              │
-│  │  • emu_console_has_input()   • emu_error()        │              │
+│  │  Console, Disk, File, Time, Video, DSKY,          │              │
+│  │  Aux/Printer, Host File Transfer, Logging         │              │
+│  └─────────────────────────┬─────────────────────────┘              │
+│                            │                                         │
+│  ┌─────────────────────────┴─────────────────────────┐              │
+│  │       emu_io_common.cc (Shared Portable I/O)       │              │
+│  │  • File I/O, disk I/O, time, random               │              │
+│  │  • Platform-independent implementations           │              │
+│  └─────────────────────────┬─────────────────────────┘              │
+│                            │                                         │
+│  ┌─────────────────────────┴─────────────────────────┐              │
+│  │       emu_init.cc / emu_init.h (Initialization)    │              │
+│  │  • ROM loading (emu_load_rom)                     │              │
+│  │  • HCB setup, disk tables                        │              │
+│  └─────────────────────────┬─────────────────────────┘              │
+│                            │                                         │
+│  ┌─────────────────────────┴─────────────────────────┐              │
+│  │       hbios_cpu.cc / hbios_cpu.h (CPU Glue)        │              │
+│  │  • I/O port emulation                             │              │
+│  │  • HBIOS trap detection                           │              │
 │  └─────────────────────────┬─────────────────────────┘              │
 │                            │                                         │
 │  ┌─────────────────────────┴─────────────────────────┐              │
@@ -114,30 +131,35 @@ memory.store_mem(0x1234, 0xFF);
 
 ### emu_io.h (I/O Abstraction)
 
-Platform-independent interface for console, time, and logging:
+Platform-independent interface for all emulator I/O. Functions are grouped by subsystem:
 
 ```cpp
-// Console I/O
-void emu_console_write_char(int ch);
-int emu_console_read_char();
-bool emu_console_has_input();
-void emu_console_queue_char(int ch);
-
-// Time
-void emu_get_time(emu_time* t);
-
-// Logging
-void emu_log(const char* fmt, ...);
-void emu_error(const char* fmt, ...);
-void emu_status(const char* msg);
-
-// Initialization
-void emu_io_init();
+// Platform utilities (strcasecmp, strncasecmp, sleep_ms)
+// Init/cleanup (emu_io_init, emu_io_cleanup)
+// Console I/O (has_input, read_char, queue_char, clear_queue,
+//              write_char, check_escape, check_ctrl_c_exit)
+// Aux devices (printer_set_file, printer_out, printer_ready,
+//              aux_set_input_file, aux_set_output_file, aux_in, aux_out)
+// Debug/logging (set_debug, log, error, fatal, status, disk_flush_all)
+// File I/O (file_load, file_load_to_mem, file_save, file_exists, file_size)
+// Disk I/O (disk_open, disk_close, disk_read, disk_write, disk_flush,
+//           disk_size)  -- uses emu_disk_handle = void*
+// Time (emu_get_time)  -- uses emu_time struct
+// Random (emu_random)
+// Video/VDA (video_get_caps, video_clear, video_set_cursor,
+//            video_get_cursor, video_write_char, video_scroll_up, ...)
+// DSKY (dsky_show_hex, dsky_show_segments, dsky_set_leds,
+//       dsky_beep, dsky_get_key)
+// Host file transfer (host_file_get_state, host_file_open_read,
+//                     host_file_open_write, host_file_read_byte,
+//                     host_file_write_byte, host_file_close_read, ...)
 ```
 
-Each platform implements these in `emu_io_*.cc`:
+Each platform implements the platform-specific functions in `emu_io_*.cc`:
 - `emu_io_cli.cc` - Terminal I/O with termios
 - `emu_io_wasm.cc` - JavaScript callbacks via Emscripten
+
+Portable implementations shared across all platforms live in `emu_io_common.cc` (file I/O, disk I/O, time, random).
 
 ### hbios_dispatch.cc (Shared HBIOS)
 
@@ -194,8 +216,8 @@ case HBF_RTCSETBLK:  // Set entire block
 
 Platform persistence:
 - **Web:** localStorage as base64
-- **CLI:** File `~/.romwbw_nvram`
-- **iOS:** UserDefaults or Keychain
+- **CLI:** Plain text file `~/.config/romwbw_emu/nvram` (contains a string like "C")
+- **iOS:** UserDefaults
 
 ## Disk I/O Architecture
 
@@ -203,12 +225,25 @@ The emulator supports multiple disk formats:
 
 ```cpp
 struct HBDisk {
-    bool is_open;
-    std::vector<uint8_t> data;  // In-memory data
-    void* handle;               // File handle (for large disks)
-    bool file_backed;
-    size_t size;
-    uint32_t current_lba;
+    bool is_open = false;
+    std::string path;
+    std::vector<uint8_t> data;       // For in-memory disks
+    void* handle = nullptr;          // For file-backed disks (emu_disk_handle)
+    bool file_backed = false;
+    size_t size = 0;
+    uint32_t current_lba = 0;        // Current LBA position (set by DIOSEEK)
+    int max_slices = 8;              // Slices for drive letter assignment
+
+    // Partition/slice info (detected from MBR on first EXTSLICE call)
+    bool partition_probed = false;
+    uint32_t partition_base_lba = 0; // 2048 for hd1k, 0 for hd512
+    uint32_t slice_size = 16640;     // Sectors per slice
+    bool is_hd1k = false;            // True for hd1k format
+
+    // Manifest disk flag (app-managed, may be auto-updated)
+    bool is_manifest = false;
+    bool warning_suppressed = false;
+    bool dirty = false;
 };
 
 // Up to 16 disk units
@@ -225,46 +260,45 @@ Disk operations:
 
 ### Step 1: Implement emu_io.h
 
-Create `emu_io_yourplatform.cc`:
+Create `emu_io_yourplatform.cc` implementing all platform-specific functions
+declared in `emu_io.h`. See `emu_io_cli.cc` and `emu_io_wasm.cc` for
+reference implementations. Key groups:
 
 ```cpp
 #include "emu_io.h"
 
-void emu_io_init() {
-    // Initialize your I/O system
-}
+// Platform utilities
+int emu_strcasecmp(const char* s1, const char* s2) { /* ... */ }
+int emu_strncasecmp(const char* s1, const char* s2, size_t n) { /* ... */ }
+void emu_sleep_ms(int ms) { /* ... */ }
+void emu_set_debug(bool enable) { /* ... */ }
 
-void emu_console_write_char(int ch) {
-    // Output character to display
-}
+// Init/cleanup
+void emu_io_init() { /* Initialize your I/O system */ }
+void emu_io_cleanup() { /* Restore terminal state, etc. */ }
 
-int emu_console_read_char() {
-    // Read character from input
-}
+// Console I/O (has_input, read_char, queue_char, clear_queue,
+//              write_char, check_escape, check_ctrl_c_exit)
+bool emu_console_has_input() { /* ... */ }
+int emu_console_read_char() { /* ... */ }
+void emu_console_write_char(uint8_t ch) { /* ... */ }
+// ... plus queue_char, clear_queue, check_escape, check_ctrl_c_exit
 
-bool emu_console_has_input() {
-    // Check if input available
-}
+// Aux devices (printer_set_file, printer_out, printer_ready,
+//              aux_set_input_file, aux_set_output_file, aux_in, aux_out)
 
-void emu_console_queue_char(int ch) {
-    // Queue character for later reading
-}
+// Debug/logging (log, error, fatal, status, disk_flush_all)
+void emu_log(const char* fmt, ...) { /* ... */ }
+void emu_error(const char* fmt, ...) { /* ... */ }
+void emu_fatal(const char* fmt, ...) { /* ... abort(); */ }
+void emu_status(const char* fmt, ...) { /* ... */ }
 
-void emu_get_time(emu_time* t) {
-    // Fill in current time
-}
+// File I/O (file_load, file_load_to_mem, file_save, file_exists, file_size)
+bool emu_file_exists(const std::string& path) { /* ... */ }
+size_t emu_file_size(const std::string& path) { /* ... */ }
+// ... plus file_load, file_load_to_mem, file_save
 
-void emu_log(const char* fmt, ...) {
-    // Debug logging
-}
-
-void emu_error(const char* fmt, ...) {
-    // Error logging
-}
-
-void emu_status(const char* msg) {
-    // Status display update
-}
+// Video/VDA, DSKY, Host file transfer - see emu_io.h for full list
 ```
 
 ### Step 2: Create Main Program
@@ -273,6 +307,7 @@ void emu_status(const char* msg) {
 #include "qkz80.h"
 #include "romwbw_mem.h"
 #include "hbios_dispatch.h"
+#include "emu_init.h"
 #include "emu_io.h"
 
 banked_mem memory;
@@ -282,11 +317,11 @@ HBIOSDispatch hbios;
 int main() {
     emu_io_init();
 
-    // Load ROM
+    // Load ROM using shared init helper
     memory.enable_banking();
-    // ... load ROM data into memory.get_rom() ...
+    emu_load_rom("path/to/rom.rom", memory);
 
-    // Set up HBIOS
+    // Set up HBIOS (emu_init handles HCB setup, disk tables, etc.)
     hbios.setCPU(&cpu);
     hbios.setMemory(&memory);
     hbios.setResetCallback(handle_reset);
@@ -314,10 +349,13 @@ int main() {
 
 ### Step 3: Build
 
-Link with:
-- `hbios_dispatch.cc`
-- `qkz80` library
-- Your `emu_io_yourplatform.cc`
+Compile and link with:
+- `emu_io_common.cc` (shared portable I/O: file, disk, time)
+- `emu_init.cc` (shared initialization: ROM loading, HCB setup, disk tables)
+- `hbios_dispatch.cc` (shared HBIOS implementation)
+- `hbios_cpu.cc` (I/O port emulation, HBIOS trap detection)
+- `qkz80` library (Z80 CPU core)
+- Your `emu_io_yourplatform.cc` (platform-specific I/O)
 
 ## Memory Map
 
@@ -412,4 +450,4 @@ The shared HBIOS is designed to work with RomWBW 3.x ROMs. Key compatibility poi
 - HBIOS function codes match RomWBW hbios.inc
 - Bank switching matches SBC hardware
 - NVRAM size matches DS1302/DS1307 chips
-- Disk geometry matches hd1k format (1024-byte sectors)
+- Disk geometry matches hd1k format (512-byte sectors)

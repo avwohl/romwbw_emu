@@ -6,7 +6,7 @@ This document tracks changes made to the romwbw_emu project that need to be port
 
 ### Auto-Detection Logic
 
-The emulator now auto-detects disk format. Implementation in `romwbw_emu.cc`:
+The emulator now auto-detects disk format. Implementation in `hbios_dispatch.cc`:
 
 1. **Check for MBR signature** (0x55AA at offset 510)
    - Scan partition table for type 0x2E (CP/M) at offsets 0x1C2, 0x1D2, 0x1E2, 0x1F2
@@ -53,10 +53,6 @@ static constexpr size_t HD512_SINGLE_SIZE = 8519680;     // 8.32 MB
 ### Validation
 - Files must exist (no auto-creation on typos)
 - File size must match known format (8MB, 8.32MB, or combo with 1MB prefix)
-
-### Deprecated Options
-- `--hbdisk0`, `--hbdisk1` - Still work but print deprecation warning
-- `--hdsk0`, `--hdsk1` - Legacy SIMH protocol, deprecated
 
 ## Host File Transfer (R8/W8)
 
@@ -127,23 +123,6 @@ Use `src/add_to_combo.py` (cpmtools doesn't support combo disk offset):
 python3 src/add_to_combo.py disks/hd1k_combo.img file1.com file2.com
 ```
 
-## Tasks for iOS/macOS/Windows Ports
-
-### High Priority
-1. [ ] Implement disk format auto-detection
-2. [ ] Add --disk0/--disk1 command line options
-3. [ ] Implement BF_SYSINT (0xF8) for R8/W8 support
-4. [ ] Bundle hd1k_combo.img with R8/W8 utilities
-
-### Medium Priority
-5. [ ] Add disk size validation on load
-6. [ ] Deprecation warnings for old options
-7. [ ] Support combo disk slicing (1MB prefix + N*8MB slices)
-
-### Low Priority
-8. [ ] File picker for disk selection
-9. [ ] Drag-and-drop disk image loading
-
 ## GitHub Release (avwohl/ioscpm)
 
 The iOS/macOS app fetches disk images from GitHub releases:
@@ -184,6 +163,11 @@ python3 src/add_to_combo.py disks/hd1k_combo.img r8.com w8.com
 ## Reference Files
 
 - `src/romwbw_emu.cc` - Main emulator with HBIOS handlers
+- `src/hbios_dispatch.cc` - HBIOS function dispatch
+- `src/hbios_cpu.cc` - I/O port emulation
+- `src/emu_io.h` - Platform I/O interface
+- `src/emu_io_common.cc` - Shared portable I/O implementation
+- `src/emu_init.cc` - Shared initialization
 - `docs/DISK_FORMATS.md` - Detailed disk format documentation
 - `src/r8.asm`, `src/w8.asm` - Z80 source for file transfer utilities
 - `src/add_to_combo.py` - Python script to add files to combo disks

@@ -9,8 +9,8 @@
  */
 
 // Version info
-#define EMU_VERSION "1.30"
-#define EMU_VERSION_DATE "2026-03-09"
+#define EMU_VERSION "1.31"
+#define EMU_VERSION_DATE "2026-03-29"
 
 #include "qkz80.h"
 #include "romwbw_mem.h"
@@ -118,129 +118,15 @@ static bool waiting_for_int_delivery = false;
 
 // HBIOS function codes and result codes are now in hbios_dispatch.h
 
-// Use banked_mem from romwbw_mem.h - provides both flat and banked memory modes
-// For backward compatibility, alias it as cpm_mem
-using cpm_mem = banked_mem;
-
-// Terminal state management
-static struct termios original_termios;
-static bool termios_saved = false;
-
-static void disable_raw_mode() {
-  if (termios_saved) {
-    tcsetattr(STDIN_FILENO, TCSAFLUSH, &original_termios);
-    termios_saved = false;
-  }
-}
-
-static void enable_raw_mode() {
-  if (!isatty(STDIN_FILENO)) {
-    return;
-  }
-
-  if (!termios_saved) {
-    tcgetattr(STDIN_FILENO, &original_termios);
-    termios_saved = true;
-    atexit(disable_raw_mode);
-  }
-
-  struct termios raw = original_termios;
-  raw.c_lflag &= ~(ICANON | ECHO | ISIG);
-  raw.c_cc[VMIN] = 0;  // Non-blocking
-  raw.c_cc[VTIME] = 0;
-  tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
-}
-
-// Track if stdin has reached EOF
-static bool stdin_eof = false;
-static int peek_char = -1;  // Peeked character, -1 if none
-
-// Raw read from stdin - bypasses stdio buffering which causes issues with select()
-// Returns -1 if no data, -2 if EOF, or the character (0-255)
-static int raw_read_stdin() {
-  unsigned char ch;
-  ssize_t n = read(STDIN_FILENO, &ch, 1);
-  if (n == 0) return -2;  // EOF
-  if (n < 0) return -1;   // Error or would block
-  return ch;
-}
-
 // Console mode escape character (default ^E like SIMH)
 static char console_escape_char = 0x05;  // Ctrl+E
 static bool console_mode_requested = false;
 
-// Forward declaration
-static bool check_ctrl_c_exit(int ch);
-
-// ^C exit handling - press Ctrl+C 4 times quickly to exit
-static int consecutive_ctrl_c = 0;
-static const int CTRL_C_EXIT_COUNT = 4;
-
-static bool check_ctrl_c_exit(int ch) {
-  if (ch == 0x03) {
-    consecutive_ctrl_c++;
-    if (consecutive_ctrl_c >= CTRL_C_EXIT_COUNT) {
-      fprintf(stderr, "\n[Exiting: %d consecutive ^C received]\n", CTRL_C_EXIT_COUNT);
-      disable_raw_mode();
-      exit(0);
-    }
-    return true;  // Was ^C
-  }
-  // Don't reset counter on other characters - just count total ^C presses
-  return false;
-}
-
-// Check if escape character is available in stdin (non-blocking)
-// This is called periodically from the main loop for tight loops that don't do I/O
-// IMPORTANT: Only consume the character if it IS the escape char, otherwise leave it
-// Also handles ^C for exit even when emulated program is in a tight loop
+// Check for escape character (non-blocking) - called periodically from main loop
 static bool check_console_escape_async() {
-  if (!isatty(STDIN_FILENO)) return false;
-  if (peek_char >= 0) {
-    // Already have a peeked char - check if it's escape or ^C
-    if (peek_char == console_escape_char) {
-      peek_char = -1;  // Consume it
-      console_mode_requested = true;
-      return true;
-    }
-    if (peek_char == 0x03) {  // ^C
-      
-      peek_char = -1;  // Consume it
-      check_ctrl_c_exit(0x03);
-      return false;
-    }
-    return false;  // Has data but not escape - don't consume
-  }
-
-  fd_set readfds;
-  struct timeval tv;
-  FD_ZERO(&readfds);
-  FD_SET(STDIN_FILENO, &readfds);
-  tv.tv_sec = 0;
-  tv.tv_usec = 0;  // Non-blocking
-
-  int sel_result = select(STDIN_FILENO + 1, &readfds, NULL, NULL, &tv);
-  if (sel_result > 0) {
-    int ch = raw_read_stdin();
-    if (ch == -2) {  // EOF
-      stdin_eof = true;
-      return false;
-    }
-    if (ch < 0) {  // Error or would block
-      return false;
-    }
-    if (ch == console_escape_char) {
-      console_mode_requested = true;
-      return true;
-    }
-    if (ch == 0x03) {  // ^C
-      
-      check_ctrl_c_exit(0x03);
-      // Don't save ^C for emulated program when counting for exit
-      return false;
-    }
-    // Not escape char - save it for the emulated program to read
-    peek_char = ch;
+  if (emu_console_check_escape(console_escape_char)) {
+    console_mode_requested = true;
+    return true;
   }
   return false;
 }
@@ -374,12 +260,12 @@ static void print_console_help() {
 
 // Read a line in console mode (with cooked terminal)
 static bool read_console_line(char* buf, size_t buflen) {
-  disable_raw_mode();
+  emu_io_cleanup();
   fprintf(stderr, "sim> ");
   fflush(stderr);
 
   if (!fgets(buf, buflen, stdin)) {
-    enable_raw_mode();
+    emu_io_init();
     return false;
   }
 
@@ -387,7 +273,7 @@ static bool read_console_line(char* buf, size_t buflen) {
   size_t len = strlen(buf);
   if (len > 0 && buf[len-1] == '\n') buf[len-1] = '\0';
 
-  enable_raw_mode();
+  emu_io_init();
   return true;
 }
 
@@ -403,7 +289,7 @@ enum ConsoleResult {
 static int step_count = 0;
 
 // Handle console mode - returns action to take
-static ConsoleResult handle_console_mode(qkz80* cpu, cpm_mem* memory) {
+static ConsoleResult handle_console_mode(qkz80* cpu, banked_mem* memory) {
   char line[256];
   char cmd[64];
   char arg1[64], arg2[64], arg3[64];
@@ -683,7 +569,7 @@ static ConsoleResult handle_console_mode(qkz80* cpu, cpm_mem* memory) {
 class AltairEmulator : public HBIOSCPUDelegate {
 private:
   hbios_cpu* cpu;
-  cpm_mem* memory;
+  banked_mem* memory;
   HBIOSDispatch hbios;  // Shared HBIOS dispatch
   bool debug;
   bool strict_io_mode;  // Halt on unexpected I/O ports
@@ -703,7 +589,7 @@ private:
   // via hbios.getInitializedBanksBitmap()
 
 public:
-  AltairEmulator(hbios_cpu* acpu, cpm_mem* amem, bool adebug = false)
+  AltairEmulator(hbios_cpu* acpu, banked_mem* amem, bool adebug = false)
     : cpu(acpu), memory(amem), debug(adebug),
       strict_io_mode(false), halted(false),
       sense_switches(0x00) {
@@ -768,45 +654,8 @@ public:
     banked_mem* bmem = dynamic_cast<banked_mem*>(memory);
     if (!bmem) return false;
 
-    FILE* f = fopen(romldr_path.c_str(), "rb");
-    if (!f) {
-      fprintf(stderr, "[ROMLDR] Cannot open %s\n", romldr_path.c_str());
-      return false;
-    }
-
-    // Get file size
-    fseek(f, 0, SEEK_END);
-    long file_size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-
-    // Load entire ROM file (up to 512KB)
-    uint8_t* rom_data = bmem->get_rom();
-    if (!rom_data) {
-      fclose(f);
-      return false;
-    }
-
-    // Save bank 0 (our emu_hbios) before loading
-    uint8_t bank0_save[32768];
-    memcpy(bank0_save, rom_data, 32768);
-
-    // Load full ROM
-    size_t bytes = fread(rom_data, 1, file_size, f);
-    fclose(f);
-
-    // Restore bank 0 with our emu_hbios code
-    memcpy(rom_data, bank0_save, 32768);
-
-    fprintf(stderr, "[ROMLDR] Loaded %zu bytes from %s (banks 1-15)\n", bytes, romldr_path.c_str());
-    fprintf(stderr, "[ROMLDR] Bank 0 preserved (emu_hbios)\n");
-
-    // Verify RST 08 vector in bank 1
-    uint8_t* bank1 = rom_data + 32768;
-    fprintf(stderr, "[ROMLDR] Bank 1 RST 08 vector (0x0008): %02X %02X %02X\n",
-            bank1[0x08], bank1[0x09], bank1[0x0A]);
-
-    romldr_loaded = true;
-    return true;
+    romldr_loaded = emu_load_romldr_rom(bmem, romldr_path.c_str());
+    return romldr_loaded;
   }
 
 
@@ -856,11 +705,6 @@ public:
 
 // Disk size constants and MBR checking are now in emu_init.h/emu_init.cc
 
-// Validate disk image file - now uses shared emu_validate_disk_image()
-static const char* validate_disk_image(const char* path, size_t* out_size = nullptr) {
-  return emu_validate_disk_image(path, out_size);
-}
-
 void print_usage(const char* prog) {
   fprintf(stderr, "RomWBW Emulator v%s (%s)\n", EMU_VERSION, EMU_VERSION_DATE);
   fprintf(stderr, "Usage: %s --romwbw=<rom.rom> [options]\n", prog);
@@ -875,7 +719,7 @@ void print_usage(const char* prog) {
   fprintf(stderr, "  --boot=CMD        Auto-boot with command (e.g., C, 2, 2.3)\n");
   fprintf(stderr, "                    Overrides persisted NVRAM settings\n");
   fprintf(stderr, "\n");
-  fprintf(stderr, "  NVRAM is persisted to ~/.config/romwbw_emu/nvram.json\n");
+  fprintf(stderr, "  NVRAM is persisted to ~/.config/romwbw_emu/nvram\n");
   fprintf(stderr, "  Use 'W' at boot menu to configure via SYSCONF utility.\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Disk options:\n");
@@ -969,7 +813,7 @@ int main(int argc, char** argv) {
         std::string path_str(path_start);
         // Validate disk image exists and has valid size
         size_t disk_size = 0;
-        const char* err = validate_disk_image(path_str.c_str(), &disk_size);
+        const char* err = emu_validate_disk_image(path_str.c_str(), &disk_size);
         if (err) {
           fprintf(stderr, "Error: --disk%d=%s: %s\n", unit, path_str.c_str(), err);
           return 1;
@@ -1129,7 +973,7 @@ int main(int argc, char** argv) {
   if (!start_addr_set) start_addr = 0x0000;
 
   // Create memory and CPU
-  cpm_mem memory;
+  banked_mem memory;
   hbios_cpu cpu(&memory, nullptr);  // delegate set below
 
   // Set Z80 mode and enable banking
@@ -1214,29 +1058,14 @@ int main(int argc, char** argv) {
   }
 
   // Enable raw terminal mode
-  enable_raw_mode();
-
-  // Load binary file
-  FILE* fp = fopen(binary, "rb");
-  if (!fp) {
-    fprintf(stderr, "Cannot open %s: %s\n", binary, strerror(errno));
-    return 1;
-  }
-
-  fseek(fp, 0, SEEK_END);
-  size_t file_size = ftell(fp);
-  fseek(fp, 0, SEEK_SET);
+  emu_io_init();
 
   {
     // Load ROM image into banked memory
-    if (!memory.load_rom_file(binary)) {
-      fprintf(stderr, "Failed to load ROM from %s\n", binary);
-      fclose(fp);
+    if (!emu_load_rom(&memory, binary)) {
       return 1;
     }
-    fprintf(stderr, "Loaded %zu bytes ROM from %s\n", file_size, binary);
     fprintf(stderr, "Starting execution at 0x%04X in ROM bank 0\n", start_addr);
-    fclose(fp);
 
     // If romldr path specified, load full RomWBW ROM (preserving bank 0)
     if (!romldr_path.empty()) {

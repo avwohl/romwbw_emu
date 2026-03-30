@@ -27,9 +27,9 @@ using MemoryWriteCallback = std::function<void(uint16_t addr, uint8_t value)>;
  *   - Bit 7 = 0: ROM bank (0x00-0x0F)
  *   - Bit 7 = 1: RAM bank (0x80-0x8F)
  *
- * I/O ports (MM_SBC style, directly wired to select_bank):
- *   - Port 0x78: Bank selector (ROM or RAM based on bit 7)
- *   - Port 0x7C: Same (both ports do the same thing in SBC)
+ * Bank switching:
+ *   - Call select_bank() with desired bank ID
+ *   - I/O port handling (0x78/0x7C) is in hbios_cpu.cc, not here
  */
 class banked_mem : public qkz80_cpu_mem {
 public:
@@ -205,41 +205,6 @@ public:
 
         // Call write callback if set (for Dazzler framebuffer updates)
         if (write_callback) write_callback(addr, byte);
-    }
-
-    // Load ROM image
-    bool load_rom_file(const char* filename) {
-        if (!banking_enabled) {
-            fprintf(stderr, "Error: Banking not enabled\n");
-            return false;
-        }
-
-        FILE* fp = fopen(filename, "rb");
-        if (!fp) {
-            fprintf(stderr, "Error: Cannot open ROM: %s\n", filename);
-            return false;
-        }
-
-        fseek(fp, 0, SEEK_END);
-        long size = ftell(fp);
-        fseek(fp, 0, SEEK_SET);
-
-        if (size <= 0 || size > (long)ROM_SIZE) {
-            fprintf(stderr, "Error: Invalid ROM size: %ld\n", size);
-            fclose(fp);
-            return false;
-        }
-
-        size_t read = fread(rom, 1, size, fp);
-        fclose(fp);
-
-        if (read != (size_t)size) {
-            fprintf(stderr, "Error: ROM read incomplete\n");
-            return false;
-        }
-
-        fprintf(stderr, "[ROMWBW] Loaded %ld bytes from %s\n", size, filename);
-        return true;
     }
 
     // Direct bank access (for disk DMA)

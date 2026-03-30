@@ -259,30 +259,26 @@ md5sum myimage.img ~/esrc/RomWBW-v3.5.1/Binary/hd1k_cpm22.img
 
 ## Command Line Usage
 
-### Current Options (romwbw_emu)
+### Options
 
 ```bash
 # Attach disk to unit 0 (appears as C:)
-./romwbw_emu --romwbw roms/emu_romwbw.rom --hbdisk0=disks/hd1k_combo.img
+./romwbw_emu --romwbw roms/emu_romwbw.rom --disk0=disks/hd1k_combo.img
 
 # Multiple disks
 ./romwbw_emu --romwbw roms/emu_romwbw.rom \
-    --hbdisk0=disks/hd1k_combo.img \
-    --hbdisk1=disks/hd1k_games.img
+    --disk0=disks/hd1k_combo.img \
+    --disk1=disks/hd1k_games.img
 ```
 
 ### Disk Unit Mapping
 
 | Option | HBIOS Unit | Drive Letters |
 |--------|------------|---------------|
-| --hbdisk0 | HD0 (unit 2) | C: D: E: F: (4 slices) |
-| --hbdisk1 | HD1 (unit 3) | G: H: I: J: (4 slices) |
+| --disk0 | HD0 (unit 2) | C: D: E: F: (4 slices) |
+| --disk1 | HD1 (unit 3) | G: H: I: J: (4 slices) |
 
 Note: Units 0-1 are MD0/MD1 (RAM/ROM disks), so hard disks start at unit 2.
-
-### Legacy SIMH Protocol (--hdsk)
-
-The `--hdsk0`, `--hdsk1` options use the SIMH HDSK port 0xFD protocol. This is a separate disk system from HBIOS and is not recommended for normal use.
 
 ## Troubleshooting
 

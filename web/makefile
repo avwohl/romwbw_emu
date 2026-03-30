@@ -22,6 +22,7 @@ ROMWBW_SRCS = romwbw_web.cc \
               ../src/hbios_dispatch.cc \
               ../src/hbios_cpu.cc \
               ../src/emu_io_wasm.cc \
+              ../src/emu_io_common.cc \
               ../src/emu_init.cc
 
 all: romwbw.js

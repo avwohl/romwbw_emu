@@ -9,9 +9,9 @@ The emulator supports RomWBW's boot configuration system via emulated RTC NVRAM.
 
 1. **Command line** (`--boot=`) - For scripted/automated use
 2. **SYSCONF utility** (`W` at boot menu) - Interactive configuration
-3. **Programmatic API** (`setBootOption()`) - For GUI apps
+3. **Programmatic API** (`setNvramSetting()`) - For GUI apps
 
-Settings persist across sessions in `~/.config/romwbw_emu/nvram.json`.
+Settings persist across sessions in `~/.config/romwbw_emu/nvram`.
 
 ## Quick Start
 
@@ -109,52 +109,23 @@ $ Q
 
 ### File Location
 
-`~/.config/romwbw_emu/nvram.json`
+`~/.config/romwbw_emu/nvram`
 
-### JSON Format
+### File Format
 
-```json
-{
-  "description": "RomWBW NVRAM boot configuration",
-  "nvram": ["57", "43", "80", "20", "A4"],
-  "decoded": {
-    "initialized": true,
-    "boot_type": "rom",
-    "boot_app": "C",
-    "autoboot": true,
-    "timeout": 0
-  }
-}
+The NVRAM file is a plain text file containing the boot setting string. For example:
+
+```
+C
 ```
 
-### NVRAM Byte Layout
-
-| Byte | Name | Description |
-|------|------|-------------|
-| 0 | Signature | `57` ('W') = initialized, `00` = not initialized |
-| 1 | Boot L | ROM: app char ('C'), Disk: slice number |
-| 2 | Boot H | `80` = ROM, `00-7F` = disk unit number |
-| 3 | Autoboot | `20` = enabled, `00` = disabled; bits 0-3 = timeout |
-| 4 | Checksum | XOR of bytes 0-3 with version bytes |
+Valid contents include any boot format string such as `C`, `Z`, `H`, `0`, `2.3`, etc.
+See the Boot Format Reference table above for the full list.
 
 ### Manual Editing
 
-You can edit the JSON file directly:
-
-```json
-{
-  "nvram": ["57", "00", "02", "20", "XX"],
-  "decoded": {
-    "boot_type": "disk",
-    "boot_unit": 2,
-    "boot_slice": 0,
-    "autoboot": true,
-    "timeout": 0
-  }
-}
-```
-
-The checksum (byte 4) will be recalculated on load.
+You can edit the file directly with any text editor. Just write the desired boot
+setting string (e.g., `C` or `2.3`) as the file contents.
 
 ## Programmatic API (For Downstream Emulators)
 
@@ -166,27 +137,19 @@ The checksum (byte 4) will be recalculated on load.
 HBIOSDispatch hbios;
 
 // Boot ROM app 'C' (CP/M)
-hbios.setBootOption("C");
+hbios.setNvramSetting("C");
 
 // Boot disk unit 2, slice 3
-hbios.setBootOption("2.3");
+hbios.setNvramSetting("2.3");
 
 // Show boot menu
-hbios.setBootOption("H");
+hbios.setNvramSetting("H");
 
 // Clear boot option
-hbios.setBootOption("");
-```
+hbios.setNvramSetting("");
 
-### Direct NVRAM Access
-
-```cpp
-// Read NVRAM (5 bytes)
-const uint8_t* nvram = hbios.getNvram();
-
-// Write NVRAM (recalculates checksum)
-uint8_t data[5] = {'W', 'C', 0x80, 0x20, 0};
-hbios.setNvram(data);
+// Read the current setting
+std::string setting = hbios.getNvramSetting();
 
 // Check if initialized
 if (hbios.isNvramInitialized()) {
@@ -206,7 +169,7 @@ Picker("Boot Device", selection: $bootSelection) {
     }
 }
 .onChange(of: bootSelection) { newValue in
-    emulator.hbios.setBootOption(newValue)
+    emulator.hbios.setNvramSetting(newValue)
 }
 ```
 
@@ -251,7 +214,7 @@ This shouldn't happen anymore. If it does, check that:
 ### Boot Settings Not Persisting
 
 - Check that `~/.config/romwbw_emu/` directory exists
-- Check file permissions on `nvram.json`
+- Check file permissions on `nvram`
 - Ensure emulator exits cleanly (not killed with SIGKILL)
 
 ### --boot Overrides Saved Settings

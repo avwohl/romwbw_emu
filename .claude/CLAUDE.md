@@ -37,7 +37,7 @@ When working on RomWBW integration:
 
 - `qkz80` - Z80/8080 CPU emulator
 - `banked_mem` / `romwbw_mem.h` - Bank-switched memory (512KB ROM + 512KB RAM)
-- `altair_emu.cc` - Main emulator with HBIOS service handlers
+- `romwbw_emu.cc` - Main emulator with HBIOS service handlers
 - HBIOS calls are handled by intercepting execution at specific addresses and reading/writing CPU registers directly from C++
 
 ## Disk Formats (IMPORTANT)
@@ -55,7 +55,7 @@ Key points:
 **Common pitfalls:**
 - Single-slice hd1k images MUST be exactly 8,388,608 bytes for auto-detect
 - Combo disks need the 1MB MBR prefix with partition type 0x2E at offset 0x1C2
-- Use `--hbdisk0` for HBIOS disk system, NOT `--hdsk0` (that's legacy SIMH protocol)
+- Use `--disk0` for disk images (e.g., `--disk0=disks/hd1k_combo.img`)
 - cpmtools needs DISKDEFS env var pointing to RomWBW diskdefs file
 
 **cpmtools setup:**

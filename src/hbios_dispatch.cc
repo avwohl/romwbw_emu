@@ -16,20 +16,8 @@
 #include <cstdio>
 #include <cstdarg>
 
-// Optional debug log file - defined in platform-specific code, nullptr for CLI
-static FILE* debug_log_file = nullptr;
-
 // Static member definition - survives object recreation within session
 bool HBIOSDispatch::manifest_warning_shown = false;
-
-// Log to debug file if available (deep debugging, file only)
-static void dlog(const char* fmt, ...) {
-  if (!debug_log_file) return;
-  va_list args;
-  va_start(args, fmt);
-  vfprintf(debug_log_file, fmt, args);
-  va_end(args);
-}
 
 //=============================================================================
 // Constructor/Destructor
@@ -460,70 +448,10 @@ void HBIOSDispatch::populateDiskUnitTable() {
     }
   }
 
-  // Populate drive map at HCB+0x20 (0x120)
-  // Format: each byte = (slice << 4) | unit
-  // Drive letters A-P map to bytes 0x120-0x12F
-  // Value 0xFF = no drive assigned
-  const uint16_t DRVMAP_BASE = 0x120;  // HCB+0x20
-  int drive_letter = 0;  // 0=A, 1=B, etc.
+  emu_log("[DISKUT] Populated %d disk entries in HCB\n", disk_idx);
 
-  // First, mark all drive map entries as unused (0xFF)
-  for (int i = 0; i < 16; i++) {
-    rom[DRVMAP_BASE + i] = 0xFF;
-    memory->write_bank(0x80, DRVMAP_BASE + i, 0xFF);
-  }
-
-  // Assign hard disk slices FIRST so boot disk is A:
-  // This matches RomWBW behavior where boot device slices are A:, B:, C:, D:, etc.
-  for (int hd = 0; hd < 16 && drive_letter < 16; hd++) {
-    if (disks[hd].is_open) {
-      // Unit number: HD0 = unit 2, HD1 = unit 3, etc.
-      int unit = hd + 2;
-      // Use per-disk max_slices (default 4, configurable via setDiskSliceCount)
-      int num_slices = disks[hd].max_slices;
-      emu_log("[DISKUT] HD%d: is_open=true, max_slices=%d, assigning %d slices starting at %c:\n",
-              hd, disks[hd].max_slices, num_slices, 'A' + drive_letter);
-      for (int slice = 0; slice < num_slices && drive_letter < 16; slice++) {
-        uint8_t map_val = ((slice & 0x0F) << 4) | (unit & 0x0F);
-        rom[DRVMAP_BASE + drive_letter] = map_val;
-        memory->write_bank(0x80, DRVMAP_BASE + drive_letter, map_val);
-        drive_letter++;
-      }
-    }
-  }
-
-  // Assign memory disks AFTER hard disks
-  // This puts them after the boot disk slices (e.g., E: and F: if 4 slices used)
-  for (int i = 0; i < 2 && drive_letter < 16; i++) {
-    if (md_disks[i].is_enabled) {
-      uint8_t map_val = (0 << 4) | i;  // slice 0, unit i
-      rom[DRVMAP_BASE + drive_letter] = map_val;
-      memory->write_bank(0x80, DRVMAP_BASE + drive_letter, map_val);
-      emu_log("[DISKUT] MD%d assigned to %c:\n", i, 'A' + drive_letter);
-      drive_letter++;
-    }
-  }
-
-  // Update device count at HCB+0x0C (CB_DEVCNT) to match number of logical drives
-  rom[0x10C] = (uint8_t)drive_letter;
-  memory->write_bank(0x80, 0x10C, drive_letter);
-
-  emu_log("[DISKUT] Populated %d disk entries, %d drive letters in HCB\n", disk_idx, drive_letter);
-
-  // Debug: dump drive map from ROM (what boot loader reads)
-  emu_log("[DISKUT] Drive map in ROM (0x120-0x12F):\n");
-  emu_log("[DISKUT]   A-H: ");
-  for (int i = 0; i < 8; i++) {
-    emu_log("0x%02X ", rom[DRVMAP_BASE + i]);
-  }
-  emu_log("\n[DISKUT]   I-P: ");
-  for (int i = 8; i < 16; i++) {
-    emu_log("0x%02X ", rom[DRVMAP_BASE + i]);
-  }
-  emu_log("\n[DISKUT] CB_DEVCNT in ROM (0x10C) = 0x%02X\n", rom[0x10C]);
-
-  // Note: Shadow RAM copy with shadow bits is now handled by emu_complete_init()
-  // which calls emu_copy_hcb_to_shadow_ram() after all ROM modifications are done.
+  // Note: Drive map (0x120) and CB_DEVCNT are populated by emu_populate_drive_map()
+  // called from emu_complete_init() after all disk tables are set up.
 }
 
 //=============================================================================
@@ -1528,9 +1456,6 @@ void HBIOSDispatch::handleSYS() {
       bnkcpy_dst_bank = cpu->regs.DE.get_high();
       bnkcpy_src_bank = cpu->regs.DE.get_low();
       bnkcpy_count = cpu->regs.HL.get_pair16();
-      // DEBUG: Always log SYSSETCPY calls
-      dlog("[HBIOS SYSSETCPY] src=0x%02X dst=0x%02X count=%u\n",
-           bnkcpy_src_bank, bnkcpy_dst_bank, bnkcpy_count);
       break;
     }
 
@@ -1541,10 +1466,6 @@ void HBIOSDispatch::handleSYS() {
       uint16_t src_addr = cpu->regs.HL.get_pair16();
       uint16_t dst_addr = cpu->regs.DE.get_pair16();
       uint16_t count = bnkcpy_count;
-
-      // DEBUG: Always log SYSBNKCPY calls
-      dlog("[HBIOS SYSBNKCPY] src=%02X:%04X dst=%02X:%04X count=%u\n",
-           bnkcpy_src_bank, src_addr, bnkcpy_dst_bank, dst_addr, count);
 
       if (count > 0) {
         for (uint16_t i = 0; i < count; i++) {
