@@ -94,10 +94,16 @@ void emu_io_init() {
       atexit(restore_terminal);
     }
 
-    // Enable raw mode
+    // Enable raw mode for input (no canonical line editing, no echo, no
+    // signal generation) but KEEP output post-processing (OPOST/ONLCR)
+    // enabled. Every output path in this program emits a bare '\n' and
+    // relies on the kernel translating it to "\r\n": emu_console_write_char()
+    // strips the guest's '\r' (CP/M sends "\r\n"), and the log/debugger
+    // messages use plain "\n". Disabling OPOST here broke that assumption and
+    // produced "stair-stepped" output (LF with no CR) on terminals that don't
+    // implicitly add a CR for a bare LF (e.g. the Linux console).
     struct termios raw = original_termios;
     raw.c_lflag &= ~(ICANON | ECHO | ISIG);
-    raw.c_oflag &= ~(OPOST);  // Disable output processing (CP/M sends \r\n already)
     raw.c_cc[VMIN] = 0;   // Non-blocking
     raw.c_cc[VTIME] = 0;
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
