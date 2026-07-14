@@ -2601,12 +2601,12 @@ bool HBIOSDispatch::bootFromDevice(const char* cmd_str) {
 
     if (disks[boot_unit].file_backed && disks[boot_unit].handle) {
       read = emu_disk_read((emu_disk_handle)disks[boot_unit].handle, offset, sector_buf, 512);
-    } else if (!disks[boot_unit].data.empty()) {
+    } else if (offset < disks[boot_unit].data.size()) {
+      // offset can pass the end of a truncated image; subtracting first would
+      // wrap the size_t and turn the memcpy into an out-of-bounds read.
       size_t avail = disks[boot_unit].data.size() - offset;
       read = (avail < 512) ? avail : 512;
-      if (read > 0) {
-        memcpy(sector_buf, &disks[boot_unit].data[offset], read);
-      }
+      memcpy(sector_buf, &disks[boot_unit].data[offset], read);
     }
 
     for (size_t i = 0; i < read && addr < end_addr; i++) {
