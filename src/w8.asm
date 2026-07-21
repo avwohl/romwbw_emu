@@ -227,10 +227,9 @@ tolower:
 	ret	c
 	cp	'Z'+1
 	ret	nc
-	; um80 0.3.42 uppercases lowercase char literals in add/adc/sbc a,<expr>
-	; operands, so 'a'-'A' assembles as 0 (a no-op). Keep the explicit 20h
-	; until um80 is fixed.
-	add	a,20h
+	; requires um80 >= 0.3.43: older versions uppercased char literals in
+	; add a,<expr> operands, miscompiling this as add a,0
+	add	a,'a'-'A'
 	ret
 
 ; Print null-terminated string at DE
