@@ -138,7 +138,7 @@ enum HBiosFunc {
   HBF_HOST_WRITE  = 0xE4,  // Write byte to host (E=byte)
   HBF_HOST_CLOSE  = 0xE5,  // Close host file (C=0 for read, C=1 for write)
   HBF_HOST_MODE   = 0xE6,  // Get/set mode (C=0 get, C=1 set; E=mode)
-  HBF_HOST_GETARG = 0xE7,  // Get cmd arg by index (E=index, DE=buf addr)
+  HBF_HOST_GETARG = 0xE7,  // Get cmd arg by index (C=index, DE=buf addr)
 
   // System Functions - 0xF0-0xFC
   HBF_SYS       = 0xF0,
@@ -441,8 +441,10 @@ public:
   bool isTrappingEnabled() const { return trapping_enabled; }
   void setTrappingEnabled(bool enable) { trapping_enabled = enable; }
 
-  // Check if waiting for console input (CIOIN/VDAKRD called with no data)
-  bool isWaitingForInput() const { return waiting_for_input; }
+  // Check if waiting for console input (CIOIN/VDAKRD called with no data) or
+  // for the browser file picker (HBF_HOST_READ while HOST_FILE_WAITING_READ).
+  // Defined in the .cc because it consults emu_host_file_get_state().
+  bool isWaitingForInput() const;
   void clearWaitingForInput() { waiting_for_input = false; }
 
   // Console idle detection for power management.
@@ -529,6 +531,7 @@ private:
   // Dispatch control
   bool trapping_enabled = false;
   bool waiting_for_input = false;  // Set when CIOIN/VDAKRD needs input
+  bool waiting_for_host_file = false;  // Set when HBF_HOST_READ awaits the file picker
   bool skip_ret = false;           // Skip synthetic RET (for I/O port dispatch)
   bool blocking_allowed = true;    // Can we block for I/O? (false for web/WASM)
   uint16_t main_entry = 0xFFF0;    // Main HBIOS entry point

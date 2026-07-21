@@ -55,6 +55,19 @@ void emu_console_queue_char(int ch);
 // Clear the input queue (call on reset)
 void emu_console_clear_queue();
 
+// Returns true once a non-interactive stdin (pipe/file) has hit EOF and no
+// further input can ever arrive. Interactive and WASM platforms return
+// false. Only the CLI main loop consults this (to exit through end of main
+// so NVRAM/trace persistence still runs).
+bool emu_console_input_exhausted();
+
+// Weaker form: EOF has been *detected* on a non-interactive stdin (nothing
+// queued), whether or not the guest has read past it. Combined with guest
+// console-idle detection this catches guests that only poll input status
+// (e.g. the romldr boot menu) and would otherwise spin forever on a closed
+// pipe. Interactive and WASM platforms return false.
+bool emu_console_input_eof();
+
 // Write a character to console
 void emu_console_write_char(uint8_t ch);
 
@@ -258,13 +271,22 @@ enum emu_host_file_state {
 // Get current host file state
 emu_host_file_state emu_host_file_get_state();
 
-// Request to open host file for reading (triggers file picker in browser)
-// filename: suggested filename (may be ignored by browser)
+// Request to open host file for reading.
+// filename: host path exactly as typed by the guest (R8 command line).
+//   Native backends: an absolute host path MUST be opened verbatim; a bare
+//   (relative) name MAY be resolved against a platform default location
+//   (CLI backend: the process working directory; a GUI port might use its
+//   data folder). Never unconditionally prepend a directory to the name --
+//   that turns absolute paths into invalid nested paths and breaks
+//   "R8 /full/path/file.com" (this bug occurred in a downstream port).
+//   Browser backends: triggers a file picker; filename is only a hint.
 // Returns: true if request was initiated (wait for state change)
 bool emu_host_file_open_read(const char* filename);
 
-// Request to open host file for writing (creates buffer)
-// filename: name to use when saving
+// Request to open host file for writing.
+// filename: name/path for the output; same path contract as
+//   emu_host_file_open_read for native backends. Browser backends use it
+//   only as the suggested download filename (creates an in-memory buffer).
 // Returns: true if ready to write
 bool emu_host_file_open_write(const char* filename);
 
@@ -279,7 +301,9 @@ bool emu_host_file_write_byte(uint8_t byte);
 // Close host file
 // For write files, this triggers download in browser
 void emu_host_file_close_read();
-void emu_host_file_close_write();
+// Returns false if the final flush/close failed (the written file may be
+// truncated, e.g. disk full) - the last chance to detect buffered write errors
+bool emu_host_file_close_write();
 
 // Load host file data (called by JavaScript after file picker)
 // data: file contents

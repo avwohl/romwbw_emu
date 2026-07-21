@@ -18,7 +18,7 @@ cd src && make
 ./romwbw_emu --romwbw=../roms/emu_avw.rom --disk0=../disks/hd1k_combo.img
 ```
 
-At the RomWBW boot menu, press `2` to boot from disk, or `C` for CP/M from ROM.
+At the RomWBW boot menu, press `2` to boot from the first hard disk, or `C` for CP/M from ROM. Boot units 0 and 1 are the on-board RAM and ROM memory disks and carry no operating system, so typing `0` reports `No system image on disk`; the first `--disk0` image is unit 2 (additional disks are units 3, 4, ...). Press `D` at the boot menu to list disk units, `L` to list ROM applications, and `W` to save your choice as the autoboot default.
 
 ## Installation
 
@@ -66,7 +66,7 @@ The emulator supports RomWBW hard disk images in both **hd1k** (modern) and **hd
 | `hd1k_cpm22.img` | 8MB | CP/M 2.2 system disk |
 | `hd1k_zsdos.img` | 8MB | ZSDOS system disk |
 
-Download disk images from [RomWBW releases](https://github.com/wwarthen/RomWBW/releases) (in the Package.zip).
+Of these, `hd1k_combo.img` and `hd1k_infocom.img` are included in this repository under `disks/`; the others must be obtained from the RomWBW release. If downloading from RomWBW directly, use the [RomWBW v3.5.1 release](https://github.com/wwarthen/RomWBW/releases/tag/v3.5.1) Package.zip specifically: the bundled ROM and the emulator's built-in HBIOS identify as v3.5.1, and disk images from a different RomWBW release contain boot slices with a mismatched CBIOS (booting them prints a HBIOS/CBIOS version-mismatch warning). Using a newer release's disks for data files only, without booting from them, is fine.
 
 ### Disk Format Detection
 
@@ -94,6 +94,23 @@ See `docs/DISK_FORMATS.md` for details.
 - `C:` - First hard disk (--disk0)
 - `D:` - Second hard disk (--disk1)
 
+## File Transfer (R8/W8)
+
+The `R8` and `W8` CP/M utilities (sources: `src/r8.asm`, `src/w8.asm`) copy files between the host and CP/M. They talk to the emulator through HBIOS extension functions 0xE1-0xE7.
+
+**CLI:** `R8 <hostpath>` imports a host file into CP/M. The path is used as typed - relative paths resolve against the directory `romwbw_emu` was started from, and absolute paths work. CP/M's CCP uppercases the command line, so the emulator retries host paths case-insensitively (typing `R8 /home/me/file.txt` works even though CP/M delivers `/HOME/ME/FILE.TXT`). The CP/M-side name is the uppercased 8.3 basename. `W8 <cpmfile>` exports a CP/M file into the emulator's working directory with a lowercased name. Write errors at close (e.g. host disk full) are reported: `Host file close failed - file may be truncated`.
+
+**Web:** `R8` opens a browser file picker (the emulator pauses until you pick a file or cancel); `W8` triggers a browser download.
+
+```
+C>R8 /home/me/getkey.com
+C>W8 MYFILE.TXT
+```
+
+The first command imports the host file `getkey.com` as `GETKEY.COM` on the current drive; the second exports `MYFILE.TXT` as `myfile.txt` in the directory the emulator was started from.
+
+**Availability:** `r8.com` and `w8.com` are on `disks/hd1k_combo.img` (slice 0), `disks/hd1k_infocom.img`, and the web-served `hd1k_combo.img`, `hd1k_cpm22.img`, `hd1k_games.img`, and `z80cpm_tools.img`. They are not on `disks/hd1k_cpm22.img` or the ZSDOS images.
+
 ## WebAssembly Version
 
 Try RomWBW in your browser - no installation required:
@@ -101,10 +118,14 @@ Try RomWBW in your browser - no installation required:
 ```bash
 cd web && make
 # Open romwbw.html in a browser, or:
-make serve   # Start local server at http://localhost:8000
+make serve   # Start local server at http://localhost:8080
 ```
 
 Load your own ROM and disk images through the web interface.
+
+In the browser, `R8` imports files via a file picker and `W8` exports them as downloads - see [File Transfer (R8/W8)](#file-transfer-r8w8).
+
+The web UI remembers your control selections (ROM choice, disk selections, slice counts, boot string, and the "don't warn" checkboxes) in browser localStorage, so they survive page reloads; clearing the browser's site data resets them to defaults. The Debug checkbox is deliberately not persisted, and local file uploads cannot be restored by the browser, so those revert to defaults on reload.
 
 ## Building
 
@@ -128,11 +149,12 @@ make           # Requires emscripten
 - **Disks:** ROM disk, RAM disk, and file-backed hard disk images
 - **Disk Formats:** Auto-detects hd1k and hd512 RomWBW formats
 - **Console:** Full terminal emulation with escape sequences
+- **File Transfer:** R8/W8 utilities copy files between the host and CP/M (CLI paths or browser picker/download)
 - **WebAssembly:** Run RomWBW in any modern browser
 
 ## Boot Configuration
 
-The emulator supports automatic boot configuration via NVRAM. Settings persist across sessions in `~/.config/romwbw_emu/nvram.json`.
+The emulator supports automatic boot configuration via NVRAM. Settings persist across sessions in `$XDG_CONFIG_HOME/romwbw_emu/nvram` (default `~/.config/romwbw_emu/nvram`), a plain text file containing a single line such as `C` or `2.3`.
 
 ### Quick Boot Examples
 
@@ -140,10 +162,10 @@ The emulator supports automatic boot configuration via NVRAM. Settings persist a
 # Auto-boot to CP/M (ROM app 'C')
 ./romwbw_emu --romwbw=roms/emu_avw.rom --boot=C
 
-# Auto-boot from disk 0, slice 0
-./romwbw_emu --romwbw=roms/emu_avw.rom --disk0=disk.img --boot=0
+# Auto-boot from the first hard disk (unit 2), slice 0
+./romwbw_emu --romwbw=roms/emu_avw.rom --disk0=disk.img --boot=2
 
-# Auto-boot from disk 2, slice 3
+# Auto-boot unit 2 (first hard disk), slice 3
 ./romwbw_emu --romwbw=roms/emu_avw.rom --disk0=d0.img --disk1=d1.img --disk2=d2.img --boot=2.3
 
 # Show boot menu (default)
@@ -183,9 +205,11 @@ Settings configured via SYSCONF are saved automatically when the emulator exits.
 |--------|-------------|
 | `--boot=C` | Boot ROM app C (CP/M 2.2) |
 | `--boot=Z` | Boot ROM app Z (ZSDOS) |
-| `--boot=0` | Boot disk 0, slice 0 |
-| `--boot=2.3` | Boot disk 2, slice 3 |
+| `--boot=2` | Boot first hard disk (unit 2), slice 0 |
+| `--boot=2.3` | Boot unit 2 (first hard disk), slice 3 |
 | `--boot=H` | Show boot menu |
+
+Boot unit numbers: 0 = RAM disk, 1 = ROM disk, 2 and up = hard disks in `--disk0`, `--disk1`, ... order. Press `D` at the boot menu to list them.
 
 ## Command Line Options
 
@@ -194,7 +218,7 @@ Settings configured via SYSCONF are saved automatically when the emulator exits.
 
 Options:
   --romwbw=FILE     Enable RomWBW mode with ROM file
-  --boot=CMD        Auto-boot command (C, Z, 0, 2.3, H, etc.)
+  --boot=CMD        Auto-boot command (C, Z, 2, 2.3, H, etc.)
   --debug           Enable debug output
   --strict-io       Halt on unexpected I/O ports
 
@@ -207,10 +231,34 @@ Other options:
   --trace=FILE      Write execution trace
   --symbols=FILE    Load symbol table (.sym)
 
+Settings file:
+  --config=FILE     Load settings from a JSON file
+  --no-config       Ignore auto-discovered settings files
+  --save-config[=F] Write the effective settings as JSON and exit
+
 NVRAM persistence:
-  Boot settings are saved to ~/.config/romwbw_emu/nvram.json
+  NVRAM is persisted to $XDG_CONFIG_HOME/romwbw_emu/nvram (default ~/.config/romwbw_emu/nvram)
   Use SYSCONF (W at boot menu) to configure interactively.
 ```
+
+## Settings File
+
+The machine description (ROM, disks, boot command, escape char, ROM apps)
+can live in a JSON settings file instead of a long command line — an idea
+imported from the z80cpmw Windows port. Save your current command line with
+`--save-config`, then run `romwbw_emu` bare:
+
+```bash
+./romwbw_emu --romwbw=roms/emu_avw.rom --disk0=disks/hd1k_combo.img --boot=2 --save-config
+./romwbw_emu     # boots the saved machine
+```
+
+The emulator looks for `./romwbw_emu.json`, then
+`$XDG_CONFIG_HOME/romwbw_emu/config.json` (default
+`~/.config/romwbw_emu/config.json`); `--config=FILE` names a file explicitly
+and `--no-config` disables discovery. CLI flags always override file values,
+and a loaded file is announced with a `[CONFIG]` banner. See
+[docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the schema.
 
 ## Examples
 
@@ -246,7 +294,7 @@ romwbw_emu/
 
 - `docs/BOOT_CONFIGURATION.md` - Boot options, SYSCONF utility, NVRAM persistence
 - `docs/DISK_FORMATS.md` - Disk formats, SIMH compatibility, and cpmtools usage
-- `docs/ROMWBW_INTEGRATION.md` - RomWBW architecture and HBIOS details
+- `docs/ARCHITECTURE.md` - Emulator architecture and the shared C++ HBIOS implementation
 - `docs/HBIOS_Implementation_Guide.md` - How HBIOS is implemented
 - `docs/HBIOS_DATA_EXPORTS.md` - HBIOS data structures
 

@@ -447,6 +447,14 @@ void emu_console_clear_queue() {
   while (!input_queue.empty()) input_queue.pop();
 }
 
+bool emu_console_input_exhausted() {
+  return false;  // browser input can always arrive later
+}
+
+bool emu_console_input_eof() {
+  return false;
+}
+
 emu_host_file_state emu_host_file_get_state() {
   return host_file_state;
 }
@@ -488,7 +496,7 @@ void emu_host_file_close_read() {
   host_file_state = HOST_FILE_IDLE;
 }
 
-void emu_host_file_close_write() {
+bool emu_host_file_close_write() {
   if (host_file_state == HOST_FILE_WRITING && !host_write_buffer.empty()) {
     // Trigger download
     js_host_file_download(host_write_filename.c_str(),
@@ -498,6 +506,7 @@ void emu_host_file_close_write() {
   host_write_buffer.clear();
   host_write_filename.clear();
   host_file_state = HOST_FILE_IDLE;
+  return true;  // browser download cannot fail synchronously
 }
 
 void emu_host_file_provide_data(const uint8_t* data, size_t size) {

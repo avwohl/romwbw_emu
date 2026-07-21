@@ -148,10 +148,13 @@ no_high_inc:
 	jr	read_loop
 
 read_done:
-	; Close host file
+	; Close host file - A=0 on success; nonzero means the final flush
+	; failed and the host file may be truncated (e.g. disk full)
 	ld	b,H_CLOSE
 	ld	c,1
 	rst	8
+	or	a
+	jp	nz,host_close_error
 
 	; Close CP/M file
 	ld	de,cpm_fcb
@@ -224,7 +227,10 @@ tolower:
 	ret	c
 	cp	'Z'+1
 	ret	nc
-	add	a,'a'-'A'
+	; um80 0.3.42 uppercases lowercase char literals in add/adc/sbc a,<expr>
+	; operands, so 'a'-'A' assembles as 0 (a no-op). Keep the explicit 20h
+	; until um80 is fixed.
+	add	a,20h
 	ret
 
 ; Print null-terminated string at DE
@@ -370,6 +376,16 @@ host_write_error:
 	call	BDOS
 	rst	0
 
+; Host file already closed (that is what failed) - do not re-issue H_CLOSE
+host_close_error:
+	ld	de,cpm_fcb
+	ld	c,F_CLOSE
+	call	BDOS
+	ld	de,msg_host_close
+	ld	c,C_PRINT
+	call	BDOS
+	rst	0
+
 ; Messages
 msg_banner:
 	db	'W8 - Write to host filesystem',0Dh,0Ah,'$'
@@ -391,6 +407,8 @@ msg_host_err:
 	db	'Error: Cannot create host file',0Dh,0Ah,'$'
 msg_host_write:
 	db	'Error: Host write failed',0Dh,0Ah,'$'
+msg_host_close:
+	db	'Host file close failed - file may be truncated',0Dh,0Ah,'$'
 
 ; Data areas
 hostpath:

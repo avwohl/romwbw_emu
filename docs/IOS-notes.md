@@ -59,49 +59,30 @@ static constexpr size_t HD512_SINGLE_SIZE = 8519680;     // 8.32 MB
 ### Overview
 R8.COM and W8.COM are CP/M utilities for transferring files between the emulated CP/M system and the host filesystem.
 
-- **R8.COM** - Read file from host into CP/M
-- **W8.COM** - Write file from CP/M to host
+- **R8.COM** - Read file from host into CP/M (`R8 <hostpath>`)
+- **W8.COM** - Write file from CP/M to host (`W8 <cpmfile>`)
+
+Z80 sources: `src/r8.asm`, `src/w8.asm`.
 
 ### HBIOS Functions Used
 
-These utilities use HBIOS function 0xF8 (BF_SYSINT) with subfunctions:
+The utilities call custom HBIOS extension functions 0xE1-0xE7 using the standard RomWBW calling convention (function code in B, invoked via `rst 8` in the guest). Source of truth: the enum in `src/hbios_dispatch.h` and the dispatch cases in `src/hbios_dispatch.cc`. The dispatcher does the actual host I/O through the `emu_host_file_*` platform API declared in `src/emu_io.h` (implemented per platform in `emu_io_cli.cc`, `emu_io_wasm.cc`, and downstream `emu_io_windows.cpp`).
 
-| Subfunction | Name | Description |
-|-------------|------|-------------|
-| 0x00 | INTINF | Get emulator info |
-| 0x01 | INTGET | Read file from host |
-| 0x02 | INTPUT | Write file to host |
-| 0x03 | INTGETB | Read binary from host |
-| 0x04 | INTPUTB | Write binary to host |
+- **HBF_HOST_OPEN_R (0xE1)** - Open host file for reading. DE = address of a null-terminated path string in guest memory. Returns A = 0 on success, 0xFF on failure.
+- **HBF_HOST_OPEN_W (0xE2)** - Open host file for writing. DE = address of a null-terminated path string. Returns A = 0 on success, 0xFF on failure.
+- **HBF_HOST_READ (0xE3)** - Read one byte. Returns E = byte with A = 0, or A = 0xFF on EOF or error. In the browser build this call now pauses the guest until the file picker resolves, by rewinding PC and retrying until the file is provided or the picker is cancelled (new in v1.34; before that R8 saw an instant EOF and imported 0-byte files).
+- **HBF_HOST_WRITE (0xE4)** - Write one byte. E = byte to write. Returns A = 0 on success, 0xFF on failure.
+- **HBF_HOST_CLOSE (0xE5)** - Close host file. C = 0 closes the read file, C = 1 closes the write file. Returns A = 0 on success; closing the write file now returns A = 0xFF if the host-side flush failed, meaning the written file may be truncated, e.g. host disk full (new in v1.34 - `emu_host_file_close_write()` returns bool).
+- **HBF_HOST_MODE (0xE6)** - Get/set transfer mode. C = 0 get (returns E = mode), C = 1 set (E = mode: 0=auto, 1=text, 2=binary). The mode is stored and reported but transfers are currently always raw bytes.
+- **HBF_HOST_GETARG (0xE7)** - Get command-line argument by index. C = argument index (0 = first argument), DE = buffer address; the argument is copied null-terminated. Returns A = 0 on success, 0xFF if no such argument. Only useful if the embedding platform calls `setHostCmdLine()`; R8/W8 do not use it - R8 parses the CP/M command tail at 0080h itself, and W8 takes its filename from the CCP-parsed default FCB at 005Ch.
 
-### Implementation Required
+### Where host files land per platform
 
-The emulator needs to handle BF_SYSINT (0xF8) calls:
+- **CLI (Linux/macOS)** - Plain `fopen`. Bare filenames are relative to the directory the emulator was started from; absolute paths are used verbatim. CP/M's CCP uppercases the whole command tail before R8 sees it, so when an exact-case open fails the CLI retries the path case-insensitively (`resolve_path_case_insensitive` in `src/emu_io_cli.cc`, new in v1.34). W8 exports files with lowercase names.
+- **WASM (browser)** - Opening for read triggers the browser file picker; the guest-supplied name is advisory only. Opening for write accumulates bytes in memory, and close triggers a browser download (`src/emu_io_wasm.cc`).
+- **Windows (z80cpmw port)** - Bare filenames are placed in the app's data folder; absolute paths (drive-letter, UNC, or rooted) are used verbatim (`resolveHostPath` in `emu_io_windows.cpp`). In MSIX/Store packaged builds the OS redirects the data folder into the package's `LocalCache` directory.
 
-```cpp
-case 0xF8: {  // BF_SYSINT - System integration
-    uint8_t subfunc = cpu.c();
-    switch (subfunc) {
-        case 0x00:  // INTINF - Return emulator info
-            // HL = version, DE = capabilities
-            break;
-        case 0x01:  // INTGET - Read text file from host
-            // DE = filename buffer (null-terminated)
-            // HL = destination buffer
-            // BC = max length
-            // Returns: A=0 success, HL=bytes read
-            break;
-        case 0x02:  // INTPUT - Write text file to host
-            // DE = filename buffer
-            // HL = source buffer
-            // BC = length
-            // Returns: A=0 success
-            break;
-        // ... similar for binary variants
-    }
-    break;
-}
-```
+Footnote: each backend has a fallback name for a null write filename ("output.bin" CLI, "download.bin" WASM, "export.txt" Windows), but the path is effectively unreachable - the dispatcher always passes a string and W8 rejects a missing argument.
 
 ## Disk Images
 
@@ -116,11 +97,27 @@ case 0xF8: {  // BF_SYSINT - System integration
 - Source: `disks/hd1k_combo.img`
 - Web deploy: `~/www/romwbw1/hd1k_combo.img`
 
-### Adding Files to Combo Disk
-Use `src/add_to_combo.py` (cpmtools doesn't support combo disk offset):
+### Adding Files to Disk Images
+Use cpmtools with the RomWBW diskdefs. `DISKDEFS` must point at a diskdefs file containing the `wbw_*` formats:
 
 ```bash
-python3 src/add_to_combo.py disks/hd1k_combo.img file1.com file2.com
+export DISKDEFS="$HOME/esrc/RomWBW-v3.5.1/Tools/cpmtools/diskdefs"
+
+# Single-slice hd1k image
+cpmrm -f wbw_hd1k disks/hd1k_utils.img 0:oldfile.com
+cpmcp -f wbw_hd1k disks/hd1k_utils.img file1.com file2.com 0:
+
+# Combo image: the RomWBW diskdefs include slice-offset variants
+# (wbw_hd1k_0 = slice 0 after the 1MB prefix, wbw_hd1k_1, ...)
+cpmcp -f wbw_hd1k_0 disks/hd1k_combo.img file1.com 0:
+```
+
+If your diskdefs file lacks the slice-offset variants, extract slice 0 (it starts at the 1MB mark, after the MBR prefix) with dd, patch it, and write it back in place:
+
+```bash
+dd if=disks/hd1k_combo.img of=slice0.img bs=1M skip=1 count=8
+cpmcp -f wbw_hd1k slice0.img file1.com 0:
+dd if=slice0.img of=disks/hd1k_combo.img bs=1M seek=1 conv=notrunc
 ```
 
 ## GitHub Release (avwohl/ioscpm)
@@ -154,10 +151,11 @@ gh release create v1.2 --repo avwohl/ioscpm --title "v1.2" hd1k_combo.img disks.
 
 ### Adding Files to Combo Disk
 
-Use the Python script (cpmtools doesn't support combo disk offset):
+Use cpmtools with the RomWBW diskdefs - see "Adding Files to Disk Images" above. For slice 0 of a combo image:
 
 ```bash
-python3 src/add_to_combo.py disks/hd1k_combo.img r8.com w8.com
+export DISKDEFS="$HOME/esrc/RomWBW-v3.5.1/Tools/cpmtools/diskdefs"
+cpmcp -f wbw_hd1k_0 disks/hd1k_combo.img r8.com w8.com 0:
 ```
 
 ## Reference Files
@@ -170,4 +168,3 @@ python3 src/add_to_combo.py disks/hd1k_combo.img r8.com w8.com
 - `src/emu_init.cc` - Shared initialization
 - `docs/DISK_FORMATS.md` - Detailed disk format documentation
 - `src/r8.asm`, `src/w8.asm` - Z80 source for file transfer utilities
-- `src/add_to_combo.py` - Python script to add files to combo disks

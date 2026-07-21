@@ -8,9 +8,11 @@
  * Console escape: Ctrl+E (configurable)
  */
 
-// Version info
-#define EMU_VERSION "1.33"
-#define EMU_VERSION_DATE "2026-07-13"
+// Version info - normally injected from the top-level VERSION file by the
+// makefile (-DEMU_VERSION=...); the fallback covers builds outside make
+#ifndef EMU_VERSION
+#define EMU_VERSION "dev"
+#endif
 
 #include "qkz80.h"
 #include "romwbw_mem.h"
@@ -18,6 +20,7 @@
 #include "hbios_cpu.h"       // Shared CPU with HBIOS port I/O
 #include "emu_io.h"
 #include "emu_init.h"        // Shared initialization functions
+#include "emu_config.h"      // Optional JSON settings file
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -38,6 +41,9 @@
 #include <string>
 #include <random>
 
+// Build date from version.cc (recompiled on every relink)
+extern const char* emu_build_date;
+
 // Global for signal handler to request stop
 static volatile bool stop_requested = false;
 
@@ -45,13 +51,36 @@ static volatile bool stop_requested = false;
 // NVRAM Persistence
 //=============================================================================
 
-// Get default NVRAM path: ~/.config/romwbw_emu/nvram
+// Per-user config directory, following the XDG base directory spec:
+// $XDG_CONFIG_HOME/romwbw_emu if XDG_CONFIG_HOME is set (must be absolute),
+// otherwise ~/.config/romwbw_emu. Falls back to "." if HOME is unset.
+static std::string get_config_dir() {
+  const char* xdg = getenv("XDG_CONFIG_HOME");
+  std::string base;
+  if (xdg && xdg[0] == '/') {
+    base = xdg;
+  } else {
+    const char* home = getenv("HOME");
+    if (!home) home = ".";
+    base = std::string(home) + "/.config";
+  }
+  mkdir(base.c_str(), 0755);  // ensure parent exists (EEXIST is fine)
+  std::string dir = base + "/romwbw_emu";
+  mkdir(dir.c_str(), 0755);
+  return dir;
+}
+
+// Get default NVRAM path
 static std::string get_nvram_path() {
+  return get_config_dir() + "/nvram";
+}
+
+// Legacy NVRAM location (pre-XDG_CONFIG_HOME support): always ~/.config.
+// Used as a read fallback so an existing setting migrates on first save.
+static std::string get_legacy_nvram_path() {
   const char* home = getenv("HOME");
   if (!home) home = ".";
-  std::string dir = std::string(home) + "/.config/romwbw_emu";
-  mkdir(dir.c_str(), 0755);
-  return dir + "/nvram";
+  return std::string(home) + "/.config/romwbw_emu/nvram";
 }
 
 // Load NVRAM setting from file (just a printable string like "C" or "0.2")
@@ -121,6 +150,24 @@ static bool waiting_for_int_delivery = false;
 // Console mode escape character (default ^E like SIMH)
 static char console_escape_char = 0x05;  // Ctrl+E
 static bool console_mode_requested = false;
+
+// Parse an escape-character spec: "^X" for a control char, or a literal
+// character. Used by --escape and the config file's "escape" key.
+static bool parse_escape_char(const char* esc, char* out) {
+  if (esc[0] == '^' && esc[1] != '\0') {
+    char c = toupper(esc[1]);
+    if (c >= '@' && c <= '_') {
+      *out = c - '@';
+      return true;
+    }
+    return false;
+  }
+  if (esc[0] != '\0') {
+    *out = esc[0];
+    return true;
+  }
+  return false;
+}
 
 // Check for escape character (non-blocking) - called periodically from main loop
 static bool check_console_escape_async() {
@@ -706,7 +753,7 @@ public:
 // Disk size constants and MBR checking are now in emu_init.h/emu_init.cc
 
 void print_usage(const char* prog) {
-  fprintf(stderr, "RomWBW Emulator v%s (%s)\n", EMU_VERSION, EMU_VERSION_DATE);
+  fprintf(stderr, "RomWBW Emulator v%s (built %s)\n", EMU_VERSION, emu_build_date);
   fprintf(stderr, "Usage: %s --romwbw=<rom.rom> [options]\n", prog);
   fprintf(stderr, "\n");
   fprintf(stderr, "Options:\n");
@@ -719,8 +766,19 @@ void print_usage(const char* prog) {
   fprintf(stderr, "  --boot=CMD        Auto-boot with command (e.g., C, 2, 2.3)\n");
   fprintf(stderr, "                    Overrides persisted NVRAM settings\n");
   fprintf(stderr, "\n");
-  fprintf(stderr, "  NVRAM is persisted to ~/.config/romwbw_emu/nvram\n");
+  fprintf(stderr, "  NVRAM is persisted to $XDG_CONFIG_HOME/romwbw_emu/nvram (default ~/.config/romwbw_emu/nvram)\n");
   fprintf(stderr, "  Use 'W' at boot menu to configure via SYSCONF utility.\n");
+  fprintf(stderr, "\n");
+  fprintf(stderr, "File transfer (run inside CP/M):\n");
+  fprintf(stderr, "  R8 <hostpath>     Import host file (path relative to emulator CWD, or absolute)\n");
+  fprintf(stderr, "  W8 <cpmfile>      Export CP/M file to emulator CWD (lowercased name)\n");
+  fprintf(stderr, "\n");
+  fprintf(stderr, "Settings file (JSON; CLI flags always override):\n");
+  fprintf(stderr, "  --config=FILE     Load settings from FILE (missing/malformed = error)\n");
+  fprintf(stderr, "  --no-config       Ignore ./romwbw_emu.json and the config-dir file\n");
+  fprintf(stderr, "  --save-config[=F] Write the effective settings to F (default ./romwbw_emu.json) and exit\n");
+  fprintf(stderr, "  Searched automatically: ./romwbw_emu.json, then $XDG_CONFIG_HOME/romwbw_emu/config.json\n");
+  fprintf(stderr, "  (default ~/.config/romwbw_emu/config.json). See docs/CONFIGURATION.md.\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Disk options:\n");
   fprintf(stderr, "  --disk0=FILE      Attach disk image to slot 0\n");
@@ -749,11 +807,6 @@ void print_usage(const char* prog) {
 }
 
 int main(int argc, char** argv) {
-  if (argc < 2) {
-    print_usage(argv[0]);
-    return 1;
-  }
-
   // Parse arguments
   const char* binary = nullptr;
   uint16_t load_addr = 0x0000;
@@ -776,15 +829,106 @@ int main(int argc, char** argv) {
   };
   std::vector<RomAppDef> rom_app_defs;
 
+  // Settings file: pre-scan for the options that must act before the main
+  // argv loop (the loop itself treats them as no-ops)
+  std::string cli_config_path;   // from --config= only
+  std::string config_path;       // whichever file actually loaded
+  bool no_config = false;
+  bool save_config = false;
+  std::string save_config_path;
   for (int i = 1; i < argc; i++) {
-    if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-v") == 0) {
-      fprintf(stderr, "RomWBW Emulator v%s (%s)\n", EMU_VERSION, EMU_VERSION_DATE);
-      fprintf(stderr, "Emulates RomWBW with HBIOS, boots CP/M/ZSDOS from ROM disk\n");
-      return 0;
+    if (strncmp(argv[i], "--config=", 9) == 0) {
+      cli_config_path = argv[i] + 9;
+    } else if (strcmp(argv[i], "--no-config") == 0) {
+      no_config = true;
+    } else if (strcmp(argv[i], "--save-config") == 0) {
+      save_config = true;
+    } else if (strncmp(argv[i], "--save-config=", 14) == 0) {
+      save_config = true;
+      save_config_path = argv[i] + 14;
     } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+      // Informational flags must work even with a malformed config in cwd
       print_usage(argv[0]);
       return 0;
-    } else if (strcmp(argv[i], "--debug") == 0) {
+    } else if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-v") == 0) {
+      fprintf(stderr, "RomWBW Emulator v%s (built %s)\n", EMU_VERSION, emu_build_date);
+      fprintf(stderr, "Emulates RomWBW with HBIOS, boots CP/M/ZSDOS from ROM disk\n");
+      return 0;
+    }
+  }
+
+  // Load the settings file. A malformed or missing explicit file is a hard
+  // error - a silently-ignored config could boot the wrong disks.
+  EmuConfig file_cfg;
+  bool have_config = false;
+  if (!cli_config_path.empty()) {
+    std::string cfg_err;
+    if (!emu_config_load(cli_config_path, file_cfg, cfg_err)) {
+      fprintf(stderr, "Error: --config=%s: %s\n", cli_config_path.c_str(), cfg_err.c_str());
+      return 1;
+    }
+    config_path = cli_config_path;
+    have_config = true;
+  } else if (!no_config) {
+    std::string found = emu_config_discover(get_config_dir());
+    if (!found.empty()) {
+      std::string cfg_err;
+      if (!emu_config_load(found, file_cfg, cfg_err)) {
+        fprintf(stderr, "Error: config %s: %s\n", found.c_str(), cfg_err.c_str());
+        return 1;
+      }
+      config_path = found;
+      have_config = true;
+    }
+  }
+  if (have_config) {
+    fprintf(stderr, "[CONFIG] Loaded %s (--no-config to ignore)\n", config_path.c_str());
+  }
+
+  // No arguments and no config supplying a ROM: show usage (a config file
+  // makes a bare "romwbw_emu" a valid, fully-described invocation)
+  if (argc < 2 && file_cfg.rom.empty()) {
+    print_usage(argv[0]);
+    return 1;
+  }
+
+  // Apply the file first; the argv loop below runs after and naturally
+  // overrides (defaults < file < CLI). Config-sourced disks and escape are
+  // validated only AFTER the merge - a stale config value must not be fatal
+  // when the command line overrides it.
+  bool disk_from_config[16] = {};
+  bool cli_escape_set = false;
+  if (have_config) {
+    if (!file_cfg.rom.empty()) binary = file_cfg.rom.c_str();
+    if (!file_cfg.boot.empty()) boot_string = file_cfg.boot;
+    if (!file_cfg.symbols.empty()) symbols_file = file_cfg.symbols;
+    if (!file_cfg.romldr.empty()) romldr_path = file_cfg.romldr;
+    if (file_cfg.debug) debug = true;
+    if (file_cfg.strictIo) strict_io_mode = true;
+    for (int u = 0; u < 16; u++) {
+      if (file_cfg.disks[u].empty()) continue;
+      hbios_disks[u] = file_cfg.disks[u];
+      disk_from_config[u] = true;
+    }
+    for (const EmuConfig::RomApp& a : file_cfg.romapps) {
+      RomAppDef def;
+      def.key = a.key;
+      def.path = a.path;
+      if (!a.name.empty()) {
+        def.name = a.name;
+      } else if (a.key == 'C') def.name = "CP/M 2.2";
+      else if (a.key == 'Z') def.name = "ZSDOS";
+      else if (a.key == 'Q') def.name = "QPM";
+      else if (a.key == 'P') def.name = "CP/M 3";
+      else def.name = std::string(1, a.key) + " Application";
+      rom_app_defs.push_back(def);
+    }
+  }
+
+  for (int i = 1; i < argc; i++) {
+    // --version/-v and --help/-h are handled by the pre-scan above (they
+    // must work even when a malformed config file sits in the cwd)
+    if (strcmp(argv[i], "--debug") == 0) {
       debug = true;
     } else if (strncmp(argv[i], "--romwbw=", 9) == 0) {
       binary = argv[i] + 9;
@@ -819,6 +963,7 @@ int main(int argc, char** argv) {
           return 1;
         }
         hbios_disks[unit] = path_str;
+        disk_from_config[unit] = false;  // CLI overrode any config value
         fprintf(stderr, "[DISK] Validated disk%d: %s (%zu bytes)\n", unit, path_str.c_str(), disk_size);
       } else {
         fprintf(stderr, "Invalid --disk option: %s (use --disk0=file or --disk1=file)\n", argv[i]);
@@ -873,19 +1018,18 @@ int main(int argc, char** argv) {
     } else if (strncmp(argv[i], "--escape=", 9) == 0) {
       // Parse escape character: ^X for control chars, or literal char
       const char* esc = argv[i] + 9;
-      if (esc[0] == '^' && esc[1] != '\0') {
-        // ^X format - convert to control character
-        char c = toupper(esc[1]);
-        if (c >= '@' && c <= '_') {
-          console_escape_char = c - '@';
-        } else {
+      if (esc[0] != '\0') {
+        if (!parse_escape_char(esc, &console_escape_char)) {
           fprintf(stderr, "Invalid escape char: %s (use ^A through ^_)\n", esc);
           return 1;
         }
-      } else if (esc[0] != '\0') {
-        // Literal character
-        console_escape_char = esc[0];
+        cli_escape_set = true;
       }
+    } else if (strncmp(argv[i], "--config=", 9) == 0 ||
+               strcmp(argv[i], "--no-config") == 0 ||
+               strcmp(argv[i], "--save-config") == 0 ||
+               strncmp(argv[i], "--save-config=", 14) == 0) {
+      // Already handled by the pre-scan above
     } else if (strcmp(argv[i], "--mask-interrupt") == 0) {
       // Parse: --mask-interrupt 4000-4500 rst 7
       //    or: --mask-interrupt 5000-6000 call 0x0100
@@ -963,6 +1107,79 @@ int main(int argc, char** argv) {
     }
   }
 
+  // Post-merge validation of config-sourced values that the CLI did not
+  // override (CLI values were validated inline as they were parsed)
+  if (!cli_escape_set && have_config && !file_cfg.escape.empty() &&
+      !parse_escape_char(file_cfg.escape.c_str(), &console_escape_char)) {
+    fprintf(stderr, "Error: config %s: invalid \"escape\" value '%s' (use ^A through ^_ or a literal)\n",
+            config_path.c_str(), file_cfg.escape.c_str());
+    return 1;
+  }
+  for (int u = 0; u < 16; u++) {
+    if (!disk_from_config[u] || hbios_disks[u].empty()) continue;
+    size_t disk_size = 0;
+    const char* err = emu_validate_disk_image(hbios_disks[u].c_str(), &disk_size);
+    if (err) {
+      fprintf(stderr, "Error: config disk%d: %s: %s\n", u, hbios_disks[u].c_str(), err);
+      return 1;
+    }
+    fprintf(stderr, "[DISK] Validated disk%d: %s (%zu bytes)\n", u, hbios_disks[u].c_str(), disk_size);
+  }
+
+  // Merge romapps by key: config entries were added first, CLI entries after,
+  // so on a duplicate key the latest (highest-index = CLI) definition wins.
+  // Copy only the first match of the downward scan; later matches in the scan
+  // are older definitions and are just dropped.
+  for (size_t i = 0; i < rom_app_defs.size(); i++) {
+    bool copied = false;
+    for (size_t k = rom_app_defs.size(); k-- > i + 1; ) {
+      if (rom_app_defs[k].key == rom_app_defs[i].key) {
+        if (!copied) {
+          rom_app_defs[i] = rom_app_defs[k];
+          copied = true;
+        }
+        rom_app_defs.erase(rom_app_defs.begin() + k);
+      }
+    }
+  }
+
+  // --save-config: write the effective machine description and exit.
+  // Everything is validated by this point (disks checked, escape parsed).
+  if (save_config) {
+    EmuConfig eff;
+    if (binary) eff.rom = binary;
+    eff.boot = boot_string;  // non-empty only if --boot/config set it (NVRAM loads later)
+    if (console_escape_char >= 0 && console_escape_char < 0x20) {
+      eff.escape = std::string("^") + (char)('@' + console_escape_char);
+    } else {
+      eff.escape = std::string(1, console_escape_char);
+    }
+    eff.symbols = symbols_file;
+    eff.romldr = romldr_path;
+    eff.debug = debug;
+    eff.strictIo = strict_io_mode;
+    for (int u = 0; u < 16; u++) eff.disks[u] = hbios_disks[u];
+    for (const RomAppDef& d : rom_app_defs) {
+      EmuConfig::RomApp a;
+      a.key = d.key;
+      a.name = d.name;
+      a.path = d.path;
+      eff.romapps.push_back(a);
+    }
+    // Target: explicit --save-config=FILE, else the --config file, else
+    // ./romwbw_emu.json - never a discovered XDG path
+    std::string target = !save_config_path.empty() ? save_config_path
+                       : !cli_config_path.empty()  ? cli_config_path
+                       : "romwbw_emu.json";
+    std::string save_err;
+    if (!emu_config_save(target, eff, save_err)) {
+      fprintf(stderr, "Error: --save-config: %s\n", save_err.c_str());
+      return 1;
+    }
+    fprintf(stderr, "Saved config to %s\n", target.c_str());
+    return 0;
+  }
+
   if (!binary) {
     fprintf(stderr, "Error: No binary file specified\n");
     return 1;
@@ -981,6 +1198,7 @@ int main(int argc, char** argv) {
   fprintf(stderr, "CPU mode: Z80\n");
   memory.enable_banking();
   memory.set_debug(debug);
+  emu_set_debug(debug);  // gate emu_log() internal traces on --debug
   fprintf(stderr, "RomWBW mode: 512KB ROM + 512KB RAM, bank switching enabled\n");
 
   // Create emulator (sets cpu.delegate in constructor)
@@ -1019,12 +1237,24 @@ int main(int argc, char** argv) {
     emu.getHBIOS()->addRomApp(def.name, def.path, def.key);
   }
 
-  // Load persisted NVRAM from ~/.config/romwbw_emu/nvram
+  // Load persisted NVRAM from the config dir (XDG-aware; see get_config_dir)
   std::string nvram_path = get_nvram_path();
+  std::string nvram_loaded_from = nvram_path;
   std::string loaded_setting = load_nvram_setting(nvram_path);
+  if (loaded_setting.empty()) {
+    // Migration: a setting saved before XDG_CONFIG_HOME support lives in
+    // ~/.config; read it here, saves go to the new path at exit
+    std::string legacy = get_legacy_nvram_path();
+    if (legacy != nvram_path) {
+      loaded_setting = load_nvram_setting(legacy);
+      if (!loaded_setting.empty()) nvram_loaded_from = legacy;
+    }
+  }
   if (!loaded_setting.empty()) {
     emu.getHBIOS()->setNvramSetting(loaded_setting);
-    fprintf(stderr, "Loaded NVRAM setting '%s' from %s\n", loaded_setting.c_str(), nvram_path.c_str());
+    fprintf(stderr, "Loaded NVRAM setting '%s' from %s%s\n", loaded_setting.c_str(),
+            nvram_loaded_from.c_str(),
+            nvram_loaded_from != nvram_path ? " (migrates to the new path on exit)" : "");
   }
 
   // Configure NVRAM boot option if specified (overrides persisted settings)
@@ -1100,8 +1330,24 @@ int main(int argc, char** argv) {
     (void)sig;
     stop_requested = true;
   };
-  signal(SIGINT, signal_handler);
-  signal(SIGTERM, signal_handler);
+  // Use sigaction with sa_flags=0 (no SA_RESTART): a handler must interrupt
+  // the blocking read/select on stdin so the main loop can observe
+  // stop_requested - glibc signal() installs SA_RESTART, which silently
+  // restarts the read and makes SIGHUP/SIGTERM unkillable on a piped stdin
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_handler = signal_handler;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = 0;
+  sigaction(SIGINT, &sa, nullptr);
+  sigaction(SIGTERM, &sa, nullptr);
+  // Terminal close: exit through end of main so NVRAM and the trace file are
+  // saved; keep SIG_IGN if started under nohup
+  struct sigaction old_hup;
+  sigaction(SIGHUP, nullptr, &old_hup);
+  if (old_hup.sa_handler != SIG_IGN) {
+    sigaction(SIGHUP, &sa, nullptr);
+  }
 
   // Initialize interrupt triggers
   if (maskable_int_config.enabled) {
@@ -1187,6 +1433,18 @@ int main(int argc, char** argv) {
 
     // Poll stdin and queue input to HBIOSDispatch
     emu.poll_stdin();
+
+    // Piped stdin at EOF: no input can ever arrive, so wind down through
+    // end of main (NVRAM/trace still get written) instead of spinning in
+    // the guest's console poll loop forever. Two triggers: the guest read
+    // past EOF (blocking CIOIN), or the guest is only *polling* status
+    // (e.g. the romldr boot menu) - console-idle plus EOF means it waits
+    // for input that can never come. isConsoleIdle resets on every CIOOUT,
+    // so a guest that is still producing output is never cut off.
+    if (emu_console_input_exhausted() ||
+        (emu_console_input_eof() && emu.getHBIOS()->isConsoleIdle())) {
+      stop_requested = true;
+    }
 
     // Flush output from HBIOSDispatch to stdout
     emu.flush_output();

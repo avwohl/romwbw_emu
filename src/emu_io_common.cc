@@ -46,10 +46,14 @@ size_t emu_file_load_to_mem(const std::string& path, uint8_t* mem,
   size_t file_size = ftell(f);
   fseek(f, 0, SEEK_SET);
 
-  size_t to_read = file_size;
-  if (offset + to_read > mem_size) {
-    to_read = mem_size - offset;
+  // Guard before subtracting: offset past mem_size would underflow, and a
+  // failed ftell makes file_size (size_t)-1, so clamp to the space available.
+  if (offset >= mem_size) {
+    fclose(f);
+    return 0;
   }
+  size_t avail = mem_size - offset;
+  size_t to_read = (file_size < avail) ? file_size : avail;
 
   size_t read = fread(mem + offset, 1, to_read, f);
   fclose(f);

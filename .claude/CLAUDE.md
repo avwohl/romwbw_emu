@@ -60,7 +60,10 @@ Key points:
 
 **cpmtools setup:**
 ```bash
-export DISKDEFS="$HOME/esrc/RomWBW-v3.5.1/Tools/cpmtools/diskdefs"
-cpmls -f wbw_hd1k disk.img      # single slice
-cpmls -f wbw_hd1k_0 combo.img   # slice 0 of combo disk
+export DISKDEFS=/etc/cpmtools/diskdefs   # has wbw_hd1k (no wbw_hd1k_0 def)
+cpmls -f wbw_hd1k disk.img               # single slice
+# combo disks: no wbw_hd1k_0 def in /etc diskdefs - extract slice 0 instead:
+dd if=combo.img bs=1M skip=1 count=8 of=slice0.img
+cpmls -f wbw_hd1k slice0.img
+dd if=slice0.img of=combo.img bs=1M seek=1 conv=notrunc   # write back
 ```

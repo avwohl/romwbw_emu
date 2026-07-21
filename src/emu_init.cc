@@ -107,6 +107,13 @@ bool emu_load_romldr_rom(banked_mem* memory, const char* path) {
   long file_size = ftell(fp);
   fseek(fp, 0, SEEK_SET);
 
+  if (file_size <= 0 || file_size > (long)banked_mem::ROM_SIZE) {
+    emu_error("[EMU_INIT] Invalid romldr ROM size: %ld (max %zu bytes)\n",
+              file_size, (size_t)banked_mem::ROM_SIZE);
+    fclose(fp);
+    return false;
+  }
+
   uint8_t* rom = memory->get_rom();
   if (!rom) {
     fclose(fp);
@@ -121,8 +128,14 @@ bool emu_load_romldr_rom(banked_mem* memory, const char* path) {
   size_t bytes_read = fread(rom, 1, file_size, fp);
   fclose(fp);
 
-  // Restore bank 0 with our emu_hbios code
+  // Restore bank 0 with our emu_hbios code (before any error return, so
+  // emu_hbios is intact either way)
   memcpy(rom, bank0_save, banked_mem::BANK_SIZE);
+
+  if (bytes_read != (size_t)file_size) {
+    emu_error("[EMU_INIT] romldr ROM read incomplete\n");
+    return false;
+  }
 
   emu_log("[EMU_INIT] Loaded %zu bytes romldr (banks 1-15 from %s)\n", bytes_read, path);
   emu_log("[EMU_INIT] Bank 0 preserved (emu_hbios)\n");
@@ -457,7 +470,7 @@ const char* emu_validate_disk_image(const char* path, size_t* out_size) {
     // Check MBR for potential issues with single-slice images
     const char* mbr_warning = emu_check_disk_mbr_file(path, size);
     if (mbr_warning) {
-      emu_log("[DISK] %s: %s\n", path, mbr_warning);
+      emu_error("[DISK] %s: %s\n", path, mbr_warning);
     }
     return nullptr;  // Valid size: single-slice hd1k (8MB)
   }

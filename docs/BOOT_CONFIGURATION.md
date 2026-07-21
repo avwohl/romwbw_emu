@@ -11,7 +11,7 @@ The emulator supports RomWBW's boot configuration system via emulated RTC NVRAM.
 2. **SYSCONF utility** (`W` at boot menu) - Interactive configuration
 3. **Programmatic API** (`setNvramSetting()`) - For GUI apps
 
-Settings persist across sessions in `~/.config/romwbw_emu/nvram`.
+Settings persist across sessions in `$XDG_CONFIG_HOME/romwbw_emu/nvram` (default `~/.config/romwbw_emu/nvram`); `XDG_CONFIG_HOME` support is new in v1.34.
 
 ## Quick Start
 
@@ -21,11 +21,11 @@ Settings persist across sessions in `~/.config/romwbw_emu/nvram`.
 # Auto-boot CP/M from ROM
 ./romwbw_emu --romwbw=roms/emu_avw.rom --boot=C
 
-# Auto-boot from disk 0, slice 0
-./romwbw_emu --romwbw=roms/emu_avw.rom --disk0=disk.img --boot=0
+# Auto-boot from the first hard disk (unit 2), slice 0
+./romwbw_emu --romwbw=roms/emu_avw.rom --disk0=disk.img --boot=2
 
-# Auto-boot from disk 2, slice 3
-./romwbw_emu --romwbw=roms/emu_avw.rom --disk2=disk.img --boot=2.3
+# Auto-boot from the first hard disk (unit 2), slice 3
+./romwbw_emu --romwbw=roms/emu_avw.rom --disk0=disk.img --boot=2.3
 
 # Show boot menu (no auto-boot)
 ./romwbw_emu --romwbw=roms/emu_avw.rom --boot=H
@@ -39,8 +39,10 @@ Settings persist across sessions in `~/.config/romwbw_emu/nvram`.
 | `Z` | Boot ROM app Z (ZSDOS) |
 | `B` | Boot ROM app B (BASIC) |
 | `H` | Show help menu |
-| `0` | Boot disk unit 0, slice 0 |
+| `2` | Boot disk unit 2 (first hard disk), slice 0 |
 | `2.3` | Boot disk unit 2, slice 3 |
+
+Boot unit numbering: unit 0 is the RAM disk and unit 1 is the ROM disk - neither contains a bootable OS, so booting `0` reports "No system image on disk". Hard disks are units 2 and up in `--disk0`..`--disk15` order (`--disk0` = unit 2). Press `D` at the boot menu to list the disk units.
 
 ## Using SYSCONF (Interactive)
 
@@ -109,17 +111,19 @@ $ Q
 
 ### File Location
 
-`~/.config/romwbw_emu/nvram`
+`$XDG_CONFIG_HOME/romwbw_emu/nvram` if `XDG_CONFIG_HOME` is set (it must be an absolute path), otherwise `~/.config/romwbw_emu/nvram`.
+
+`XDG_CONFIG_HOME` support is new in v1.34; a setting saved by an older version in `~/.config/romwbw_emu/nvram` is still picked up when the new location is empty, and migrates to the new location on the next clean exit.
 
 ### File Format
 
-The NVRAM file is a plain text file containing the boot setting string. For example:
+The NVRAM file is a plain text file containing a single line with the boot setting string. For example:
 
 ```
 C
 ```
 
-Valid contents include any boot format string such as `C`, `Z`, `H`, `0`, `2.3`, etc.
+Valid contents include any boot format string such as `C`, `Z`, `H`, `2`, `2.3`, etc.
 See the Boot Format Reference table above for the full list.
 
 ### Manual Editing
@@ -165,7 +169,8 @@ Picker("Boot Device", selection: $bootSelection) {
     Text("CP/M 2.2").tag("C")
     Text("ZSDOS").tag("Z")
     ForEach(0..<diskCount, id: \.self) { disk in
-        Text("Disk \(disk)").tag("\(disk)")
+        // Hard disks are boot units 2+ (units 0/1 are the RAM/ROM disks)
+        Text("Disk \(disk)").tag("\(disk + 2)")
     }
 }
 .onChange(of: bootSelection) { newValue in
@@ -213,7 +218,7 @@ This shouldn't happen anymore. If it does, check that:
 
 ### Boot Settings Not Persisting
 
-- Check that `~/.config/romwbw_emu/` directory exists
+- Check that the config directory exists (`$XDG_CONFIG_HOME/romwbw_emu`, default `~/.config/romwbw_emu`)
 - Check file permissions on `nvram`
 - Ensure emulator exits cleanly (not killed with SIGKILL)
 

@@ -15,7 +15,9 @@
 #include <random>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <termios.h>
+#include <sys/ioctl.h>
 #include <sys/select.h>
 
 //=============================================================================
@@ -31,6 +33,8 @@ static std::queue<int> input_queue;
 
 // EOF tracking
 static bool stdin_eof = false;
+static bool stdin_eof_consumed = false;  // guest read past EOF (see read_char)
+static bool stdin_is_tty = false;  // set in emu_io_init()
 static int peek_char = -1;
 
 // Escape handling - set by escape check, used by blocking read
@@ -86,8 +90,10 @@ static void restore_terminal() {
 //=============================================================================
 
 void emu_io_init() {
+  stdin_is_tty = isatty(STDIN_FILENO);
+
   // Save original terminal settings if we're a TTY
-  if (isatty(STDIN_FILENO)) {
+  if (stdin_is_tty) {
     if (!termios_saved) {
       tcgetattr(STDIN_FILENO, &original_termios);
       termios_saved = true;
@@ -108,6 +114,21 @@ void emu_io_init() {
     raw.c_cc[VTIME] = 0;
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
     raw_mode_enabled = true;
+
+    // One-time check: CP/M full-screen programs assume at least 80x24.
+    // emu_io_init() is re-invoked by the sim> debugger's cooked-mode toggle,
+    // so warn only once per process.
+    static bool size_warned = false;
+    if (!size_warned && isatty(STDOUT_FILENO)) {
+      size_warned = true;
+      struct winsize ws;
+      if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 &&
+          ws.ws_col > 0 && ws.ws_row > 0 &&
+          (ws.ws_col < 80 || ws.ws_row < 24)) {
+        fprintf(stderr, "[WARN] Terminal is %dx%d; CP/M full-screen programs expect at least 80x24. Output may wrap or garble.\n",
+                ws.ws_col, ws.ws_row);
+      }
+    }
   }
 }
 
@@ -171,17 +192,18 @@ int emu_console_read_char() {
     return ch;
   }
 
-  // Check EOF - for non-TTY, exit the emulator
+  // Check EOF. Only a guest *read* past EOF counts as "input exhausted" -
+  // emu_console_has_input() can detect EOF early during status polls while
+  // the guest is still mid-command, and stopping then would cut it off. The
+  // main loop exits through end of main so NVRAM and the trace file still
+  // get written (see emu_console_input_exhausted).
   if (stdin_eof) {
-    if (!isatty(STDIN_FILENO)) {
-      emu_io_cleanup();
-      exit(0);
-    }
+    if (!stdin_is_tty) stdin_eof_consumed = true;
     return -1;
   }
 
-  // For non-TTY (pipe), do a single blocking read and exit on EOF
-  if (!isatty(STDIN_FILENO)) {
+  // For non-TTY (pipe), do a single blocking read
+  if (!stdin_is_tty) {
     char buf;
     ssize_t n = read(STDIN_FILENO, &buf, 1);
     if (n > 0) {
@@ -189,9 +211,10 @@ int emu_console_read_char() {
       if (ch == '\n') ch = '\r';
       return ch;
     }
-    // EOF on pipe - exit cleanly
-    emu_io_cleanup();
-    exit(0);
+    // EOF on pipe - remember it and let the main loop wind down
+    stdin_eof = true;
+    stdin_eof_consumed = true;
+    return -1;
   }
 
   // TTY: use blocking select() to wait for input
@@ -401,6 +424,7 @@ void emu_set_debug(bool enable) {
 }
 
 void emu_log(const char* fmt, ...) {
+  if (!emu_debug_enabled) return;  // internal trace - only with --debug
   va_list args;
   va_start(args, fmt);
   vfprintf(stderr, fmt, args);
@@ -537,8 +561,73 @@ static FILE* cli_host_write_file = nullptr;
 static std::string cli_host_write_filename;
 static emu_host_file_state cli_host_state = HOST_FILE_IDLE;
 
+// Resolve a path by matching each component case-insensitively against the
+// directory entries on disk. The CP/M CCP uppercases the command tail before
+// R8 copies it (see src/r8.asm), so "R8 /tmp/lower/file.txt" arrives here as
+// "/TMP/LOWER/FILE.TXT" and an exact fopen fails. Exact-case components are
+// preferred (checked first); among multiple case-variants the first readdir
+// hit wins. Returns "" if any component has no match.
+static std::string resolve_path_case_insensitive(const char* path) {
+  std::string dir;                 // parent resolved so far ("" = cwd)
+  std::string resolved;            // resolved path being built
+  const char* p = path;
+  if (*p == '/') {
+    dir = "/";
+    resolved = "/";
+    while (*p == '/') p++;
+  }
+  while (*p) {
+    const char* start = p;
+    while (*p && *p != '/') p++;
+    std::string comp(start, p - start);
+    while (*p == '/') p++;
+    if (comp.empty()) continue;
+    std::string sep = (resolved.empty() || resolved == "/") ? "" : "/";
+    if (comp == "." || comp == "..") {
+      resolved += sep + comp;
+      dir = resolved;
+      continue;
+    }
+    // Exact match first
+    std::string candidate = resolved + sep + comp;
+    struct stat st;
+    if (stat(candidate.c_str(), &st) == 0) {
+      resolved = candidate;
+      dir = resolved;
+      continue;
+    }
+    // Case-insensitive scan of the parent directory
+    DIR* d = opendir(dir.empty() ? "." : dir.c_str());
+    if (!d) return "";
+    std::string match;
+    struct dirent* ent;
+    while ((ent = readdir(d)) != nullptr) {
+      if (emu_strcasecmp(ent->d_name, comp.c_str()) == 0) {
+        match = ent->d_name;
+        break;
+      }
+    }
+    closedir(d);
+    if (match.empty()) return "";
+    resolved += sep + match;
+    dir = resolved;
+  }
+  return resolved;
+}
+
 void emu_console_clear_queue() {
   // Clear any queued input - not much to do in CLI
+}
+
+bool emu_console_input_exhausted() {
+  // True once the guest has read past EOF on a non-interactive stdin
+  // (pipe/file): no further input can ever arrive and the guest has drained
+  // everything queued, so the main loop should wind down cleanly.
+  return stdin_eof_consumed;
+}
+
+bool emu_console_input_eof() {
+  return stdin_eof && !stdin_is_tty && input_queue.empty() && peek_char < 0;
 }
 
 emu_host_file_state emu_host_file_get_state() {
@@ -551,6 +640,16 @@ bool emu_host_file_open_read(const char* filename) {
     cli_host_read_file = nullptr;
   }
   cli_host_read_file = fopen(filename, "rb");
+  if (!cli_host_read_file) {
+    // The guest's CCP uppercased the path; retry case-insensitively
+    std::string alt = resolve_path_case_insensitive(filename);
+    if (!alt.empty() && alt != filename) {
+      cli_host_read_file = fopen(alt.c_str(), "rb");
+      if (cli_host_read_file) {
+        emu_log("[HOST] Resolved '%s' as '%s'\n", filename, alt.c_str());
+      }
+    }
+  }
   if (cli_host_read_file) {
     cli_host_state = HOST_FILE_READING;
     return true;
@@ -593,12 +692,15 @@ void emu_host_file_close_read() {
   cli_host_state = HOST_FILE_IDLE;
 }
 
-void emu_host_file_close_write() {
+bool emu_host_file_close_write() {
+  bool ok = true;
   if (cli_host_write_file) {
-    fclose(cli_host_write_file);
+    // fputc buffers; ENOSPC etc. can surface only at the final flush in fclose
+    ok = (fclose(cli_host_write_file) == 0);
     cli_host_write_file = nullptr;
   }
   cli_host_state = HOST_FILE_IDLE;
+  return ok;
 }
 
 void emu_host_file_provide_data(const uint8_t* data, size_t size) {

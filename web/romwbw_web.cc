@@ -226,6 +226,20 @@ int romwbw_get_disk_size(int unit) {
   return emu->hbios.getDisk(unit).data.size();
 }
 
+// Dirty tracking: lets the page warn before unload while guest writes have
+// not been downloaded (in-memory disks are lost when the tab closes)
+EMSCRIPTEN_KEEPALIVE
+int romwbw_is_disk_dirty(int unit) {
+  if (!emu) return 0;
+  return emu->hbios.isDiskDirty(unit) ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void romwbw_clear_disk_dirty(int unit) {
+  if (!emu) return;
+  emu->hbios.clearDiskDirty(unit);
+}
+
 // Mark disk as manifest-controlled (can be auto-updated, changes may be lost)
 EMSCRIPTEN_KEEPALIVE
 void romwbw_set_disk_is_manifest(int unit, int is_manifest) {

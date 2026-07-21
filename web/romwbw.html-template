@@ -321,6 +321,12 @@
 
     <h3>Boot Options</h3>
     <p><code>2</code> - Boot from disk (drive A:) | <code>C</code> - CP/M from ROM | <code>H</code> - Help</p>
+    <p>Units 0/1 are the on-board RAM/ROM memory disks (no OS) - booting <code>0</code> reports "No system image on disk". The first hard disk is unit <code>2</code>. Press <code>D</code> to list disk units, <code>W</code> to save your choice as the autoboot default.</p>
+
+    <h3>File Transfer (R8 / W8)</h3>
+    <p><code>R8 FILENAME</code> - import a host file into CP/M (opens a file picker; the file is saved in CP/M as FILENAME).</p>
+    <p><code>W8 FILENAME</code> - export a CP/M file: your browser downloads it.</p>
+    <p>R8.COM/W8.COM are on <code>hd1k_combo.img</code> (default disk 0, drive A:), <code>hd1k_games.img</code> (default disk 1), <code>hd1k_cpm22.img</code>, and <code>z80cpm_tools.img</code>.</p>
 
     <h3>Drive Letters & Slices</h3>
     <p>Hard disks are assigned first, then memory disks. The boot slice becomes A:.</p>
@@ -585,6 +591,14 @@
         reader.readAsArrayBuffer(file);
       };
 
+      // Dismissing the picker fires no onchange; without this the guest
+      // (paused waiting for the pick) would hang forever. After cancel the
+      // wait self-clears and R8 sees EOF and aborts cleanly.
+      input.oncancel = function() {
+        Module._emu_host_file_cancel();
+        statusDiv.textContent = 'File transfer cancelled';
+      };
+
       // Trigger the file picker
       input.click();
     };
@@ -603,21 +617,17 @@
       statusDiv.textContent = 'Downloaded: ' + filename + ' (' + blob.size + ' bytes)';
     };
 
-    // Keyboard input to emulator
-    term.onKey(function(e) {
-      if (Module._romwbw_key_input) {
-        let ch = e.key.charCodeAt(0);
-        if (e.key === 'Enter') ch = 13;
-        else if (e.key === 'Backspace') ch = 8;
-        else if (e.key === 'Delete') ch = 127;
-        else if (e.key === 'Escape') ch = 27;
-        // Handle Ctrl+key combinations
-        if (e.domEvent.ctrlKey && e.key.length === 1) {
-          ch = e.key.toUpperCase().charCodeAt(0) - 64;
-          if (ch < 0) ch = 0;
-          if (ch > 31) ch = 31;
-        }
-        Module._romwbw_key_input(ch);
+    // Keyboard + paste input to emulator. onData delivers the full resolved
+    // sequence for special keys ("\x1b[A" for ArrowUp, "\x1bOP" for F1, etc.,
+    // and control keys as their native bytes - Ctrl+C is "\x03"), and is the
+    // only path xterm.js routes clipboard paste through (paste arrives
+    // pre-normalized CRLF/LF -> CR by xterm.js).
+    term.onData(function(data) {
+      if (!Module._romwbw_key_input) return;
+      for (const ch of data) {
+        const code = ch.codePointAt(0);
+        if (code > 0xFF) continue;  // drop non-Latin-1 (Unicode paste/IME); CP/M is byte-oriented
+        Module._romwbw_key_input(code);
       }
     });
 
@@ -671,9 +681,72 @@
       }
     }
 
+    //=========================================================================
+    // UI settings persistence (localStorage)
+    //
+    // Persists the control selections (ROM, disks, slices, boot string,
+    // warning suppression) across reloads. Local file uploads cannot be
+    // restored (browsers forbid programmatic file-input values), so
+    // '__custom__' / empty selections are stored as null and the markup
+    // default applies on reload. The Debug checkbox is deliberately not
+    // persisted (session diagnostic).
+    //=========================================================================
+    const SETTINGS_KEY = 'romwbw_emu_ui';
+
+    function saveSettings() {
+      const sel = id => document.getElementById(id).value;
+      const nullIfUnrestorable = v => (!v || v === '__custom__') ? null : v;
+      const s = {
+        v: 1,
+        rom: nullIfUnrestorable(sel('romSelect')),
+        bootString: sel('bootString'),
+        disk0: nullIfUnrestorable(sel('disk0Select')),
+        disk0Slices: sel('disk0Slices'),
+        disk0NoWarn: document.getElementById('disk0NoWarn').checked,
+        disk1: nullIfUnrestorable(sel('disk1Select')),
+        disk1Slices: sel('disk1Slices'),
+        disk1NoWarn: document.getElementById('disk1NoWarn').checked,
+      };
+      try {
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+      } catch (e) { /* Safari private mode / file:// - persistence unavailable */ }
+    }
+
+    function restoreSettings() {
+      let s;
+      try {
+        s = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+      } catch (e) { return; }
+      if (!s || s.v !== 1) return;
+      // Apply select values only if the option still exists (a stale value
+      // would silently become '' and e.g. turn a disk into None). No change
+      // events are dispatched: nothing is fetched here - Start re-reads the
+      // live control state and fetches what it needs.
+      function setSelect(id, val) {
+        if (!val) return;
+        const el = document.getElementById(id);
+        if ([...el.options].some(o => o.value === val)) el.value = val;
+      }
+      setSelect('romSelect', s.rom);
+      setSelect('disk0Select', s.disk0);
+      setSelect('disk0Slices', s.disk0Slices);
+      setSelect('disk1Select', s.disk1);
+      setSelect('disk1Slices', s.disk1Slices);
+      // Restore the boot string whenever the field was saved, including ''
+      // (a cleared boot box stays cleared across reloads)
+      if (typeof s.bootString === 'string') {
+        document.getElementById('bootString').value = s.bootString;
+      }
+      document.getElementById('disk0NoWarn').checked = !!s.disk0NoWarn;
+      document.getElementById('disk1NoWarn').checked = !!s.disk1NoWarn;
+    }
+
+    restoreSettings();
+
     // Load ROM from server select
     document.getElementById('romSelect').addEventListener('change', function(e) {
       const filename = e.target.value;
+      saveSettings();
       if (!filename) return;
       statusDiv.textContent = 'Loading ' + filename + '...';
       fetch(filename)
@@ -693,6 +766,7 @@
       reader.onload = function(e) {
         loadRomData(new Uint8Array(e.target.result), file.name);
         document.getElementById('romSelect').value = '';  // Clear select
+        saveSettings();
       };
       reader.readAsArrayBuffer(file);
     });
@@ -700,6 +774,7 @@
     // Load disk 0 from server select (manifest disk)
     document.getElementById('disk0Select').addEventListener('change', function(e) {
       const filename = e.target.value;
+      saveSettings();
       if (!filename || filename === '__custom__') return;
       statusDiv.textContent = 'Loading ' + filename + '...';
       fetch(filename)
@@ -719,6 +794,7 @@
       reader.onload = function(e) {
         loadDiskData(0, new Uint8Array(e.target.result), file.name, false);  // isManifest = false
         document.getElementById('disk0Select').value = '__custom__';
+        saveSettings();
       };
       reader.readAsArrayBuffer(file);
     });
@@ -726,6 +802,7 @@
     // Load disk 1 from server select (manifest disk)
     document.getElementById('disk1Select').addEventListener('change', function(e) {
       const filename = e.target.value;
+      saveSettings();
       if (!filename || filename === '__custom__') return;
       statusDiv.textContent = 'Loading ' + filename + '...';
       fetch(filename)
@@ -745,6 +822,7 @@
       reader.onload = function(e) {
         loadDiskData(1, new Uint8Array(e.target.result), file.name, false);  // isManifest = false
         document.getElementById('disk1Select').value = '__custom__';
+        saveSettings();
       };
       reader.readAsArrayBuffer(file);
     });
@@ -759,15 +837,24 @@
 
     // "Don't warn" checkboxes for manifest disk write warning
     document.getElementById('disk0NoWarn').addEventListener('change', function() {
+      saveSettings();
       if (Module._romwbw_set_disk_warning_suppressed) {
         Module._romwbw_set_disk_warning_suppressed(0, this.checked ? 1 : 0);
       }
     });
     document.getElementById('disk1NoWarn').addEventListener('change', function() {
+      saveSettings();
       if (Module._romwbw_set_disk_warning_suppressed) {
         Module._romwbw_set_disk_warning_suppressed(1, this.checked ? 1 : 0);
       }
     });
+
+    // Persist the remaining settings controls ('change' not 'input' for the
+    // boot string - it saves on blur/Enter; Start also saves, catching a
+    // typed-but-not-blurred value)
+    document.getElementById('disk0Slices').addEventListener('change', saveSettings);
+    document.getElementById('disk1Slices').addEventListener('change', saveSettings);
+    document.getElementById('bootString').addEventListener('change', saveSettings);
 
     // Warning modal
     const warningModal = document.getElementById('warning-modal');
@@ -853,6 +940,15 @@
         updateLoadingProgress(itemId, pct, formatSize(loaded) + ' / ' + formatSize(total));
       }
 
+      // A truncated disk image is worse than a failed one: an 8MB hd1k image
+      // that is no longer exactly 8,388,608 bytes silently falls back to
+      // hd512 auto-detect with the wrong geometry. Use < (not !==) so
+      // Content-Encoding: gzip (decompressed > compressed total) does not
+      // false-positive.
+      if (total > 0 && loaded < total) {
+        throw new Error('Incomplete download: ' + formatSize(loaded) + ' of ' + formatSize(total));
+      }
+
       // Combine chunks
       const result = new Uint8Array(loaded);
       let offset = 0;
@@ -873,6 +969,7 @@
     // Start button
     startBtn.addEventListener('click', async function() {
       startBtn.disabled = true;
+      saveSettings();  // catches a typed-but-not-blurred boot string
 
       // Check what's selected (empty string = None selected)
       const disk0Selection = document.getElementById('disk0Select').value;
@@ -897,12 +994,15 @@
       }
 
       try {
-        // Auto-load default ROM if none loaded
+        // Auto-load the selected ROM if none loaded (a selection restored
+        // from localStorage has not been fetched yet - honor it rather than
+        // clobbering it back to the default)
         if (needRom) {
-          const defaultRom = 'emu_avw.rom';
+          const romSel = document.getElementById('romSelect');
+          const defaultRom = romSel.value || 'emu_avw.rom';
           const data = await fetchWithProgress(defaultRom, 'load-rom');
           loadRomData(data, defaultRom);
-          document.getElementById('romSelect').value = defaultRom;
+          if (!romSel.value) romSel.value = defaultRom;  // reflect the default that was loaded
         }
 
         // Reload any previously loaded disks (ROM load resets emulator state)
@@ -914,7 +1014,7 @@
             const data = await fetchWithProgress(disk0Selection, 'load-disk0');
             loadDiskData(0, data, disk0Selection, true);  // isManifest = true
           } catch (err) {
-            updateLoadingProgress('load-disk0', 100, 'skipped');
+            updateLoadingProgress('load-disk0', 100, 'failed: ' + err.message);
           }
         }
 
@@ -924,7 +1024,7 @@
             const data = await fetchWithProgress(disk1Selection, 'load-disk1');
             loadDiskData(1, data, disk1Selection, true);  // isManifest = true
           } catch (err) {
-            updateLoadingProgress('load-disk1', 100, 'skipped');
+            updateLoadingProgress('load-disk1', 100, 'failed: ' + err.message);
           }
         }
       } catch (err) {
@@ -990,6 +1090,7 @@
       if (Module._romwbw_clear_nvram) {
         Module._romwbw_clear_nvram();
         document.getElementById('bootString').value = '';
+        saveSettings();  // the cleared boot box persists across reloads
         statusDiv.textContent = 'NVRAM cleared - boot menu will show';
       }
     });
@@ -1007,6 +1108,7 @@
         a.download = 'romwbw_disk0.img';
         a.click();
         URL.revokeObjectURL(url);
+        if (Module._romwbw_clear_disk_dirty) Module._romwbw_clear_disk_dirty(0);
       }
     });
 
@@ -1023,6 +1125,25 @@
         a.download = 'romwbw_disk1.img';
         a.click();
         URL.revokeObjectURL(url);
+        if (Module._romwbw_clear_disk_dirty) Module._romwbw_clear_disk_dirty(1);
+      }
+    });
+
+    // Warn before leaving with guest disk writes that have not been
+    // downloaded - in-memory disks vanish with the tab. Downloading a disk
+    // clears its dirty flag (a later guest write re-sets it). Dirty state
+    // survives Stop, so the warning applies regardless of running state.
+    function anyDiskDirty() {
+      if (typeof Module === 'undefined' || !Module._romwbw_is_disk_dirty) return false;
+      for (let u = 0; u < 16; u++) {
+        if (Module._romwbw_is_disk_dirty(u)) return true;
+      }
+      return false;
+    }
+    window.addEventListener('beforeunload', function(e) {
+      if (anyDiskDirty()) {
+        e.preventDefault();
+        e.returnValue = '';  // browsers show their own generic prompt
       }
     });
 

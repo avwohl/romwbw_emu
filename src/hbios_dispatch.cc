@@ -37,10 +37,20 @@ HBIOSDispatch::~HBIOSDispatch() {
   emu_host_file_close_write();
 }
 
+bool HBIOSDispatch::isWaitingForInput() const {
+  // The host-file wait self-clears: JS moves the state to READING
+  // (_emu_host_file_load) or IDLE (_emu_host_file_cancel), after which the
+  // rewound HBF_HOST_READ call proceeds.
+  return waiting_for_input ||
+         (waiting_for_host_file &&
+          emu_host_file_get_state() == HOST_FILE_WAITING_READ);
+}
+
 void HBIOSDispatch::clearWaitingState() {
   // Clear input waiting state without full reset
   // Used by SYSRESET to ensure clean state after reboot
   waiting_for_input = false;
+  waiting_for_host_file = false;
   emu_state = HBIOS_RUNNING;
   output_buffer.clear();
   input_buffer.clear();
@@ -49,6 +59,7 @@ void HBIOSDispatch::clearWaitingState() {
 void HBIOSDispatch::reset() {
   trapping_enabled = false;
   waiting_for_input = false;
+  waiting_for_host_file = false;
   idle_poll_count = 0;
   manifest_write_pending = false;  // Clear pending flag
   // Note: manifest_warning_shown is static, persists across resets within session
@@ -210,6 +221,7 @@ void HBIOSDispatch::closeDisk(int unit) {
   disks[unit].file_backed = false;
   disks[unit].size = 0;
   disks[unit].path.clear();
+  disks[unit].dirty = false;  // a freshly loaded image starts clean
   // Reset partition detection state so new disk will be probed correctly
   disks[unit].current_lba = 0;
   disks[unit].partition_probed = false;
@@ -1003,9 +1015,11 @@ void HBIOSDispatch::handleDIO() {
           // Read from file
           uint8_t sector_buf[512];
           for (int s = 0; s < count; s++) {
-            size_t offset = (lba + s) * 512;
+            // lba is 32-bit: compute the byte offset in 64-bit so a large
+            // guest seek can't wrap and land on the wrong sector
+            uint64_t offset = ((uint64_t)lba + s) * 512;
             size_t read = emu_disk_read((emu_disk_handle)disks[hd_unit].handle,
-                                        offset, sector_buf, 512);
+                                        (size_t)offset, sector_buf, 512);
             if (read == 0) {
               break;
             }
@@ -1017,12 +1031,12 @@ void HBIOSDispatch::handleDIO() {
         } else if (!disks[hd_unit].data.empty()) {
           // Read from memory buffer
           for (int s = 0; s < count; s++) {
-            size_t offset = (lba + s) * 512;
+            uint64_t offset = ((uint64_t)lba + s) * 512;
             if (offset + 512 > disks[hd_unit].data.size()) {
               break;
             }
             for (size_t i = 0; i < 512; i++) {
-              write_to_bank(buffer + s * 512 + i, disks[hd_unit].data[offset + i]);
+              write_to_bank(buffer + s * 512 + i, disks[hd_unit].data[(size_t)offset + i]);
             }
             blocks_read++;
           }
@@ -1118,27 +1132,47 @@ void HBIOSDispatch::handleDIO() {
         if (disks[hd_unit].file_backed && disks[hd_unit].handle) {
           uint8_t sector_buf[512];
           for (int s = 0; s < count; s++) {
-            size_t offset = (lba + s) * 512;
+            uint64_t offset = ((uint64_t)lba + s) * 512;
             for (size_t i = 0; i < 512; i++) {
               sector_buf[i] = read_from_bank(buffer + s * 512 + i);
             }
-            emu_disk_write((emu_disk_handle)disks[hd_unit].handle, offset, sector_buf, 512);
+            size_t written = emu_disk_write((emu_disk_handle)disks[hd_unit].handle,
+                                            (size_t)offset, sector_buf, 512);
+            if (written != 512) {
+              // emu_disk_write is buffered fwrite, so ENOSPC can also defer to
+              // the flush below; emu_disk_flush returns void, so flush-time
+              // failures remain unreported.
+              emu_error("[HBIOS DIOWRITE] HD%d short write at LBA %u (%zu/512 bytes) - host disk full or I/O error\n",
+                        hd_unit, (unsigned)(lba + s), written);
+              result = HBR_IO;
+              break;
+            }
             blocks_written++;
           }
           emu_disk_flush((emu_disk_handle)disks[hd_unit].handle);
         } else if (!disks[hd_unit].data.empty()) {
           for (int s = 0; s < count; s++) {
-            size_t offset = (lba + s) * 512;
+            uint64_t offset = ((uint64_t)lba + s) * 512;
             if (offset + 512 > disks[hd_unit].data.size()) {
-              disks[hd_unit].data.resize(offset + 512);
+              // Past end of image: error, like the file-backed short-write
+              // path - CBIOS checks only A, so a bare partial count in E
+              // would be silent data loss. Never grow the image - the size
+              // is what format auto-detect and the download buffer rely on,
+              // and lba is guest-controlled.
+              emu_error("[HBIOS DIOWRITE] HD%d write past end of image at LBA %u (size %zu)\n",
+                        hd_unit, (unsigned)(lba + s), disks[hd_unit].data.size());
+              result = HBR_IO;
+              break;
             }
             for (size_t i = 0; i < 512; i++) {
-              disks[hd_unit].data[offset + i] = read_from_bank(buffer + s * 512 + i);
+              disks[hd_unit].data[(size_t)offset + i] = read_from_bank(buffer + s * 512 + i);
             }
             blocks_written++;
           }
           // Mark disk as dirty for persistence
-          disks[hd_unit].dirty = true;
+          if (blocks_written > 0) {
+            disks[hd_unit].dirty = true;
+          }
         } else {
           emu_fatal("[HBIOS DIOWRITE] HD%d is_open but no data (file_backed=%d, data.empty=%d)\n",
                     hd_unit, disks[hd_unit].file_backed, disks[hd_unit].data.empty());
@@ -2276,7 +2310,7 @@ void HBIOSDispatch::handleEXT() {
           // Slice beyond actual disk capacity
           media_id = 0;  // MID_NONE - signals no valid media
           result = HBR_FAILED;
-          emu_log("[EXTSLICE] unit=0x%02X slice=%d REJECTED (beyond disk capacity)\n",
+          emu_error("[EXTSLICE] unit=0x%02X slice=%d REJECTED (beyond disk capacity)\n",
                   disk_unit, slice);
         } else {
           slice_lba = slice_start_sector;
@@ -2292,7 +2326,7 @@ void HBIOSDispatch::handleEXT() {
         // Disk not open or invalid unit
         result = HBR_FAILED;
         media_id = 0;  // MID_NONE
-        emu_log("[EXTSLICE] unit=0x%02X slice=%d -> DISK NOT OPEN\n", disk_unit, slice);
+        emu_error("[EXTSLICE] unit=0x%02X slice=%d -> DISK NOT OPEN\n", disk_unit, slice);
       }
 
       // Set return values
@@ -2350,6 +2384,18 @@ void HBIOSDispatch::handleEXT() {
     case HBF_HOST_READ: {
       // Read byte from host file
       // Output: A = 0 success (E = byte), A = 0xFF EOF or error
+      if (!blocking_allowed && emu_host_file_get_state() == HOST_FILE_WAITING_READ) {
+        // Browser: the file picker is still open. Rewind PC to re-execute the
+        // OUT instruction (same trick as HBF_CIOIN) so the guest retries this
+        // call once JS provides the file (state -> READING) or cancels
+        // (state -> IDLE, read returns EOF). Without this the guest sees an
+        // instant EOF and R8 imports a 0-byte file.
+        uint16_t pc = cpu->regs.PC.get_pair16();
+        cpu->regs.PC.set_pair16(pc - 2);
+        waiting_for_host_file = true;
+        return;  // Don't call setResult/doRet - will retry
+      }
+      waiting_for_host_file = false;
       int ch = emu_host_file_read_byte();
       if (ch < 0) {
         result = HBR_FAILED;  // EOF or error
@@ -2381,11 +2427,17 @@ void HBIOSDispatch::handleEXT() {
       if (which == 0) {
         // Close read file
         emu_host_file_close_read();
+        result = HBR_SUCCESS;
       } else {
-        // Close write file (triggers download in web)
-        emu_host_file_close_write();
+        // Close write file (triggers download in web); a failed final flush
+        // means the host file may be truncated (e.g. disk full)
+        if (emu_host_file_close_write()) {
+          result = HBR_SUCCESS;
+        } else {
+          if (debug_log) debug_log("[HOST] Close-write failed - file may be truncated\n");
+          result = HBR_FAILED;
+        }
       }
-      result = HBR_SUCCESS;
       break;
     }
 

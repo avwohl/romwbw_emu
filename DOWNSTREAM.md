@@ -2,6 +2,25 @@
 
 This document explains how to integrate the RomWBW emulator core into downstream projects (iOS, macOS, Windows, etc.).
 
+## Related: Front-End Feature Parity
+
+This document owns core-engine correctness: the Z80 CPU, HBIOS services, banked
+memory, and shadow RAM. Front-end UX parity across ports (keyboard maps,
+scrollback, copy/paste, disk catalog, help system, config profiles) is cataloged
+separately in the Windows port's FEATURE_PARITY.md at
+https://github.com/avwohl/z80cpmw/blob/master/FEATURE_PARITY.md
+(raw: https://raw.githubusercontent.com/avwohl/z80cpmw/master/FEATURE_PARITY.md).
+Check both documents when assessing parity for a new port; the checklist
+contents are not duplicated here.
+
+As of July 2026, one correction to that catalog: it lists romwbw_emu as
+CLI-only, but this repo also ships a browser/WASM frontend (`web/`) that already
+covers several of its items — xterm.js scrollback, the manifest-disk write
+warning with per-disk suppression, R8/W8 host file transfer via browser
+picker/download, same-origin server disk selection, and (new in v1.34)
+localStorage persistence of UI selections plus a dirty-disk warning before tab
+close.
+
 ## Overview
 
 The RomWBW emulator is structured with a shared core that all platforms use:
@@ -156,6 +175,8 @@ void emu_console_write_char(uint8_t ch);
 int emu_console_read_char();
 bool emu_console_has_input();
 void emu_console_queue_char(int ch);
+bool emu_console_input_exhausted();  // GUI/WASM: return false (see v1.34 notes)
+bool emu_console_input_eof();        // GUI/WASM: return false (see v1.34 notes)
 
 // Logging
 void emu_log(const char* fmt, ...);
@@ -284,6 +305,25 @@ for MHz. With L=160, the delay loop ran 80x too many iterations.
 
 **Fix**: Pull latest `hbios_dispatch.cc`. Now returns `H=0` (CPU variant),
 `L=4` (MHz), `DE=4000` (KHz) matching RomWBW's expected format.
+
+### Silent Crash at Startup on Windows (MSVC builds)
+
+**Symptom**: An MSVC-built app that compiles this core dies instantly at
+emulator start — no dialog, no log, just a crash to desktop — typically on a
+machine other than the build machine.
+
+**Cause**: VS 2022 17.10+ toolsets (v14.40+) make `std::mutex`'s constructor
+constexpr, removing the runtime `_Mtx_init_in_situ` call. If the platform
+layer's own threading code uses `std::mutex` (the emulator core itself uses
+none) and the target machine's system msvcp140.dll predates the build toolset,
+the first `_Mtx_lock` faults.
+
+**Fix**: Define `_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR` in the project's
+preprocessor definitions, or ship the matching VC++ runtime DLLs app-local with
+the installer; doing both is harmless. No upstream patch is needed — the
+upstream core uses no `std::mutex`, so the bug can only come from platform-layer
+code. See z80cpmw commit b73c013 for a worked example (vcxproj define plus
+NSIS/MSIX redist bundling).
 
 ## ROM Requirements
 
@@ -560,6 +600,103 @@ bool checkPeriodicFlush();
 - The warm boot hook is already set up by `emu_setup_reset_callback()`
 - Downstream clients just need to call `checkPeriodicFlush()` periodically
 
+## Platform API Changes (July 2026, v1.34)
+
+v1.34 changes the `emu_io.h` platform interface in two places, fixes host file
+transfer and disk write error handling, and documents a platform contract that
+was previously implicit. Every port that provides its own `emu_io_*.cc`
+implementation needs the first two changes to compile.
+
+### emu_host_file_close_write() Now Returns bool
+
+```cpp
+// BEFORE:
+void emu_host_file_close_write();
+
+// AFTER:
+bool emu_host_file_close_write();  // false = final flush/close failed
+```
+
+A `false` return means the final flush or close failed and the written file may
+be truncated. This matters because byte writes go through stdio buffering, so a
+disk-full error can surface only at the final flush inside `fclose()` —
+previously nobody checked, and W8 reported success for a truncated export.
+
+`HBF_HOST_CLOSE` (C=1, close write file) now returns A=0xFF on failure, and the
+W8 utility prints "Host file close failed - file may be truncated".
+
+Update your platform's implementation:
+
+- CLI reference: return `fclose() == 0` (true when nothing was open)
+- WASM reference: return `true` (a browser download cannot fail synchronously)
+- Windows port (z80cpmw): the deferred-write close in `emu_io_windows.cpp`
+  should return true only if the `fopen` succeeded, `fwrite` wrote the full
+  buffer, and `fclose` returned 0 — this also fixes its existing silent drop
+  of write errors
+
+### New Required Function: emu_console_input_exhausted()
+
+```cpp
+// Returns true once a non-interactive stdin (pipe/file) has hit EOF and the
+// guest has read past it - no further input can ever arrive.
+bool emu_console_input_exhausted();
+```
+
+The CLI returns true once a piped stdin hit EOF and the guest read past it; the
+main loop then exits through the end of `main()` so NVRAM and trace persistence
+still run. GUI and WASM ports should simply `return false;` (input can always
+arrive later). Only the CLI main loop consults it, but every platform layer
+must define it to link.
+
+A companion function was added in the same release:
+
+```cpp
+// Weaker form: EOF has been *detected* on a non-interactive stdin (nothing
+// queued), whether or not the guest has read past it.
+bool emu_console_input_eof();
+```
+
+The CLI main loop combines it with `isConsoleIdle()` to wind down guests that
+only poll input status (e.g. the romldr boot menu) on a closed pipe. GUI and
+WASM ports: `return false;` here too.
+
+### HBF_HOST_READ Waits for the Browser File Picker
+
+When blocking is disallowed (`setBlockingAllowed(false)`) and the host-file
+state is `HOST_FILE_WAITING_READ`, `HBF_HOST_READ` in `hbios_dispatch.cc` now
+pauses the guest by rewinding PC to re-execute the call — the same mechanism
+`HBF_CIOIN` uses for console input. This makes browser R8 wait for the file
+picker instead of importing 0 bytes. `isWaitingForInput()` now includes this
+wait, so run loops that already gate on it need no changes. Native (blocking)
+ports are unaffected.
+
+### Latent-Bug Fix Ports Should Replicate: emu_file_load_to_mem()
+
+`emu_file_load_to_mem()` in `emu_io_common.cc` had a `size_t` underflow when
+`offset > mem_size` — the same class of bug as the v1.33 truncated-disk fix
+(fed8155). Upstream now checks `offset >= mem_size` and returns 0 before
+subtracting. The Windows port's `emu_io_windows.cpp` contains a verbatim copy
+of this function (around lines 344-361) that compiles independently of the
+shared core and needs the identical guard.
+
+### DIOWRITE Hardening (Recompile Only)
+
+`HBF_DIOWRITE` now checks the return value of `emu_disk_write()` and reports
+HBR_IO plus a partial block count in E on a short write (host disk full or I/O
+error). Writes past the end of an in-memory disk image no longer grow the image
+— the write path is bound-checked like the read path and reports a partial
+count. Disk offsets are computed in 64-bit so a large LBA can no longer wrap
+the 32-bit LBA*512 multiply. Ports that embed the shared core get all of these
+for free on recompile; no platform-layer changes are needed.
+
+### Platform Contract: Flush Dirty In-Memory Disks on Stop
+
+Platform stop paths must flush/persist any dirty in-memory disks. This was
+previously undocumented, and it is exactly the contract that bit the Windows
+port (fixed in its commit 70ce7b1). File-backed disks are flushed per-write by
+the core (see "Disk Commit System" above), but in-memory disks are the
+platform's responsibility whenever emulation stops or the app exits.
+
 ## Migration Checklist
 
 - [ ] Pull latest `romwbw_mem.h` with shadow RAM fix
@@ -584,3 +721,7 @@ bool checkPeriodicFlush();
   - [ ] Show warning dialog when poll returns true
   - [ ] Add "Don't warn" checkbox with `setDiskWarningSuppressed()`
 - [ ] Call `checkPeriodicFlush()` from main loop or timer (ensures disk commits)
+- [ ] v1.34: Update `emu_host_file_close_write()` to return `bool` (false = file may be truncated)
+- [ ] v1.34: Implement `emu_console_input_exhausted()` and `emu_console_input_eof()` (GUI/WASM: just `return false;`)
+- [ ] v1.34: If your port copied `emu_file_load_to_mem()`, add the `offset >= mem_size` guard
+- [ ] v1.34: Verify your stop/exit path flushes or persists dirty in-memory disks

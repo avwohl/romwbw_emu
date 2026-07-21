@@ -215,8 +215,8 @@ case HBF_RTCSETBLK:  // Set entire block
 ```
 
 Platform persistence:
-- **Web:** localStorage as base64
-- **CLI:** Plain text file `~/.config/romwbw_emu/nvram` (contains a string like "C")
+- **Web:** in WASM memory only - not persisted; a page reload discards it (the page persists only UI control selections in localStorage)
+- **CLI:** Plain text file `$XDG_CONFIG_HOME/romwbw_emu/nvram` (default `~/.config/romwbw_emu/nvram`); contains a single line such as "C" or "2.3". `XDG_CONFIG_HOME` support is new in v1.34.
 - **iOS:** UserDefaults
 
 ## Disk I/O Architecture

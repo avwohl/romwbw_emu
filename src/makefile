@@ -1,5 +1,11 @@
 all: romwbw_emu
 
+# Version comes from the top-level VERSION file (single source of truth).
+# Resolve it before -include below so $(lastword $(MAKEFILE_LIST)) is still
+# this makefile (robust to make -C src vs make -f src/makefile).
+THIS_DIR := $(dir $(lastword $(MAKEFILE_LIST)))
+VERSION := $(strip $(shell cat $(THIS_DIR)../VERSION 2>/dev/null))
+
 # Include local.mk if it exists (for machine-specific settings like PKG_CONFIG_PATH)
 -include local.mk
 
@@ -15,6 +21,11 @@ QKZ80_LIBS ?= $(shell pkg-config --libs qkz80 2>/dev/null || \
     echo "-L/usr/local/lib -lqkz80")
 
 CXXFLAGS = -std=c++11 -Wall -O2 -I. $(QKZ80_CFLAGS)
+# A missing VERSION file falls back to the in-source default, never an
+# empty-string macro
+ifneq ($(VERSION),)
+CXXFLAGS += -DEMU_VERSION=\"$(VERSION)\"
+endif
 LDFLAGS ?=
 LDLIBS = $(QKZ80_LIBS)
 
@@ -24,11 +35,18 @@ LDFLAGS += -static
 endif
 
 # Object files for romwbw_emu using emu_io abstraction
-ROMWBW_OBJS = emu_io_cli.o emu_io_common.o hbios_dispatch.o hbios_cpu.o emu_init.o
+ROMWBW_OBJS = emu_io_cli.o emu_io_common.o hbios_dispatch.o hbios_cpu.o emu_init.o emu_config.o
 
-# Main emulator (boots RomWBW via HBIOS)
+# Main emulator (boots RomWBW via HBIOS). version.cc is recompiled inside
+# the link recipe so the build date is fresh exactly when the binary changes
+# (and no-op makes stay no-ops).
 romwbw_emu: romwbw_emu.o $(ROMWBW_OBJS)
-	$(CXX) $(CXXFLAGS) $(LDFLAGS) romwbw_emu.o $(ROMWBW_OBJS) $(LDLIBS) -o romwbw_emu
+	$(CXX) $(CXXFLAGS) -c version.cc -o version.o
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) romwbw_emu.o version.o $(ROMWBW_OBJS) $(LDLIBS) -o romwbw_emu
+
+# A version bump must recompile the file that prints it (wildcard: a missing
+# VERSION file falls back to the in-source default instead of breaking make)
+romwbw_emu.o: $(wildcard $(THIS_DIR)../VERSION)
 
 # Pattern rule to compile .cc files into .o object files
 %.o: %.cc
