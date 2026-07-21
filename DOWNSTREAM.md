@@ -2,6 +2,10 @@
 
 This document explains how to integrate the RomWBW emulator core into downstream projects (iOS, macOS, Windows, etc.).
 
+Dated migration notices for specific core releases live in docs/ - most
+recently [docs/DOWNSTREAM_2026-07-21.md](docs/DOWNSTREAM_2026-07-21.md), the
+iOS/Android to-do list for the v1.33 -> v1.34 sync.
+
 ## Related: Front-End Feature Parity
 
 This document owns core-engine correctness: the Z80 CPU, HBIOS services, banked
