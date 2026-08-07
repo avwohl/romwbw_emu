@@ -32,9 +32,18 @@ fatal error: 'romwbw_pin.h' file not found
   `../../../../../romwbw_emu/src` and has that directory in
   `target_include_directories`, so it builds unchanged. No CMake change.
 - **z80cpmw** compiles the core files in place from
-  `$(SolutionDir)..\romwbw_emu\src\`, so the include already resolves and it
-  builds unchanged. It was still added to `z80cpmw.vcxproj` as a `ClInclude`
-  for IDE visibility, alongside the other core headers.
+  `$(SolutionDir)..\romwbw_emu\src\`, so the include already resolves. It was
+  still added to `z80cpmw.vcxproj` as a `ClInclude` for IDE visibility,
+  alongside the other core headers.
+
+  **Correction (2026-08-07, later the same day):** this section originally
+  said z80cpmw "builds unchanged". It did not build at all. v1.35 used the
+  POSIX `fseeko`/`ftello` in `emu_init.cc`, which MSVC does not provide, so
+  the Windows port failed with `C3861: 'fseeko': identifier not found`. Fixed
+  in this repo by adding `emu_fseek`/`emu_ftell`/`emu_off_t` to `src/emu_io.h`
+  — take that commit along with v1.35. The lesson for these notices: a claim
+  that a port builds is not worth writing unless that port's toolchain has
+  actually compiled it.
 
 It is a header only, no build-phase membership required; it just has to be
 resolvable from wherever your build sees `hbios_dispatch.cc`.
