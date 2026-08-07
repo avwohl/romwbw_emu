@@ -6,6 +6,7 @@
  */
 
 #include "emu_io.h"
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -15,6 +16,29 @@
 // File I/O Implementation
 //=============================================================================
 
+// Upper bound for whole-file loads. Every caller loads a ROM, a ROM app
+// image, or a disk image, and the biggest disk RomWBW can address is 256
+// hd1k slices plus the 1MB prefix (~2GB). Rejecting anything larger keeps a
+// user-supplied path from asking for an allocation that cannot succeed, and
+// keeps the cast to size_t safe on 32-bit targets (wasm32).
+static constexpr uint64_t EMU_MAX_LOAD_SIZE = 2147483648ULL;  // 2 GiB
+
+// Measure an open stream in 64 bits, reporting failure instead of a bogus
+// size. Plain `size_t size = ftell(f)` turns ftell's -1 into SIZE_MAX, and
+// ftell does fail on real inputs: a path naming a pipe or socket (for
+// example /dev/stdin when stdin is a pipe, or a document handed over by a
+// mobile file picker) opens fine but is not seekable. The old code then fed
+// SIZE_MAX to vector::resize, which throws length_error and, with no handler
+// anywhere in the emulator, terminates the process.
+static bool measure_stream(FILE* f, uint64_t* out_size) {
+  if (fseeko(f, 0, SEEK_END) != 0) return false;
+  off_t end = ftello(f);
+  if (end < 0) return false;
+  if (fseeko(f, 0, SEEK_SET) != 0) return false;
+  *out_size = (uint64_t)end;
+  return true;
+}
+
 bool emu_file_load(const std::string& path, std::vector<uint8_t>& data) {
   FILE* f = fopen(path.c_str(), "rb");
   if (!f) {
@@ -22,15 +46,19 @@ bool emu_file_load(const std::string& path, std::vector<uint8_t>& data) {
     return false;
   }
 
-  fseek(f, 0, SEEK_END);
-  size_t size = ftell(f);
-  fseek(f, 0, SEEK_SET);
+  uint64_t size = 0;
+  if (!measure_stream(f, &size) || size > EMU_MAX_LOAD_SIZE ||
+      size > (uint64_t)SIZE_MAX) {
+    fclose(f);
+    data.clear();
+    return false;
+  }
 
-  data.resize(size);
-  size_t read = fread(data.data(), 1, size, f);
+  data.resize((size_t)size);
+  size_t read = size > 0 ? fread(data.data(), 1, (size_t)size, f) : 0;
   fclose(f);
 
-  if (read != size) {
+  if (read != (size_t)size) {
     data.clear();
     return false;
   }
@@ -61,12 +89,26 @@ size_t emu_file_load_to_mem(const std::string& path, uint8_t* mem,
 }
 
 bool emu_file_save(const std::string& path, const std::vector<uint8_t>& data) {
-  FILE* f = fopen(path.c_str(), "wb");
+  // Write a temp file and rename it over the target. Callers use this to
+  // persist a dirty in-memory disk image, and fopen("wb") truncates its
+  // target before the first byte is written: a disk-full error or a kill
+  // mid-write destroyed the previous image and left nothing in its place.
+  // With the rename the old image survives any failure. fclose is checked
+  // because stdio buffering can surface a write error only at the final
+  // flush. (Imported from the z80cpmw migration audit, commit 79ddfc4.)
+  std::string temp_path = path + ".tmp";
+  FILE* f = fopen(temp_path.c_str(), "wb");
   if (!f) return false;
 
-  size_t written = fwrite(data.data(), 1, data.size(), f);
-  fclose(f);
-  return written == data.size();
+  size_t written = data.empty() ? 0 : fwrite(data.data(), 1, data.size(), f);
+  bool ok = (written == data.size());
+  if (fclose(f) != 0) ok = false;
+
+  if (!ok || rename(temp_path.c_str(), path.c_str()) != 0) {
+    remove(temp_path.c_str());
+    return false;
+  }
+  return true;
 }
 
 //=============================================================================
@@ -81,6 +123,23 @@ struct disk_file {
 // Track all open disk handles for emu_disk_flush_all()
 static std::set<disk_file*> open_disk_handles;
 
+// Wrap an opened image in a disk_file, sizing it with the checked 64-bit
+// measurement. The recorded size drives format auto-detection and slice
+// math, so an unmeasurable stream must fail the open rather than be handed
+// on as SIZE_MAX.
+static emu_disk_handle make_disk_handle(FILE* f) {
+  uint64_t size = 0;
+  if (!measure_stream(f, &size) || size > (uint64_t)SIZE_MAX) {
+    fclose(f);
+    return nullptr;
+  }
+  disk_file* disk = new disk_file;
+  disk->fp = f;
+  disk->size = (size_t)size;
+  open_disk_handles.insert(disk);
+  return disk;
+}
+
 emu_disk_handle emu_disk_open(const std::string& path, const char* mode) {
   const char* fmode;
   if (strcmp(mode, "r") == 0) {
@@ -89,32 +148,19 @@ emu_disk_handle emu_disk_open(const std::string& path, const char* mode) {
     fmode = "r+b";
   } else if (strcmp(mode, "rw+") == 0) {
     // Try to open existing, create if not exists
-    fmode = "r+b";
-    FILE* f = fopen(path.c_str(), fmode);
+    FILE* f = fopen(path.c_str(), "r+b");
     if (!f) {
       f = fopen(path.c_str(), "w+b");
     }
     if (!f) return nullptr;
-
-    disk_file* disk = new disk_file;
-    disk->fp = f;
-    fseek(f, 0, SEEK_END);
-    disk->size = ftell(f);
-    open_disk_handles.insert(disk);
-    return disk;
+    return make_disk_handle(f);
   } else {
     return nullptr;
   }
 
   FILE* f = fopen(path.c_str(), fmode);
   if (!f) return nullptr;
-
-  disk_file* disk = new disk_file;
-  disk->fp = f;
-  fseek(f, 0, SEEK_END);
-  disk->size = ftell(f);
-  open_disk_handles.insert(disk);
-  return disk;
+  return make_disk_handle(f);
 }
 
 void emu_disk_close(emu_disk_handle handle) {
@@ -131,7 +177,11 @@ size_t emu_disk_read(emu_disk_handle handle, size_t offset,
   disk_file* disk = static_cast<disk_file*>(handle);
   if (!disk->fp) return 0;
 
-  fseek(disk->fp, offset, SEEK_SET);
+  // Seek in 64 bits and check it: an unchecked seek leaves the stream at its
+  // previous position, so a failure would read some other part of the image
+  // and report it as the requested block. DIOREAD treats a 0 return as
+  // end-of-media (partial count), which is the safe reading.
+  if (fseeko(disk->fp, (off_t)offset, SEEK_SET) != 0) return 0;
   return fread(buffer, 1, count, disk->fp);
 }
 
@@ -141,7 +191,11 @@ size_t emu_disk_write(emu_disk_handle handle, size_t offset,
   disk_file* disk = static_cast<disk_file*>(handle);
   if (!disk->fp) return 0;
 
-  fseek(disk->fp, offset, SEEK_SET);
+  // Same 64-bit checked seek as the read path. Here a stale position would
+  // be worse than a bad read: it would overwrite unrelated sectors (the MBR
+  // of a combo image, say) while reporting the write as successful.
+  // DIOWRITE surfaces the 0 return as HBR_IO.
+  if (fseeko(disk->fp, (off_t)offset, SEEK_SET) != 0) return 0;
   size_t written = fwrite(buffer, 1, count, disk->fp);
 
   // Update size if we wrote past the end

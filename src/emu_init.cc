@@ -7,6 +7,7 @@
  */
 
 #include "emu_init.h"
+#include "romwbw_pin.h"
 #include "romwbw_mem.h"
 #include "hbios_dispatch.h"
 #include "qkz80.h"
@@ -17,6 +18,59 @@
 //=============================================================================
 // ROM Loading
 //=============================================================================
+
+// Offsets of the HBIOS configuration block (HCB) fields inside ROM bank 0.
+// The HCB starts at 0x100; see src/emu_hbios.asm, which assembles ours.
+static const size_t HCB_MARKER0 = 0x103;  // 'W'
+static const size_t HCB_MARKER1 = 0x104;  // ~'W' = 0xA8
+static const size_t HCB_VERSION = 0x105;  // major<<4 | minor
+static const size_t HCB_UPDATE = 0x106;   // update<<4 | patch
+static const size_t HCB_PLATFORM = 0x107; // 0 = EMU, non-zero = real hardware
+
+const char* emu_validate_rom_hcb(const uint8_t* rom, size_t size) {
+  static char msg[256];
+
+  if (!rom || size <= HCB_PLATFORM) {
+    return "ROM is too small to contain an HBIOS configuration block";
+  }
+
+  // A bad marker means there is no HCB where the boot loader expects one.
+  // Nothing downstream can recover from that: the guest starts executing and
+  // produces no output at all, which is the hardest failure to diagnose.
+  if (rom[HCB_MARKER0] != 'W' || rom[HCB_MARKER1] != 0xA8) {
+    snprintf(msg, sizeof(msg),
+             "no HBIOS configuration block at 0x%03zX (marker is %02X %02X, "
+             "expected 57 A8) - the image is not a RomWBW ROM or is corrupt",
+             HCB_MARKER0, rom[HCB_MARKER0], rom[HCB_MARKER1]);
+    return msg;
+  }
+
+  // The CBIOS in a boot slice compares its own version against the HBIOS
+  // version; a mismatch is at best a warning from the guest and at worst a
+  // ROM that never reaches the boot loader. Name both versions so the fix
+  // (use a matching ROM, or re-pin) is obvious.
+  if (rom[HCB_VERSION] != ROMWBW_PIN_VER_BYTE ||
+      rom[HCB_UPDATE] != ROMWBW_PIN_UPD_BYTE) {
+    snprintf(msg, sizeof(msg),
+             "ROM is built for RomWBW v%d.%d.%d, but this emulator is pinned "
+             "to v%s - use a matching ROM or change the pin in src/romwbw_pin.h",
+             rom[HCB_VERSION] >> 4, rom[HCB_VERSION] & 0x0F,
+             rom[HCB_UPDATE] >> 4, ROMWBW_PIN_STR);
+    return msg;
+  }
+
+  // Non-fatal: a stock RomWBW ROM for real hardware has a real HBIOS in bank
+  // 0 that drives hardware we do not emulate, instead of the port 0xEF proxy.
+  // It may get as far as the boot loader, so warn rather than refuse.
+  if (rom[HCB_PLATFORM] != 0) {
+    emu_error("[EMU_INIT] Warning: ROM declares platform %d, not 0 (EMU). "
+              "This looks like a stock RomWBW ROM for real hardware; the "
+              "emulator needs an emu_*.rom with the port 0xEF HBIOS proxy.\n",
+              rom[HCB_PLATFORM]);
+  }
+
+  return nullptr;
+}
 
 bool emu_load_rom(banked_mem* memory, const char* path) {
   if (!memory || !path) {
@@ -60,6 +114,12 @@ bool emu_load_rom(banked_mem* memory, const char* path) {
     return false;
   }
 
+  const char* bad = emu_validate_rom_hcb(rom, (size_t)size);
+  if (bad) {
+    emu_error("[EMU_INIT] %s: %s\n", path, bad);
+    return false;
+  }
+
   emu_log("[EMU_INIT] Loaded %ld bytes ROM from %s\n", size, path);
   return true;
 }
@@ -86,6 +146,15 @@ bool emu_load_rom_from_buffer(banked_mem* memory, const uint8_t* data, size_t si
   // Copy ROM data (up to 512KB)
   size_t copy_size = (size > banked_mem::ROM_SIZE) ? banked_mem::ROM_SIZE : size;
   memcpy(rom, data, copy_size);
+
+  // Same check as the file path: GUI ports load the ROM from a bundle or a
+  // download, so they are exactly the callers that can end up with the wrong
+  // or a truncated image and no console to notice it on.
+  const char* bad = emu_validate_rom_hcb(rom, copy_size);
+  if (bad) {
+    emu_error("[EMU_INIT] ROM from buffer: %s\n", bad);
+    return false;
+  }
 
   emu_log("[EMU_INIT] Loaded %zu bytes ROM from buffer\n", copy_size);
   return true;
@@ -459,9 +528,19 @@ const char* emu_validate_disk_image(const char* path, size_t* out_size) {
     return "file does not exist";
   }
 
-  fseek(fp, 0, SEEK_END);
-  size_t size = ftell(fp);
+  // Measure in 64 bits and check it. `size_t size = ftell(fp)` turned a
+  // failed measurement (an unseekable path such as a pipe or device opens
+  // fine) into SIZE_MAX, which then fell through the size tests below to the
+  // generic "invalid disk size" message quoting a 16-exabyte figure.
+  off_t end = -1;
+  if (fseeko(fp, 0, SEEK_END) == 0) end = ftello(fp);
   fclose(fp);
+
+  if (end < 0 || (uint64_t)end > (uint64_t)SIZE_MAX) {
+    if (out_size) *out_size = 0;
+    return "not a regular file (cannot determine size)";
+  }
+  size_t size = (size_t)end;
 
   if (out_size) *out_size = size;
 

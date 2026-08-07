@@ -3,8 +3,12 @@
 This document explains how to integrate the RomWBW emulator core into downstream projects (iOS, macOS, Windows, etc.).
 
 Dated migration notices for specific core releases live in docs/ - most
-recently [docs/DOWNSTREAM_2026-07-21.md](docs/DOWNSTREAM_2026-07-21.md), the
-iOS/Android to-do list for the v1.33 -> v1.34 sync.
+recently [docs/DOWNSTREAM_2026-08-07.md](docs/DOWNSTREAM_2026-08-07.md), the
+all-ports to-do list for the v1.34 -> v1.35 sync (RomWBW version pin, ROM
+validation, shared file-I/O hardening). The previous notice,
+[docs/DOWNSTREAM_2026-07-21.md](docs/DOWNSTREAM_2026-07-21.md), covers the
+v1.33 -> v1.34 platform API change and still applies if you have not taken
+it yet.
 
 ## Related: Front-End Feature Parity
 
@@ -338,6 +342,76 @@ actual hardware. These will NOT work with the emulator.
 
 Use one of the `emu_*.rom` files that contain proxy code which outputs to port 0xEF
 for HBIOS dispatch. The emulator intercepts port 0xEF and handles HBIOS calls in C++.
+
+## RomWBW Version Pin (August 2026, v1.35)
+
+This core emulates one specific RomWBW release. **Your ROM, your disk images
+and this core must all come from that release.** The pinned release is
+`src/romwbw_pin.h`, the single source of truth:
+
+```c
+#define ROMWBW_PIN_MAJOR 3
+#define ROMWBW_PIN_MINOR 5
+#define ROMWBW_PIN_UPDATE 1
+#define ROMWBW_PIN_PATCH 0
+#define ROMWBW_PIN_STR "3.5.1"
+```
+
+Everything version-dependent now derives from it: `HBF_SYSVER`, the NVRAM
+checksum seed, the HCB bytes assembled into `src/emu_hbios.asm`, the ROM the
+build script overlays, and the boot slices in `disks/`.
+
+### Why it matters
+
+A guest's CBIOS compares its own build against the HBIOS version this core
+reports. Mismatched, it prints
+`*** WARNING: HBIOS/CBIOS Version Mismatch ***`, and in the worst case the
+ROM never reaches the boot loader and the emulator sits there producing no
+output at all. Three of the ROMs shipped in `roms/` before v1.35 did exactly
+that, and nothing told the user why.
+
+### What you must do
+
+1. **Ship a matching set.** Bundle or download `emu_*.rom` and `hd1k_*.img`
+   from the same romwbw_emu release. Do not mix a ROM from one release with
+   disk images from another, and do not point users at RomWBW's own disk
+   images unless they come from the pinned release.
+2. **Check your tree.** Run `roms/verify_romwbw_pin.sh` in CI or before
+   cutting a build. It re-derives the expected bytes from the pin and checks
+   every ROM (HCB marker, version, `CB_PLATFORM`), every disk image (the
+   `CBIOS v<pin> [WBW]` string in its boot slices) and the built binary.
+   Exit status 0 means the set is consistent; 1 names each mismatch.
+3. **Report the pin in your About screen** if you show a version. The CLI
+   prints `RomWBW compatibility: v3.5.1 (pinned)` next to its own version;
+   `ROMWBW_PIN_STR` is available to every port that compiles the core.
+
+### New: ROM loads now fail loudly
+
+`emu_load_rom()` and `emu_load_rom_from_buffer()` call the new
+`emu_validate_rom_hcb()` and **return false** on a ROM this core cannot run,
+where they previously accepted it and produced a dead emulator:
+
+| Condition | Result |
+|---|---|
+| HCB marker at 0x103 is not `57 A8` | load fails - corrupt or not a RomWBW ROM |
+| HCB version bytes differ from the pin | load fails - names both versions |
+| `CB_PLATFORM != 0` (stock hardware ROM) | warning only, load proceeds |
+
+GUI ports are the main beneficiaries: you load ROMs from a bundle or a
+download and have no console to notice a silent failure on. **Handle the new
+`false` return** - show the user an error rather than starting a CPU that
+will never print anything. `emu_validate_rom_hcb()` is public if you want to
+check an image before offering it in a picker.
+
+### Changing the pin
+
+Re-pinning is not a version bump. RomWBW v3.6.0 (2026-03-28) and a v3.7.0
+development series exist upstream; adopting one means re-cutting every
+`emu_*.rom`, refreshing every image in `disks/`, re-checking the HBIOS
+functions this core implements against that release's `proto.asm`, and a
+coordinated release across all ports so no client ends up with a mixed set.
+The v3.6.0 stock ROM that used to sit in `roms/` is kept for that work at
+`archive/romwbw-v3.6.0/`.
 
 ## Console Output
 
@@ -729,3 +803,7 @@ platform's responsibility whenever emulation stops or the app exits.
 - [ ] v1.34: Implement `emu_console_input_exhausted()` and `emu_console_input_eof()` (GUI/WASM: just `return false;`)
 - [ ] v1.34: If your port copied `emu_file_load_to_mem()`, add the `offset >= mem_size` guard
 - [ ] v1.34: Verify your stop/exit path flushes or persists dirty in-memory disks
+- [ ] v1.35: Handle a `false` return from `emu_load_rom*()` - show the user an error instead of starting a dead CPU
+- [ ] v1.35: Ship ROM and disk images from the same release; run `roms/verify_romwbw_pin.sh` before cutting a build
+- [ ] v1.35: If your About screen shows a version, add the RomWBW pin (`ROMWBW_PIN_STR`)
+- [ ] v1.35: If your port copied `emu_file_load()`/`emu_file_save()`/`emu_disk_*()`, take the hardening below

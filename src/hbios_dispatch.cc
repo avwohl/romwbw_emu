@@ -7,6 +7,7 @@
 #include "hbios_dispatch.h"
 #include "emu_init.h"
 #include "emu_io.h"
+#include "romwbw_pin.h"
 #include "qkz80.h"
 #include "qkz80_cpu_flags.h"
 #include "romwbw_mem.h"
@@ -674,11 +675,12 @@ void HBIOSDispatch::setResult(uint8_t result) {
 void HBIOSDispatch::recalcNvramChecksum() {
   // Calculate NVRAM checksum (byte 4)
   // The checksum is XOR of bytes 0-3 XOR with RomWBW version bytes
-  // Version 3.5.1.0: RMJ=3, RMN=5, RUP=1, RTP=0
   // Checksum = (byte0 ^ byte1 ^ byte2 ^ byte3) ^ ((RMJ << 4) | RMN) ^ ((RUP << 4) | RTP)
+  // The version comes from the pin in romwbw_pin.h - SYSCONF in the pinned
+  // ROM computes the same seed, so the two must not drift apart.
   uint8_t xsum = nvram_switches[0] ^ nvram_switches[1] ^ nvram_switches[2] ^ nvram_switches[3];
-  xsum ^= 0x35;  // (3 << 4) | 5 = RMJ.RMN
-  xsum ^= 0x10;  // (1 << 4) | 0 = RUP.RTP
+  xsum ^= ROMWBW_PIN_VER_BYTE;  // RMJ.RMN
+  xsum ^= ROMWBW_PIN_UPD_BYTE;  // RUP.RTP
   nvram_switches[4] = xsum;
   nvram_dirty = true;
 }
@@ -1439,9 +1441,11 @@ void HBIOSDispatch::handleSYS() {
     }
 
     case HBF_SYSVER: {
-      // Get HBIOS version - match CLI exactly
+      // Get HBIOS version - must match the pinned RomWBW release, because
+      // the CBIOS in a boot slice compares this against its own build and
+      // prints "HBIOS/CBIOS Version Mismatch" when they differ.
       // Format: D=major/minor (high/low nibble), E=update/patch (high/low nibble)
-      cpu->regs.DE.set_pair16(0x3510);  // Version 3.5.1.0
+      cpu->regs.DE.set_pair16(ROMWBW_PIN_DE);
       cpu->regs.HL.set_low(0x01);  // Platform ID = SBC
       break;
     }

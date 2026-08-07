@@ -21,6 +21,7 @@
 #include "emu_io.h"
 #include "emu_init.h"        // Shared initialization functions
 #include "emu_config.h"      // Optional JSON settings file
+#include "romwbw_pin.h"      // Pinned RomWBW release
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -752,8 +753,16 @@ public:
 
 // Disk size constants and MBR checking are now in emu_init.h/emu_init.cc
 
-void print_usage(const char* prog) {
+// The RomWBW release this build emulates is part of the version identity:
+// a client has to pair the binary with a ROM and disk images cut from the
+// same release, so print it where the version is printed.
+static void print_version_banner() {
   fprintf(stderr, "RomWBW Emulator v%s (built %s)\n", EMU_VERSION, emu_build_date);
+  fprintf(stderr, "RomWBW compatibility: v%s (pinned)\n", ROMWBW_PIN_STR);
+}
+
+void print_usage(const char* prog) {
+  print_version_banner();
   fprintf(stderr, "Usage: %s --romwbw=<rom.rom> [options]\n", prog);
   fprintf(stderr, "\n");
   fprintf(stderr, "Options:\n");
@@ -851,7 +860,7 @@ int main(int argc, char** argv) {
       print_usage(argv[0]);
       return 0;
     } else if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-v") == 0) {
-      fprintf(stderr, "RomWBW Emulator v%s (built %s)\n", EMU_VERSION, emu_build_date);
+      print_version_banner();
       fprintf(stderr, "Emulates RomWBW with HBIOS, boots CP/M/ZSDOS from ROM disk\n");
       return 0;
     }

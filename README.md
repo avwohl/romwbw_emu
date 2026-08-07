@@ -68,6 +68,26 @@ The emulator supports RomWBW hard disk images in both **hd1k** (modern) and **hd
 
 Of these, `hd1k_combo.img` and `hd1k_infocom.img` are included in this repository under `disks/`; the others must be obtained from the RomWBW release. If downloading from RomWBW directly, use the [RomWBW v3.5.1 release](https://github.com/wwarthen/RomWBW/releases/tag/v3.5.1) Package.zip specifically: the bundled ROM and the emulator's built-in HBIOS identify as v3.5.1, and disk images from a different RomWBW release contain boot slices with a mismatched CBIOS (booting them prints a HBIOS/CBIOS version-mismatch warning). Using a newer release's disks for data files only, without booting from them, is fine.
 
+### RomWBW Version Pin
+
+v3.5.1 is not a passing detail - it is a pin, declared once in
+[`src/romwbw_pin.h`](src/romwbw_pin.h) and used to derive the HBIOS version
+this emulator reports, the HCB stamped into `src/emu_hbios.asm`, and the ROM
+that `roms/build_from_source.sh` builds against. `romwbw_emu --version`
+prints it, and a ROM built for a different release is now rejected at load
+time with a message naming both versions instead of starting a CPU that
+never produces output.
+
+To check that a ROM and disk-image set match the pin - worth doing before
+shipping a build, or when a downloaded image misbehaves:
+
+```bash
+./roms/verify_romwbw_pin.sh
+```
+
+It checks every ROM in `roms/`, every image in `disks/`, and the built
+binary, and exits non-zero listing anything that disagrees.
+
 ### Disk Format Detection
 
 - **hd1k format**: Detected by partition type 0x2E in MBR, or 8MB file size

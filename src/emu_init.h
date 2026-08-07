@@ -66,6 +66,16 @@ static constexpr uint8_t DIODEV_EMPTY = 0xFF;     // Empty slot
 // ROM Loading
 //=============================================================================
 
+// Check a loaded ROM's HBIOS configuration block against the pinned RomWBW
+// release (src/romwbw_pin.h). Returns nullptr when the ROM is usable, or a
+// message naming the problem: a missing/corrupt HCB marker, or a ROM built
+// for a different RomWBW release than this core emulates. A stock hardware
+// ROM (CB_PLATFORM != 0) only logs a warning and still returns nullptr.
+// The returned pointer is to static storage, valid until the next call.
+// Both emu_load_rom() and emu_load_rom_from_buffer() call this and fail the
+// load on a non-null result, so ports get the check for free.
+const char* emu_validate_rom_hcb(const uint8_t* rom, size_t size);
+
 // Load ROM image from file into banked memory
 // Returns: true on success, false on failure
 // Note: Uses standard fopen/fread which works on all platforms

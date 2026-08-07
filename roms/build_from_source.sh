@@ -11,7 +11,9 @@
 #
 # Requirements:
 # - um80 and ul80 assemblers (Z80 tools)
-# - RomWBW v3.5.1 source/binary at ~/esrc/RomWBW-v3.5.1
+# - the pinned RomWBW release unpacked at ~/esrc/RomWBW-v<pin>
+#   (the pin lives in src/romwbw_pin.h; run roms/verify_romwbw_pin.sh to
+#   check a finished tree against it)
 #
 
 set -e
@@ -20,8 +22,19 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="$(dirname "$SCRIPT_DIR")/src"
 OUTPUT_ROM="${1:-$SCRIPT_DIR/emu_avw.rom}"
 
+# The RomWBW release to build against comes from the pin, not from a literal
+# here: bank 0 is assembled from emu_hbios.asm, which stamps the pinned
+# version into the HCB, so banks 1-15 have to come from the same release or
+# the guest's CBIOS reports an HBIOS/CBIOS version mismatch.
+PIN_H="$SRC_DIR/romwbw_pin.h"
+ROMWBW_PIN=$(sed -n 's/^#define ROMWBW_PIN_STR "\(.*\)".*/\1/p' "$PIN_H" 2>/dev/null | head -1)
+if [ -z "$ROMWBW_PIN" ]; then
+    echo "Error: cannot read ROMWBW_PIN_STR from $PIN_H"
+    exit 1
+fi
+
 # RomWBW paths
-ROMWBW_DIR="${ROMWBW_DIR:-$HOME/esrc/RomWBW-v3.5.1}"
+ROMWBW_DIR="${ROMWBW_DIR:-$HOME/esrc/RomWBW-v$ROMWBW_PIN}"
 ROMWBW_ROM="$ROMWBW_DIR/Binary/SBC_simh_std.rom"
 
 # Assembler tools
@@ -30,18 +43,46 @@ UL80="${UL80:-ul80}"
 
 echo "========================================"
 echo "Building emulator ROM from source"
+echo "  pinned RomWBW release: v$ROMWBW_PIN"
 echo "========================================"
 echo ""
+
+# Fall back to the copy of the pinned release's ROM kept in this repo, so a
+# fresh clone can rebuild bank 0 without downloading the 199MB Package.zip.
+# Only banks 1-15 are taken from it, and only after confirming it carries the
+# pinned version - an unpinned ROM here is exactly the mistake to catch.
+if [ ! -f "$ROMWBW_ROM" ] && [ -f "$SCRIPT_DIR/SBC_simh_std.rom" ]; then
+    bundled_ver=$(od -An -tx1 -j 261 -N 2 "$SCRIPT_DIR/SBC_simh_std.rom" |
+                  tr -d ' \n')
+    want_ver=$(printf '%x%x%x%x' \
+        "$(sed -n 's/^#define ROMWBW_PIN_MAJOR \([0-9]*\).*/\1/p' "$PIN_H")" \
+        "$(sed -n 's/^#define ROMWBW_PIN_MINOR \([0-9]*\).*/\1/p' "$PIN_H")" \
+        "$(sed -n 's/^#define ROMWBW_PIN_UPDATE \([0-9]*\).*/\1/p' "$PIN_H")" \
+        "$(sed -n 's/^#define ROMWBW_PIN_PATCH \([0-9]*\).*/\1/p' "$PIN_H")")
+    if [ "$bundled_ver" = "$want_ver" ]; then
+        echo "Using the bundled RomWBW v$ROMWBW_PIN ROM: $SCRIPT_DIR/SBC_simh_std.rom"
+        echo ""
+        ROMWBW_ROM="$SCRIPT_DIR/SBC_simh_std.rom"
+    else
+        echo "Ignoring $SCRIPT_DIR/SBC_simh_std.rom: HCB version bytes are"
+        echo "$bundled_ver, expected $want_ver for the pinned v$ROMWBW_PIN."
+        echo ""
+    fi
+fi
 
 # Check for RomWBW source ROM
 if [ ! -f "$ROMWBW_ROM" ]; then
     echo "Error: RomWBW ROM not found at: $ROMWBW_ROM"
     echo ""
-    echo "Please ensure RomWBW v3.5.1 is installed at $ROMWBW_DIR"
-    echo "or set ROMWBW_DIR environment variable."
+    echo "Please unpack RomWBW v$ROMWBW_PIN at $ROMWBW_DIR"
+    echo "or set the ROMWBW_DIR environment variable."
     echo ""
-    echo "You can download RomWBW from:"
-    echo "  https://github.com/wwarthen/RomWBW/releases"
+    echo "Download the pinned release Package.zip from:"
+    echo "  https://github.com/wwarthen/RomWBW/releases/tag/v$ROMWBW_PIN"
+    echo ""
+    echo "Use that release specifically. A different one produces banks 1-15"
+    echo "whose CBIOS does not match the HBIOS version in bank 0, and the"
+    echo "guest reports 'HBIOS/CBIOS Version Mismatch'."
     exit 1
 fi
 
@@ -113,14 +154,35 @@ echo "Step 3: Building combined ROM..."
 # Start with empty 512KB file
 dd if=/dev/zero bs=524288 count=1 of="$OUTPUT_ROM" 2>/dev/null
 
-# Copy our HBIOS to bank 0 (first 32KB)
-dd if=emu_hbios_32k.bin of="$OUTPUT_ROM" bs=32768 count=1 conv=notrunc 2>/dev/null
+# Copy our HBIOS to bank 0 (first 32KB). $SCRIPT_DIR, not a bare name: this
+# read the file relative to the caller's cwd, so running the script from
+# anywhere but roms/ left bank 0 all zeros - a 512KB ROM that looks fine and
+# dies at startup with no output. dd's stderr is no longer discarded either.
+dd if="$SCRIPT_DIR/emu_hbios_32k.bin" of="$OUTPUT_ROM" bs=32768 count=1 conv=notrunc
 
 # Copy banks 1-15 from RomWBW ROM (skip first 32KB, copy remaining 480KB)
-dd if="$ROMWBW_ROM" of="$OUTPUT_ROM" bs=32768 skip=1 seek=1 count=15 conv=notrunc 2>/dev/null
+dd if="$ROMWBW_ROM" of="$OUTPUT_ROM" bs=32768 skip=1 seek=1 count=15 conv=notrunc
 
 OUTPUT_SIZE=$(stat -c%s "$OUTPUT_ROM" 2>/dev/null || stat -f%z "$OUTPUT_ROM" 2>/dev/null)
 echo "  Created: $OUTPUT_ROM ($OUTPUT_SIZE bytes)"
+
+# Never leave a broken ROM behind: confirm bank 0 really carries the HCB with
+# the pinned version before declaring success.
+built_hcb=$(od -An -tx1 -j 259 -N 4 "$OUTPUT_ROM" | tr -d ' \n')
+want_hcb="57a8$(printf '%x%x%x%x' \
+    "$(sed -n 's/^#define ROMWBW_PIN_MAJOR \([0-9]*\).*/\1/p' "$PIN_H")" \
+    "$(sed -n 's/^#define ROMWBW_PIN_MINOR \([0-9]*\).*/\1/p' "$PIN_H")" \
+    "$(sed -n 's/^#define ROMWBW_PIN_UPDATE \([0-9]*\).*/\1/p' "$PIN_H")" \
+    "$(sed -n 's/^#define ROMWBW_PIN_PATCH \([0-9]*\).*/\1/p' "$PIN_H")")"
+if [ "$built_hcb" != "$want_hcb" ]; then
+    echo ""
+    echo "Error: the ROM just built has HCB bytes $built_hcb at 0x103,"
+    echo "expected $want_hcb for the pinned RomWBW v$ROMWBW_PIN."
+    echo "Removing $OUTPUT_ROM so a broken image is not left behind."
+    rm -f "$OUTPUT_ROM"
+    exit 1
+fi
+echo "  Verified: HCB $built_hcb (RomWBW v$ROMWBW_PIN)"
 
 echo ""
 echo "========================================"

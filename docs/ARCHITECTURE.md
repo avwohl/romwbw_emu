@@ -436,16 +436,40 @@ cd roms
 
 ### ROM Types
 
+An emulator ROM is one whose HCB declares `CB_PLATFORM = 0` (EMU); that is
+what `roms/verify_romwbw_pin.sh` keys off, and what the emulator now checks
+at load time.
+
 | ROM | Description | Works? |
 |-----|-------------|--------|
-| `emu_romwbw.rom` | SBC/SIMH with emu_hbios overlay | Yes |
+| `emu_avw.rom` | SBC/SIMH with emu_hbios overlay (the default) | Yes |
+| `emu_romwbw.rom` | Byte-identical to `emu_avw.rom` | Yes |
 | `emu_rcz80.rom` | RCZ80 with emu_hbios overlay | Yes |
-| `SBC_simh_std.rom` | Standard SBC/SIMH ROM | No - requires hardware |
-| `RCZ80_std.rom` | Standard RCZ80 ROM | No - requires hardware |
+| `SBC_simh_std.rom` | Standard SBC/SIMH ROM | No - build input only |
+| `RCZ80_std.rom` | Standard RCZ80 ROM | No - build input only |
+| `SBC_emu.rom` | Standard SBC ROM despite the name (`CB_PLATFORM=1`) | No - build input only |
+
+The three "build input only" ROMs are stock RomWBW images: they contain a
+real HBIOS that drives hardware this emulator does not provide. They are
+kept because `roms/build_emu_rom.sh` overlays our bank 0 onto them. Passing
+one to `--romwbw` now prints a warning rather than failing silently.
 
 ## Version Compatibility
 
-The shared HBIOS is designed to work with RomWBW 3.x ROMs. Key compatibility points:
+The shared HBIOS emulates **one** RomWBW release, not RomWBW 3.x in general.
+That release is pinned in [`../src/romwbw_pin.h`](../src/romwbw_pin.h)
+(currently v3.5.1) and everything version-dependent derives from it: the
+version `HBF_SYSVER` reports, the NVRAM checksum seed, the HCB stamped into
+`emu_hbios.asm`, and the ROM `roms/build_from_source.sh` overlays.
+
+A guest's CBIOS compares its own build against the version this core
+reports, so a ROM or a boot slice from a different release prints
+`*** WARNING: HBIOS/CBIOS Version Mismatch ***` - or never reaches the boot
+loader at all. `roms/verify_romwbw_pin.sh` checks a whole tree against the
+pin; see the "RomWBW version pin" section of `../DOWNSTREAM.md` for what
+re-pinning would involve.
+
+Key compatibility points:
 
 - HBIOS function codes match RomWBW hbios.inc
 - Bank switching matches SBC hardware

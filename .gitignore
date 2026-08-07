@@ -33,6 +33,12 @@ Thumbs.db
 *.hex
 *.ihx
 
+# Intermediate produced by roms/build_from_source.sh on the way to
+# emu_hbios_32k.bin. It was tracked once and went stale: the committed copy
+# carried a corrupt HCB marker (0xB8 for ~'W'=0xA8) and emu_rcz80.rom, built
+# from it, died silently at startup. Nothing consumes it but the padding step.
+roms/emu_hbios.bin
+
 # Local machine-specific makefile settings
 src/local.mk
 web/*.img
