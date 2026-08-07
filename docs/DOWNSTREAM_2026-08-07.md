@@ -28,8 +28,9 @@ fatal error: 'romwbw_pin.h' file not found
   `ln -s ../../../romwbw_emu/src/romwbw_pin.h iOSCPM/Core/romwbw_pin.h`
   (done in this sync; verified with an `xcodebuild -destination
   'generic/platform=iOS'` build).
-- **cpmdroid** needs the equivalent copy or symlink next to its other core
-  sources.
+- **cpmdroid** compiles the core in place from
+  `../../../../../romwbw_emu/src` and has that directory in
+  `target_include_directories`, so it builds unchanged. No CMake change.
 - **z80cpmw** compiles the core files in place from
   `$(SolutionDir)..\romwbw_emu\src\`, so the include already resolves and it
   builds unchanged. It was still added to `z80cpmw.vcxproj` as a `ClInclude`
@@ -127,7 +128,10 @@ port carries its own copy and already fixed the equivalents in its commit
 
 **What to do:** rebuild. If your port keeps its own copy of any of these
 (the Windows port does), apply the same guards - `git show <this release>`
-in `src/emu_io_common.cc` is the reference.
+in `src/emu_io_common.cc` is the reference. A port whose `emu_file_*` and
+`emu_disk_*` are deliberate stubs has nothing to do here: cpmdroid does its
+file I/O through JNI and keeps disks in memory, so none of these functions
+carry logic to harden.
 
 ## 5. Every `emu_*.rom` was rebuilt - re-bundle them
 
@@ -164,6 +168,23 @@ wildcard, check what you are shipping:
   0 onto it produces banks 1-15 from a release this core does not emulate.
   **Moved to `archive/romwbw-v3.6.0/`**, where it stays available for the
   eventual upgrade.
+
+### The corrupt ROM had spread
+
+Once `verify_romwbw_pin.sh` could scan a whole tree rather than just
+`roms/`, the same one-bit corruption turned up in three more places. Every
+port has been swept and fixed, but check your own packaging if you copy ROMs
+from anywhere but `roms/`:
+
+| Where | What it was |
+|---|---|
+| `web/emu_romwbw.rom` (this repo) | corrupt, and the copy z80cpmw took its from |
+| `z80cpmw/roms/emu_romwbw.rom` | corrupt - offered on the app's ROM menu |
+| `ioscpm/iOSCPM/Resources/emu_hbios.bin` | corrupt build intermediate, bundled into the shipped app, referenced by no code - removed |
+
+The lesson for packaging: a ROM copied by hand into a resources directory
+does not get checked by anything. Point the verifier at the tree you ship,
+not at the tree you build from.
 
 `SBC_simh_std.rom` and `RCZ80_std.rom` remain in `roms/`: they are stock
 ROMs, not runnable here, but they are the build inputs

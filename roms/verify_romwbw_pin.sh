@@ -79,12 +79,35 @@ echo "RomWBW pin: v$PIN_STR  (HCB version bytes $EXP_VER $EXP_UPD)"
 echo
 
 # --- ROM images -------------------------------------------------------------
-echo "ROM images (roms/*.rom, *.bin):"
+# Search the whole tree rather than a fixed roms/ directory: ports put these
+# where their packaging wants them (cpmdroid ships its ROM in
+# app/src/main/assets/), and a check that silently finds nothing is worse
+# than no check. Results go through a temp file so the loop below is not a
+# subshell and the fail/warn counters survive it.
+# archive/ is skipped along with .git: it exists to hold superseded material
+# on purpose (the RomWBW v3.6.0 stock ROM lives there awaiting an upgrade),
+# so flagging it would make a correct tree fail forever.
+scratch=$(mktemp -d 2>/dev/null || mktemp -d -t rwbwpin)
+trap 'rm -rf "$scratch"' EXIT INT TERM
+find "$ROOT" \( -name .git -o -name archive \) -prune -o \
+    -type f \( -name '*.rom' -o -name '*.bin' \) \
+    -print 2>/dev/null | sort > "$scratch/roms"
+find "$ROOT" \( -name .git -o -name archive \) -prune -o \
+    -type f -name '*.img' \
+    -print 2>/dev/null | sort > "$scratch/disks"
+
+# Label a file by its path relative to the tree root, so two ROMs with the
+# same basename in different directories stay distinguishable.
+relname() {
+    printf '%s' "${1#"$ROOT"/}"
+}
+
+echo "ROM images (*.rom, *.bin):"
 found_rom=0
-for f in "$ROOT"/roms/*.rom "$ROOT"/roms/*.bin; do
+while IFS= read -r f; do
     [ -f "$f" ] || continue
     found_rom=1
-    name=$(basename "$f")
+    name=$(relname "$f")
 
     # HCB is at 0x100; we need 0x103..0x107 (marker, marker, ver, upd, plat).
     bytes=$(od -An -tx1 -j 259 -N 5 "$f" 2>/dev/null | tr -s ' ' | sed 's/^ //')
@@ -135,18 +158,18 @@ for f in "$ROOT"/roms/*.rom "$ROOT"/roms/*.bin; do
         continue
     fi
     ok "$name" "emulator ROM for RomWBW v$PIN_STR"
-done
+done < "$scratch/roms"
 [ "$found_rom" -eq 1 ] || note "(none found)"
 echo
 
 # --- Disk images ------------------------------------------------------------
 # grep -a so a binary image is searched as text on both GNU and BSD grep.
-echo "Disk images (disks/*.img):"
+echo "Disk images (*.img):"
 found_disk=0
-for f in "$ROOT"/disks/*.img; do
+while IFS= read -r f; do
     [ -f "$f" ] || continue
     found_disk=1
-    name=$(basename "$f")
+    name=$(relname "$f")
 
     # Anything below one hd1k slice is not a disk image at all - ports keep
     # OS images (cpm_wbw.img, zsys_wbw.img) next to real disks, and calling
@@ -172,7 +195,7 @@ for f in "$ROOT"/disks/*.img; do
     else
         ok "$name" "boot slice CBIOS v$PIN_STR"
     fi
-done
+done < "$scratch/disks"
 [ "$found_disk" -eq 1 ] || note "(none found)"
 echo
 
