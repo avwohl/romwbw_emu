@@ -22,18 +22,21 @@ adding the whole `src/` directory will fail to compile with:
 fatal error: 'romwbw_pin.h' file not found
 ```
 
-- **ioscpm** symlinks each core file into `iOSCPM/Core/`. Add one more:
+- **ioscpm** symlinks each core file into `iOSCPM/Core/`, so a quoted include
+  resolves against `Core/`, not against this repo, and the new header is not
+  there. Add one more link:
   `ln -s ../../../romwbw_emu/src/romwbw_pin.h iOSCPM/Core/romwbw_pin.h`
   (done in this sync; verified with an `xcodebuild -destination
   'generic/platform=iOS'` build).
 - **cpmdroid** needs the equivalent copy or symlink next to its other core
   sources.
-- **z80cpmw** vendors its own copies of the core files, so add
-  `romwbw_pin.h` alongside them - and note that its `emu_io_windows.cpp`
-  keeps a private copy of several helpers, so also see section 4.
+- **z80cpmw** compiles the core files in place from
+  `$(SolutionDir)..\romwbw_emu\src\`, so the include already resolves and it
+  builds unchanged. It was still added to `z80cpmw.vcxproj` as a `ClInclude`
+  for IDE visibility, alongside the other core headers.
 
 It is a header only, no build-phase membership required; it just has to be
-on the include path next to `hbios_dispatch.cc`.
+resolvable from wherever your build sees `hbios_dispatch.cc`.
 
 ## 2. Required: handle a failed ROM load
 

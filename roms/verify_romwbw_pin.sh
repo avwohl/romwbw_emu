@@ -17,11 +17,21 @@
 #
 # Usage: roms/verify_romwbw_pin.sh [tree_root]
 # Exit:  0 all checks passed, 1 at least one mismatch
+#
+# tree_root defaults to this repo. Point it at a downstream port to check
+# what that port is about to ship:
+#
+#   romwbw_emu/roms/verify_romwbw_pin.sh ../z80cpmw
+#
+# The pin always comes from this script's own checkout, because the pin is a
+# property of the core, not of the tree being checked - a client tree has no
+# src/romwbw_pin.h of its own. Override with ROMWBW_PIN_H=/path/to/header.
 
 set -u
 
-ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
-PIN_H="$ROOT/src/romwbw_pin.h"
+SELF_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="${1:-$SELF_ROOT}"
+PIN_H="${ROMWBW_PIN_H:-$SELF_ROOT/src/romwbw_pin.h}"
 
 fail=0
 warn=0
@@ -137,6 +147,15 @@ for f in "$ROOT"/disks/*.img; do
     [ -f "$f" ] || continue
     found_disk=1
     name=$(basename "$f")
+
+    # Anything below one hd1k slice is not a disk image at all - ports keep
+    # OS images (cpm_wbw.img, zsys_wbw.img) next to real disks, and calling
+    # those "not bootable" reads like a fault when it is just a file type.
+    fsize=$(wc -c < "$f" | tr -d ' ')
+    if [ "$fsize" -lt 8388608 ]; then
+        note "info  $name: $fsize bytes - too small to be a disk image, not checked"
+        continue
+    fi
 
     versions=$(grep -a -o 'CBIOS v[0-9][0-9.]* \[WBW\]' "$f" 2>/dev/null |
                sed 's/CBIOS v//; s/ \[WBW\]//' | sort -u)
