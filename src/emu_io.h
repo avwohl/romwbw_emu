@@ -30,6 +30,27 @@ int emu_strcasecmp(const char* s1, const char* s2);
 // Case-insensitive string compare with length limit (portable strncasecmp/_strnicmp)
 int emu_strncasecmp(const char* s1, const char* s2, size_t n);
 
+// 64-bit seek/tell (portable replacement for fseeko/ftello).
+//
+// fseeko/ftello are POSIX and MSVC has neither, so the Windows port - which
+// compiles this core in place rather than through a platform shim - failed to
+// build the moment the core started measuring files in 64 bits. MSVC spells
+// them _fseeki64/_ftelli64, and its off_t is a 32-bit long, so the offset type
+// has to come from here too: an off_t offset would silently truncate past 2GB,
+// which is inside the range a combo disk image can reach.
+#ifdef _MSC_VER
+#include <cstdio>
+typedef __int64 emu_off_t;
+#define emu_fseek _fseeki64
+#define emu_ftell _ftelli64
+#else
+#include <sys/types.h>
+#include <cstdio>
+typedef off_t emu_off_t;
+#define emu_fseek fseeko
+#define emu_ftell ftello
+#endif
+
 //=============================================================================
 // Console I/O - for emulated terminal
 //=============================================================================

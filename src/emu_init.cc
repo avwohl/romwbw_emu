@@ -532,8 +532,8 @@ const char* emu_validate_disk_image(const char* path, size_t* out_size) {
   // failed measurement (an unseekable path such as a pipe or device opens
   // fine) into SIZE_MAX, which then fell through the size tests below to the
   // generic "invalid disk size" message quoting a 16-exabyte figure.
-  off_t end = -1;
-  if (fseeko(fp, 0, SEEK_END) == 0) end = ftello(fp);
+  emu_off_t end = -1;
+  if (emu_fseek(fp, 0, SEEK_END) == 0) end = emu_ftell(fp);
   fclose(fp);
 
   if (end < 0 || (uint64_t)end > (uint64_t)SIZE_MAX) {

@@ -31,10 +31,10 @@ static constexpr uint64_t EMU_MAX_LOAD_SIZE = 2147483648ULL;  // 2 GiB
 // SIZE_MAX to vector::resize, which throws length_error and, with no handler
 // anywhere in the emulator, terminates the process.
 static bool measure_stream(FILE* f, uint64_t* out_size) {
-  if (fseeko(f, 0, SEEK_END) != 0) return false;
-  off_t end = ftello(f);
+  if (emu_fseek(f, 0, SEEK_END) != 0) return false;
+  emu_off_t end = emu_ftell(f);
   if (end < 0) return false;
-  if (fseeko(f, 0, SEEK_SET) != 0) return false;
+  if (emu_fseek(f, 0, SEEK_SET) != 0) return false;
   *out_size = (uint64_t)end;
   return true;
 }
@@ -181,7 +181,7 @@ size_t emu_disk_read(emu_disk_handle handle, size_t offset,
   // previous position, so a failure would read some other part of the image
   // and report it as the requested block. DIOREAD treats a 0 return as
   // end-of-media (partial count), which is the safe reading.
-  if (fseeko(disk->fp, (off_t)offset, SEEK_SET) != 0) return 0;
+  if (emu_fseek(disk->fp, (emu_off_t)offset, SEEK_SET) != 0) return 0;
   return fread(buffer, 1, count, disk->fp);
 }
 
@@ -195,7 +195,7 @@ size_t emu_disk_write(emu_disk_handle handle, size_t offset,
   // be worse than a bad read: it would overwrite unrelated sectors (the MBR
   // of a combo image, say) while reporting the write as successful.
   // DIOWRITE surfaces the 0 return as HBR_IO.
-  if (fseeko(disk->fp, (off_t)offset, SEEK_SET) != 0) return 0;
+  if (emu_fseek(disk->fp, (emu_off_t)offset, SEEK_SET) != 0) return 0;
   size_t written = fwrite(buffer, 1, count, disk->fp);
 
   // Update size if we wrote past the end
