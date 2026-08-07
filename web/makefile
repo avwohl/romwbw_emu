@@ -1,6 +1,15 @@
 # Makefile for RomWBW WebAssembly build
 
-EMCC = emcc
+# em++, not emcc. Every source here is C++, and emcc no longer implies the
+# C++ driver at link time, so linking through it leaves operator new/delete
+# and the rest of libc++ undefined:
+#   wasm-ld: error: undefined symbol: operator new(unsigned long)
+#   emcc: warning: link failed with undefined C++ symbols. Try linking with
+#         'em++' or passing '-sDEFAULT_TO_CXX'
+# This built until the v1.35 release because CI installs `emsdk latest` and
+# the behaviour changed underneath it. Override with EMCC= if you need the
+# old driver for something.
+EMCC = em++
 
 # qkz80 sources from cpmemu project (for WebAssembly build)
 QKZ80_SRC = ../../cpmemu/src
