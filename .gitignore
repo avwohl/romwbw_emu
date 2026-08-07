@@ -15,6 +15,9 @@ web/*.js
 web/*.wasm
 web/*.data
 web/cpm_cli
+# Rendered from romwbw.html-template at build time (CI and the deploy
+# targets both substitute @VERSION@); the template is the checked-in source.
+web/romwbw.html
 
 # Editor files
 *~

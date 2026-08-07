@@ -73,6 +73,13 @@ jobs:
           cd web
           make clean || true
           make QKZ80_SRC=../cpmemu/src
+          # Render the page from its template. Only romwbw.html-template is
+          # checked in; nothing else creates romwbw.html, so the packaging
+          # step below used to copy a file that never existed and - because
+          # its errors were discarded - shipped a web/ directory containing
+          # the wasm and no page to load it.
+          sed "s/@VERSION@/${{ steps.version.outputs.version }}/" \
+            romwbw.html-template > romwbw.html
 
       - name: Create staging directory
         run: |
@@ -81,8 +88,11 @@ jobs:
           mkdir -p staging/usr/share/romwbw_emu/web
           mkdir -p staging/usr/share/romwbw_emu/roms
           cp src/romwbw_emu staging/usr/bin/
-          cp web/romwbw.html web/*.js web/*.wasm staging/usr/share/romwbw_emu/web/ 2>/dev/null || true
-          cp roms/*.rom staging/usr/share/romwbw_emu/roms/ 2>/dev/null || true
+          # No 2>/dev/null || true here: every one of these is checked in or
+          # built above, so a failure means the package would ship incomplete.
+          # Discarding that error is what hid the missing page for this long.
+          cp web/romwbw.html web/romwbw.js web/romwbw.wasm staging/usr/share/romwbw_emu/web/
+          cp roms/*.rom staging/usr/share/romwbw_emu/roms/
           cp README.md staging/usr/share/doc/romwbw_emu/
           cp LICENSE staging/usr/share/doc/romwbw_emu/
 
