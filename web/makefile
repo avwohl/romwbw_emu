@@ -35,9 +35,13 @@ romwbw.js: $(ROMWBW_SRCS)
 romwbw-debug.js: $(ROMWBW_SRCS)
 	$(EMCC) $(ROMWBW_CFLAGS) $(ROMWBW_LDFLAGS) -g -gsource-map -o romwbw-debug.js $(ROMWBW_SRCS)
 
-# RomWBW with preloaded ROM (optional - requires SBC_simh_std.rom)
-romwbw-bundled.js: $(ROMWBW_SRCS) ../SBC_simh_std.rom
-	$(EMCC) $(ROMWBW_CFLAGS) $(ROMWBW_LDFLAGS) --preload-file ../SBC_simh_std.rom@/romwbw.rom -o romwbw-bundled.js $(ROMWBW_SRCS)
+# RomWBW with the ROM preloaded into the Emscripten filesystem (optional).
+# This used to preload ../SBC_simh_std.rom: a path that does not exist (the
+# stock ROMs live in ../roms/), and a stock hardware ROM, which this emulator
+# cannot run at all - it drives hardware that is not emulated and produces no
+# output. Preload the emulator ROM instead.
+romwbw-bundled.js: $(ROMWBW_SRCS) ../roms/emu_avw.rom
+	$(EMCC) $(ROMWBW_CFLAGS) $(ROMWBW_LDFLAGS) --preload-file ../roms/emu_avw.rom@/romwbw.rom -o romwbw-bundled.js $(ROMWBW_SRCS)
 
 clean:
 	rm -f romwbw.js romwbw.wasm romwbw-bundled.js romwbw-bundled.wasm romwbw-bundled.data

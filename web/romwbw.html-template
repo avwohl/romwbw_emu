@@ -242,7 +242,6 @@
       <select id="romSelect" style="margin-right:4px;">
         <option value="">-- Select ROM --</option>
         <option value="emu_avw.rom" selected>emu_avw.rom (Emulator HBIOS - recommended)</option>
-        <option value="SBC_simh_std.rom">SBC_simh_std.rom (SIMH hardware)</option>
       </select>
       <input type="file" id="romFile" accept=".rom,.bin" style="width:180px;">
       <label style="margin-left:12px;">Boot:</label><input type="text" id="bootString" placeholder="2=disk, C=CPM" style="width:100px;" value="2">
@@ -312,7 +311,11 @@
 
     <h3>ROM Types</h3>
     <p><code>emu_avw.rom</code> - <strong>Recommended.</strong> Uses emulator's C++ HBIOS. Works with all hd1k disk images.</p>
-    <p><code>SBC_simh_std.rom</code> - Original SIMH ROM. Requires SIMH hardware emulation (may not boot).</p>
+    <p>This emulator needs a ROM whose bank 0 is the C++ HBIOS proxy. A stock
+    RomWBW ROM built for real hardware - <code>SBC_simh_std.rom</code> and the
+    like - drives hardware that is not emulated here and produces no output at
+    all, so it is not offered. You can still load any ROM with <strong>Choose
+    File</strong> next to the ROM list.</p>
 
     <h3>Disk Images (hd1k format, 8MB)</h3>
     <p><code>hd1k_games.img</code> - Classic games: Colossal Cave Adventure, Castle, Dungeon, Hitchhiker's</p>
@@ -632,15 +635,27 @@
     });
 
     // Helper to load ROM data into emulator
+    // Returns true if the core accepted the ROM. It returns -1 for an image
+    // it cannot run - a corrupt HBIOS configuration block, or one built for a
+    // RomWBW release other than the pinned one - and this used to be ignored,
+    // so the page reported "ROM loaded" and then sat there with a CPU that
+    // could never produce output.
     function loadRomData(data, name) {
       const ptr = Module._malloc(data.length);
       Module.HEAPU8.set(data, ptr);
-      Module._romwbw_load_rom(ptr, data.length);
+      const rc = Module._romwbw_load_rom(ptr, data.length);
       Module._free(ptr);
+      if (rc !== 0) {
+        romLoaded = false;
+        statusDiv.textContent = 'ROM rejected: ' + name +
+          ' - not a usable emulator ROM (see the browser console for the reason)';
+        return false;
+      }
       romLoaded = true;
       statusDiv.textContent = 'ROM loaded: ' + name + ' (' + data.length + ' bytes)';
       // ROM load resets emulator state, so reload any stored disks
       reloadDisks();
+      return true;
     }
 
     // Helper to load disk data into emulator
@@ -743,14 +758,25 @@
 
     restoreSettings();
 
+    // fetch() resolves for 404 and 500 as well, so reading the body without
+    // checking the status hands the emulator the error page as if it were a
+    // ROM or a disk image. Everything that pulls a file off the server goes
+    // through this. (fetchWithProgress, used by the autostart path, already
+    // checks response.ok.)
+    function fetchChecked(url) {
+      return fetch(url).then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status + ' for ' + url);
+        return r.arrayBuffer();
+      });
+    }
+
     // Load ROM from server select
     document.getElementById('romSelect').addEventListener('change', function(e) {
       const filename = e.target.value;
       saveSettings();
       if (!filename) return;
       statusDiv.textContent = 'Loading ' + filename + '...';
-      fetch(filename)
-        .then(r => r.arrayBuffer())
+      fetchChecked(filename)
         .then(buf => {
           loadRomData(new Uint8Array(buf), filename);
           romFile.value = '';  // Clear file input
@@ -777,8 +803,7 @@
       saveSettings();
       if (!filename || filename === '__custom__') return;
       statusDiv.textContent = 'Loading ' + filename + '...';
-      fetch(filename)
-        .then(r => r.arrayBuffer())
+      fetchChecked(filename)
         .then(buf => {
           loadDiskData(0, new Uint8Array(buf), filename, true);  // isManifest = true
           disk0File.value = '';
@@ -805,8 +830,7 @@
       saveSettings();
       if (!filename || filename === '__custom__') return;
       statusDiv.textContent = 'Loading ' + filename + '...';
-      fetch(filename)
-        .then(r => r.arrayBuffer())
+      fetchChecked(filename)
         .then(buf => {
           loadDiskData(1, new Uint8Array(buf), filename, true);  // isManifest = true
           disk1File.value = '';
@@ -1001,7 +1025,12 @@
           const romSel = document.getElementById('romSelect');
           const defaultRom = romSel.value || 'emu_avw.rom';
           const data = await fetchWithProgress(defaultRom, 'load-rom');
-          loadRomData(data, defaultRom);
+          if (!loadRomData(data, defaultRom)) {
+            // Starting the CPU on a ROM the core refused just produces a
+            // dead terminal; stop here with the reason on screen instead.
+            updateLoadingProgress('load-rom', 100, 'rejected');
+            return;
+          }
           if (!romSel.value) romSel.value = defaultRom;  // reflect the default that was loaded
         }
 

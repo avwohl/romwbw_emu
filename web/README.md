@@ -30,10 +30,10 @@ Makefile targets:
 - `make romwbw-debug.js` - same sources built with `-g -gsource-map`
   (DWARF symbols plus source map) for Chrome DevTools debugging; pairs with
   `romwbw-debug.html` and the `debug_wasm.js` Puppeteer harness.
-- `make romwbw-bundled.js` - variant with a ROM preloaded into the
-  Emscripten filesystem as `/romwbw.rom` via `--preload-file`. Requires an
-  `SBC_simh_std.rom` in the repo root (`../SBC_simh_std.rom`), which is not
-  checked in; used together with the `_romwbw_autostart` export.
+- `make romwbw-bundled.js` - variant with the ROM preloaded into the
+  Emscripten filesystem as `/romwbw.rom` via `--preload-file`. It uses the
+  checked-in `../roms/emu_avw.rom`; used together with the
+  `_romwbw_autostart` export.
 - `make clean` - remove the built .js/.wasm/.data/.map outputs.
 - `make serve` - build and serve this directory with
   `python3 -m http.server 8080` for local testing.
