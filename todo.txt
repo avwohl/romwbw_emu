@@ -1,0 +1,106 @@
+Todo list:
+
+- checked ^R across the ports after a windows user reported "Ctrl R exits me
+from CPM" in z80cpmw. ^R itself is clean in both of our frontends. CLI: the
+only byte-level filtering on the input path is the escape char and an LF
+rewrite (emu_io_cli.cc:226-238), and no consumer filters - hbios_dispatch.cc:745
+(CIOIN), :2068 (VDAKRD), hbios_cpu.cc:30 (port 0x01). the tty's own ^R
+(VREPRINT) is ICANON-gated and ICANON is off. web: the page installs no key
+handler at all, term.onData (web/romwbw.html-template:623-637) forwards bytes
+verbatim, and xterm.js 5.3.0 maps Ctrl+R to 0x12 and calls preventDefault, so
+the browser does not reload. no ^R fix needed.
+
+- BUT the CLI has the same bug with a different letter, and it is worse than
+the windows one was. ^E (0x05) is the sim> debugger escape, hardcoded default
+at emu_io_cli.cc:41 and romwbw_emu.cc:152, checked on two paths so there is no
+window where it survives: poll_stdin() runs after EVERY executed instruction
+(romwbw_emu.cc:1444, :746-750) and check_console_escape_async() every 10000
+(:1505-1509). landing in handle_console_mode -> read_console_line calls
+emu_io_cleanup() (romwbw_emu.cc:311), which restores cooked mode and prints
+"sim> " over the running program's screen. ^E is cursor-up in the WordStar
+diamond. and it double-fires on the blocking-read path: the 0x05 is returned to
+the guest AND sets escape_requested (emu_io_cli.cc:230-238, consumed at
+:264-267), so one keypress both moves the cursor and freezes the emulator.
+it is configurable but not disableable - parse_escape_char (romwbw_emu.cc:157-171)
+takes "^A".."^_" or a literal char, with no none/off. two ways out, same shape
+as the z80cpmw fix: add --escape=none / "escape": "none" and have poll_stdin
+and the periodic check skip when set, or require a two-key sequence. either
+way say in README.md near the --escape=CHAR entry (README.md:250) that whatever
+you pick is taken away from the guest and that ^E is WordStar cursor-up, and
+make the startup banner (romwbw_emu.cc:1292-1296) say "reserved by the
+emulator" rather than just naming the char.
+  useful in the meantime: --escape=^@ parses to 0x00 and effectively neuters
+  the steal, since a terminal essentially never sends NUL. undocumented today.
+
+- ^S and ^Q are eaten by the tty before we ever see them. emu_io_cli.cc:105-117
+is the only tcsetattr in the tree and it touches c_lflag only
+(~(ICANON|ECHO|ISIG)); c_iflag keeps the inherited IXON, so ^S/^Q stay XON/XOFF
+flow control. ^S is cursor-left in WordStar and ^Q is the prefix for the whole
+^Qx family (^QR, ^QS, ^QF), so the diamond is half broken today. add:
+    raw.c_iflag &= ~(IXON | IXOFF);
+
+- ^V and ^O are eaten on macOS for a different reason: IEXTEN is never cleared,
+and BSD/XNU gates VLNEXT (^V) and VDISCARD (^O) on IEXTEN alone, outside the
+ICANON block - unlike linux, where those live inside it. ^O is the entire
+WordStar onscreen-format prefix (^OL, ^OC, ^OR). add IEXTEN to the c_lflag
+mask. items above plus this one are one line together:
+    raw.c_iflag &= ~(IXON | ICRNL);  raw.c_lflag &= ~IEXTEN;
+
+- ^J can never reach the guest as LF. ICRNL is inherited so a typed Enter
+arrives as 0x0A, and we rewrite it back at emu_io_cli.cc:183, :191 and :236.
+correct for Enter, but it makes Ctrl+J indistinguishable from it. if ICRNL is
+cleared per the line above, keep the rewrite on the pipe paths (:183, :191)
+and drop it on the tty path (:236) - piped scripts do use LF.
+
+- web: Ctrl+Shift+letter is neither sent to the guest nor cancelled. xterm.js's
+default case requires !shiftKey, so with shift held result.key is undefined,
+_keyDown returns early and no preventDefault runs. Ctrl+Shift+R therefore hard
+reloads the page and kills the session and every in-memory disk - a mis-shift
+of the exact key we were investigating. only the dirty-disk beforeunload
+(web/romwbw.html-template:1172-1177) stands in the way, and it is silent if
+nothing has been written since the last download. widen that guard to "running
+OR dirty", and consider
+    term.attachCustomKeyEventHandler(e => { if (e.type === 'keydown' &&
+      e.ctrlKey && !e.altKey && !e.metaKey) e.preventDefault(); return true; })
+which cancels the browser default while still letting xterm.js do the byte
+translation.
+
+- web: the terminal is never focused on load. term.focus() appears only at
+web/romwbw.html-template:887, :1104 and :1181, so with focus on a select or a
+button even a plain Ctrl+R is an ordinary browser reload. call term.focus()
+once after term.open() (:369) and re-focus after each control interaction, the
+way the warning-modal OK button already does.
+
+- web: verify the xterm.js behaviour by hand rather than trusting the version,
+since it comes from a CDN and can move. open the page, click the terminal,
+press Ctrl+R, confirm no reload and that the CCP retypes the line. then repeat
+with focus on the ROM select to see the failure mode.
+
+- web/romwbw-debug.html:389-403 mangles every Ctrl-letter to NUL - it uses
+onKey and tries to re-derive the byte from e.key, which is already the control
+byte. the page is not deployed, but fix it or delete it; replace onKey with the
+same onData loop the production page uses.
+
+- emu_console_check_ctrl_c_exit (emu_io_cli.cc:307-320, emu_io_wasm.cc:199-210)
+has no callers anywhere. dead code that looks like a live ^C interception is a
+trap for the next person auditing exactly this question. delete it or comment
+why it is dead.
+
+- DOWNSTREAM.md should carry the general rule, not just this repo's fixes. add
+a section next to the existing platform-contract ones titled something like
+"Ctrl-A..Ctrl-Z belong to the guest": CP/M has no function keys so F-keys are
+free for host UI, but every Ctrl-letter is live in the guest - 0x12 is the
+CCP's retype-line, ^E/^S/^D/^X are the WordStar diamond, ^Q is a command
+prefix. a port that binds one must make it configurable, must default to
+passing it through, must not advertise a shortcut it no longer owns, and must
+never put an unconfirmed machine reset on a Ctrl-letter. cite the z80cpmw ^R
+bug by name the way the disk-flush section cites its commit. then put a
+checklist line in the next docs/DOWNSTREAM_<date>.md and update the header
+block at DOWNSTREAM.md:5-11 to point at it.
+
+- state of the other ports as of this sweep, so nobody re-does it: ioscpm and
+cpmdroid both pass ^R through correctly and claim no Ctrl-letter for
+themselves. cpmemu passes ^R but steals ^C (five in a row exit, no off switch)
+and loses ^V to windows terminal and ^V/^O to IEXTEN on macOS. z80cpmw is
+fixed - ^R now goes to CP/M by default, with keyboard.ctrlRToCpm to get the
+shortcut back.
