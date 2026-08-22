@@ -1256,7 +1256,7 @@ void HBIOSDispatch::handleDIO() {
         cpu->regs.DE.set_pair16(sectors & 0xFFFF);
         cpu->regs.HL.set_pair16((sectors >> 16) & 0xFFFF);
       } else if (is_harddisk) {
-        uint32_t sectors = disks[hd_unit].size / 512;
+        uint32_t sectors = disks[hd_unit].total_sectors();
         cpu->regs.DE.set_pair16(sectors & 0xFFFF);
         cpu->regs.HL.set_pair16((sectors >> 16) & 0xFFFF);
       } else {
@@ -2307,7 +2307,7 @@ void HBIOSDispatch::handleEXT() {
 
         // Calculate slice LBA offset - no artificial slice limit
         // Only reject if slice would exceed actual disk capacity
-        uint32_t disk_sectors = disk.size / 512;
+        uint32_t disk_sectors = disk.total_sectors();
         uint32_t slice_start_sector = disk.partition_base_lba + ((uint32_t)slice * disk.slice_size);
 
         if (slice_start_sector >= disk_sectors) {

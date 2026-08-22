@@ -277,6 +277,25 @@ struct HBDisk {
   bool file_backed = false;
   size_t size = 0;
   uint32_t current_lba = 0;   // Current LBA position (set by DIOSEEK)
+
+  // Total sectors in this image, in the 32-bit sector count HBIOS deals in
+  // (DIOCAP hands it back split across DE and HL). Named to match
+  // MemDiskState::total_sectors above so the two kinds of disk read alike at
+  // the call sites.
+  //
+  // size is a size_t, wider than that interface on a 64-bit host, so the
+  // narrowing happens here once and on purpose rather than implicitly at each
+  // use. It clamps rather than wrapping: an image beyond 2 TiB cannot be
+  // described in 32 bits at all, and reporting the largest capacity that can
+  // be addressed is far better than reporting the remainder, which is what a
+  // silent truncation would do - a 4 TiB image would otherwise report as
+  // empty. The comparison is written against a size_t limit so it stays
+  // meaningful on a 32-bit host, where size_t is no wider than the interface.
+  uint32_t total_sectors() const {
+    const size_t sectors = size / 512;
+    const size_t limit = static_cast<size_t>(UINT32_MAX);
+    return static_cast<uint32_t>(sectors < limit ? sectors : limit);
+  }
   int max_slices = 8;         // Slices for drive letter assignment (not a limit on access)
 
   // Partition/slice info (detected from MBR on first EXTSLICE call)
