@@ -50,7 +50,7 @@ refused. Keys map one-to-one onto CLI options:
 	version	number	schema version, assumed 1 when absent
 	rom	string	like --romwbw=FILE
 	boot	string	like --boot=CMD (see note below)
-	escape	string	like --escape: "^E" style or a literal character
+	escape	string	like --escape: "^E" style, a literal character, or "none"
 	debug	boolean	like --debug
 	strictIo	boolean	like --strict-io
 	symbols	string	like --symbols=FILE
@@ -73,6 +73,22 @@ Example:
 Deliberately excluded (per-run debug switches, CLI only): `--trace`,
 `--load`, `--start`, `--sense`, `--mask-interrupt`, `--nmi`, and the config
 options themselves.
+
+## The escape character
+
+`escape` names the key that suspends the guest and enters the `sim>` console.
+That key is **taken away from CP/M**: it is one of the guest's own control
+characters, and the default, `^E`, is WordStar cursor-up. Accepted values are
+`"^A"` through `"^_"`, a single literal character, or `"none"`, which reserves
+nothing — with `"none"` there is no way into `sim>` and every control character
+reaches the guest.
+
+Only the exact words `"none"` and `"off"` are special (case-insensitively), and
+`"^@"` means the same; a literal `n` escape is still written `"n"`.
+`--save-config` round-trips the setting, so a machine saved with the escape
+disabled is written back as `"escape": "none"` and stays disabled.
+
+    "escape": "none"
 
 ## boot vs NVRAM
 

@@ -247,7 +247,8 @@ Disk options:
   --disk1=FILE      Attach disk image to slot 1 (drives G:-J:)
 
 Other options:
-  --escape=CHAR     Console escape char (default ^E)
+  --escape=CHAR     Key reserved for console mode (default ^E)
+  --escape=none     Reserve no key; every byte reaches CP/M
   --trace=FILE      Write execution trace
   --symbols=FILE    Load symbol table (.sym)
 
@@ -260,6 +261,46 @@ NVRAM persistence:
   NVRAM is persisted to $XDG_CONFIG_HOME/romwbw_emu/nvram (default ~/.config/romwbw_emu/nvram)
   Use SYSCONF (W at boot menu) to configure interactively.
 ```
+
+## Keyboard
+
+Every control character goes to the guest, because CP/M software uses them:
+`^R` retypes the current line at the CCP prompt, `^E`/`^S`/`^D`/`^X` are the
+WordStar cursor diamond, `^Q` starts the WordStar `^Qx` commands, `^O` starts
+the `^Ox` onscreen-format commands, and `^C` warm-boots. The emulator claims no
+Ctrl-letter for itself, with one exception.
+
+**The escape character is reserved by the emulator and never reaches CP/M.**
+`--escape=CHAR` names the key that suspends the guest and drops you at the
+`sim>` prompt, where `help` lists the debugger commands and `quit` exits. The
+default is `^E`, which is WordStar cursor-up, so if you run WordStar, VDE or
+anything else built on that layout, either move the key (`--escape=^]`) or turn
+it off entirely with `--escape=none`. `CHAR` is `^A` through `^_`, a literal
+character, or `none` (`off` and `^@` mean the same); with `none` there is no
+way into `sim>` at all and every control character reaches the guest. The same
+value can live in a settings file as `"escape": "none"` — see
+[docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
+The terminal is put in raw mode with XON/XOFF flow control (`^S`/`^Q`) and the
+line discipline's literal-next and discard keys (`^V`/`^O`) disabled, so those
+four reach the guest instead of the tty driver. One consequence worth knowing:
+there is no terminal-level scroll-pause on `^S` any more, because `^S` is now
+the guest's key.
+
+Enter arrives as CR and `Ctrl+J` sends LF — they are distinct keys. If you
+drive the emulator from a pty harness (`expect`, `socat`, `ttyd`), send `\r`
+for Enter, not `\n`. Piped and redirected stdin is unaffected: a script's
+LF-terminated lines still work, because the terminal settings above apply only
+to a real tty.
+
+In the browser, xterm.js translates `Ctrl`+letter to the control byte and the
+page forwards it verbatim, and the terminal takes focus on load — so `Ctrl+R`
+is CP/M's retype-line, not a page reload. `Ctrl+Shift`+letter sends the same
+byte as `Ctrl`+letter, except for the combinations the browser owns
+(`Ctrl+Shift+V` paste, and the devtools and tab/window shortcuts). `Ctrl+W`,
+`Ctrl+T`, `Ctrl+N` and `Ctrl+Q` still reach the browser as well as the guest —
+no page can prevent that — so the tab warns before closing while the emulator
+is running or a disk has unsaved writes.
 
 ## Settings File
 

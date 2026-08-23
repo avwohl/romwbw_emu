@@ -743,6 +743,17 @@ void HBIOSDispatch::handleCIO() {
       }
       // Now read char (blocks if needed)
       int ch = emu_console_read_char();
+      if (ch == EMU_CONSOLE_RETRY) {
+        // The keystroke was the host's reserved escape key, so there is no
+        // byte for the guest. Rewind over the 2-byte OUT (0xEF),A exactly as
+        // the non-blocking branch above does: the main loop then sees the
+        // escape and this call re-runs afterwards. Handing the guest the
+        // escape byte as well is what used to make one press of ^E both move
+        // the WordStar cursor and drop into sim>.
+        uint16_t pc = cpu->regs.PC.get_pair16();
+        cpu->regs.PC.set_pair16(pc - 2);
+        return;  // Don't call setResult/doRet - will retry
+      }
       if (debug_log) {
         debug_log("[CIOIN] read char: %d (0x%02X) '%c'\n", ch, ch & 0xFF, (ch >= 32 && ch < 127) ? ch : '?');
       }
@@ -2066,6 +2077,10 @@ void HBIOSDispatch::handleVDA() {
         return;  // Don't fall through to doRet()
       }
       int ch = emu_console_read_char();
+      // Gated by has_input above, so neither EOF (-1) nor EMU_CONSOLE_RETRY
+      // (-2) is reachable here today - but a raw negative would be handed to
+      // the guest as 0xFF/0xFE, so clamp rather than rely on that.
+      if (ch < 0) ch = 0x1A;
       cpu->regs.DE.set_low(ch & 0xFF);
       idle_poll_count = 0;
       break;

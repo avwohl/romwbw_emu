@@ -123,9 +123,6 @@ static volatile bool emu_debug_enabled = false;
 // Input queue for async keyboard input
 static std::queue<int> input_queue;
 
-// Ctrl+C tracking
-static int consecutive_ctrl_c = 0;
-
 // Random number generator
 static std::mt19937 rng(42);  // Fixed seed for reproducibility in WASM
 
@@ -170,7 +167,13 @@ int emu_console_read_char() {
   }
   int ch = input_queue.front();
   input_queue.pop();
-  if (ch == '\n') ch = '\r';  // LF -> CR for CP/M
+  // Deliberately no LF -> CR rewrite. Nothing that reaches this queue in the
+  // browser can be a stray 0x0A: xterm.js maps Enter to CR and normalises
+  // pasted text with replace(/\r?\n/g, "\r") before term.onData sees it. The
+  // only 0x0A that ever arrives is a deliberate Ctrl+J, which belongs to the
+  // guest - it is line-feed in ED and cursor-down in the WordStar family.
+  // (The CLI backend still rewrites on its pipe path, where a script really
+  // does end its lines with LF. Do not unify the two.)
   return ch;
 }
 
@@ -187,26 +190,13 @@ void emu_console_write_char(uint8_t ch) {
 }
 
 bool emu_console_check_escape(char escape_char) {
-  // In WebAssembly, escape is typically handled by JavaScript
-  // Check if escape char is at front of queue
-  if (!input_queue.empty() && input_queue.front() == escape_char) {
-    input_queue.pop();
-    return true;
-  }
-  return false;
-}
-
-bool emu_console_check_ctrl_c_exit(int ch, int count) {
-  if (ch == 0x03) {
-    consecutive_ctrl_c++;
-    if (consecutive_ctrl_c >= count) {
-      js_error("[Exiting: consecutive ^C received]");
-      // In WASM, we can't really exit - just signal the error
-      return true;
-    }
-  } else {
-    consecutive_ctrl_c = 0;
-  }
+  // Unreachable in this build, and deliberately a no-op rather than the
+  // queue-pop it used to be. The only callers are in romwbw_emu.cc, which the
+  // web target does not compile (see web/makefile), and there is no sim>
+  // debugger in the browser to escape to - so popping would only have taken
+  // a key away from the guest for nothing. The old comment claimed
+  // JavaScript handled the escape; no page in this repo does.
+  (void)escape_char;
   return false;
 }
 
@@ -413,7 +403,14 @@ int emu_dsky_get_key() {
 // Exported Functions for JavaScript
 //=============================================================================
 
-// Queue a key from JavaScript
+// Queue a key from JavaScript.
+//
+// EMSCRIPTEN_KEEPALIVE exports this even though it is not in the makefile's
+// EXPORTED_FUNCTIONS list, so it is reachable from a page - but no page in
+// this repo calls it, and it is NOT the key entry point. Use
+// _romwbw_key_input (web/romwbw_web.cc): this one does not clear the
+// waiting-for-input flag, so a key queued here never wakes a guest parked in
+// CIOIN.
 extern "C" EMSCRIPTEN_KEEPALIVE
 void emu_queue_key(int ch) {
   emu_console_queue_char(ch);

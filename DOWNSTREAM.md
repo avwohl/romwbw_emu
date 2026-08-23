@@ -3,12 +3,14 @@
 This document explains how to integrate the RomWBW emulator core into downstream projects (iOS, macOS, Windows, etc.).
 
 Dated migration notices for specific core releases live in docs/ - most
-recently [docs/DOWNSTREAM_2026-08-07.md](docs/DOWNSTREAM_2026-08-07.md), the
-all-ports to-do list for the v1.34 -> v1.35 sync (RomWBW version pin, ROM
-validation, shared file-I/O hardening). The previous notice,
-[docs/DOWNSTREAM_2026-07-21.md](docs/DOWNSTREAM_2026-07-21.md), covers the
-v1.33 -> v1.34 platform API change and still applies if you have not taken
-it yet.
+recently [docs/DOWNSTREAM_2026-08-23.md](docs/DOWNSTREAM_2026-08-23.md), the
+all-ports to-do list for the v1.35 -> v1.36 sync (control keys reach the guest,
+one dead platform function removed). Before it,
+[docs/DOWNSTREAM_2026-08-07.md](docs/DOWNSTREAM_2026-08-07.md) covers the
+v1.34 -> v1.35 RomWBW version pin, ROM validation and file-I/O hardening, and
+[docs/DOWNSTREAM_2026-07-21.md](docs/DOWNSTREAM_2026-07-21.md) the
+v1.33 -> v1.34 platform API change - both still apply if you have not taken
+them yet.
 
 ## Related: Front-End Feature Parity
 
@@ -775,6 +777,56 @@ port (fixed in its commit 70ce7b1). File-backed disks are flushed per-write by
 the core (see "Disk Commit System" above), but in-memory disks are the
 platform's responsibility whenever emulation stops or the app exits.
 
+## Platform Contract: Ctrl-A..Ctrl-Z Belong to the Guest
+
+CP/M has no function keys, so F1-F12 are free for host UI. Every Ctrl-letter is
+the opposite: it is ordinary ASCII that the guest reads. `^R` (0x12) is the
+CCP's retype-line, `^E`/`^S`/`^D`/`^X` are the WordStar cursor diamond, `^Q` is
+the prefix for the whole `^Qx` family, and `^C`, `^K`, `^O`, `^P` and `^V` are
+bound by the software people actually run. A port that takes one takes it away
+from every program its users run. (Which port maps which key is cataloged in
+FEATURE_PARITY.md, referred to at the top of this document; this is the rule
+that governs all of them.)
+
+A port that binds a Ctrl-letter anyway must:
+
+- **Make it configurable** — in the same settings file as everything else, not
+  a compile-time decision.
+- **Default to passing it through** to the guest, including for configs written
+  before the setting existed, so an upgrade does not silently arm it.
+- **Not advertise a shortcut it no longer owns.** Menu accelerator hints, help
+  screens and README text must be built from what is actually bound.
+- **Never put an unconfirmed machine reset on one.** A reset that cold-starts
+  from ROM, clears the screen and drops the scrollback belongs on a menu item
+  or behind a confirmation, whatever key reaches it.
+
+This is exactly the contract that bit the Windows port (fixed in its commit
+e35f336, shipped in 1.0.20). `Ctrl+R` was an unconditional accelerator for
+ID_EMU_RESET while F1 and F5 sat behind `keyboard.f1ToCpm`/`f5ToCpm`;
+`TranslateAccelerator` swallows a matched keystroke whole, so no `WM_CHAR` 0x12
+was ever synthesized and the terminal saw nothing, while the `WM_COMMAND` it
+sent instead cold-restarted the machine with no confirmation. The user reported
+it as "Ctrl R exits me from CPM". It is now `keyboard.ctrlRToCpm`, default true.
+
+The terminal layer counts as a binding too. A POSIX raw mode that leaves `IXON`
+set hands `^S`/`^Q` to XON/XOFF flow control, and one that leaves `IEXTEN` set
+loses `^V` (VLNEXT) and `^O` (VDISCARD) on BSD/XNU, where those are gated on
+IEXTEN alone rather than inside the ICANON block as on Linux — half the
+WordStar diamond, gone before any emulator code runs. Clear `IXON` in
+`c_iflag` and `IEXTEN` in `c_lflag`; cpmemu's `enable_raw_mode()` (its commit
+1584295) spells out the full set, including the clears it deliberately skips.
+Leave `IXOFF` alone: it throttles a fast sender and never consumes a typed
+`^S`. In a browser, a Ctrl-letter that the page does not `preventDefault()`
+stays the browser's own shortcut — and `Ctrl+Shift`+letter is not cancelled by
+xterm.js at all, so the page has to do it.
+
+If your attention key is itself a Ctrl-letter — this repo's CLI `--escape`
+defaults to `^E`, WordStar cursor-up — say where you document it that the key
+is reserved by the emulator and taken away from the guest, give the user a way
+to turn it off entirely, and make sure the reserved key is not also delivered
+to the guest. Do not use `^@` as the "off" spelling: terminals send NUL for
+Ctrl+Space, so binding it moves the theft rather than ending it.
+
 ## Migration Checklist
 
 - [ ] Pull latest `romwbw_mem.h` with shadow RAM fix
@@ -807,3 +859,8 @@ platform's responsibility whenever emulation stops or the app exits.
 - [ ] v1.35: Ship ROM and disk images from the same release; run `roms/verify_romwbw_pin.sh` before cutting a build
 - [ ] v1.35: If your About screen shows a version, add the RomWBW pin (`ROMWBW_PIN_STR`)
 - [ ] v1.35: If your port copied `emu_file_load()`/`emu_file_save()`/`emu_disk_*()`, take the hardening below
+- [ ] v1.36: Audit host shortcuts for Ctrl-letters; any survivor must be configurable and default to the guest
+- [ ] v1.36: Confirm no reset/reboot is reachable from an unconfirmed keystroke
+- [ ] v1.36: If you set POSIX raw mode, clear `IXON` (^S/^Q) and `IEXTEN` (^V/^O)
+- [ ] v1.36: Delete your `emu_console_check_ctrl_c_exit()` definition - the declaration is gone from `emu_io.h`. Keep `emu_console_check_escape()`
+- [ ] v1.36: `emu_console_read_char()` may return `EMU_CONSOLE_RETRY` (-2); if your backend never reserves a key it never returns it, but do not treat a negative return as a byte

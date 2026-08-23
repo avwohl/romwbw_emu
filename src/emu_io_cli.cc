@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstdarg>
 #include <cstring>
+#include <cerrno>
 #include <strings.h>
 #include <queue>
 #include <random>
@@ -37,12 +38,14 @@ static bool stdin_eof_consumed = false;  // guest read past EOF (see read_char)
 static bool stdin_is_tty = false;  // set in emu_io_init()
 static int peek_char = -1;
 
-// Escape handling - set by escape check, used by blocking read
-static char current_escape_char = 0x05;  // Default ^E
+// Escape handling - the key the emulator reserves for the sim> debugger.
+// Written only by emu_console_check_escape(), which the frontend stops
+// calling when the escape is disabled, so the initial value has to be the
+// disabled one (0) rather than ^E: otherwise a --escape=none run would go on
+// latching ^E on the blocking read below, which is exactly the bug the switch
+// exists to fix.
+static char current_escape_char = 0;  // 0 = no key reserved
 static bool escape_requested = false;
-
-// Ctrl+C tracking
-static int consecutive_ctrl_c = 0;
 
 // Random number generator
 static std::mt19937 rng(std::random_device{}());
@@ -108,9 +111,64 @@ void emu_io_init() {
     // messages use plain "\n". Disabling OPOST here broke that assumption and
     // produced "stair-stepped" output (LF with no CR) on terminals that don't
     // implicitly add a CR for a bare LF (e.g. the Linux console).
+    // These are the clears cpmemu's enable_raw_mode() makes (its commit
+    // 1584295), minus two on purpose - see the c_oflag and c_cflag notes
+    // below. Every Ctrl-letter is a live key in CP/M, so the line discipline
+    // must not consume any of them before the guest gets a chance.
     struct termios raw = original_termios;
-    raw.c_lflag &= ~(ICANON | ECHO | ISIG);
-    raw.c_cc[VMIN] = 0;   // Non-blocking
+    // IEXTEN as well as the obvious three: on Linux IEXTEN is inert once
+    // ICANON is off, but BSD/XNU gates VLNEXT (^V) and VDISCARD (^O) on
+    // IEXTEN alone, outside the ICANON block, so without this the macOS build
+    // eats both - ^O being the whole WordStar onscreen-format prefix (^OL,
+    // ^OC, ^OR). ECHONL is inert with ICANON off and is cleared only to keep
+    // this mask diffable against cpmemu's.
+    raw.c_lflag &= ~(ICANON | ECHO | ECHONL | IEXTEN | ISIG);
+    // IXON: otherwise ^S and ^Q stay XON/XOFF flow control and never arrive.
+    //   ^S is cursor-left in the WordStar diamond and ^Q prefixes the entire
+    //   ^Qx family, so half the diamond is dead without this. IXOFF is
+    //   deliberately NOT cleared: it only governs the kernel sending XOFF to
+    //   throttle a fast sender, it never consumes a typed ^S, and on a real
+    //   serial console it is the only thing preventing a queue overrun.
+    // ICRNL/INLCR/IGNCR: otherwise a typed Enter arrives as 0x0A, which is
+    //   what makes Ctrl+J indistinguishable from Enter. With ICRNL cleared
+    //   the tty delivers Enter as CR natively, so the tty read path below
+    //   must NOT rewrite LF - the two changes go together or Enter breaks.
+    // ISTRIP: keeps the 8th bit. Nothing on the input path masks to 7 bits
+    //   (hbios_dispatch.cc CIOIN/VDAKRD, hbios_cpu.cc port 0x01 all pass the
+    //   byte straight through), and with ISTRIP set a 0x8D byte was delivered
+    //   as 0x0D - a spurious Enter. Note the deliberate asymmetry this
+    //   creates with emu_console_write_char(), which still masks output to
+    //   0x7F: that mask is there because WordStar sets bit 7 on the last
+    //   character of a word and expects a dumb terminal to strip it, so the
+    //   guest can now receive a byte it cannot echo.
+    // IGNBRK/BRKINT/PARMRK: BRKINT is not gated on ISIG, so without this a
+    //   BREAK on a real serial console still flushes both queues and raises
+    //   SIGINT even though ISIG is cleared above. PARMRK matters for two
+    //   independent reasons. First, and the only one that bites on a normal
+    //   tty: PARMRK doubles a *valid* \377 to "\377 \377" whenever ISTRIP is
+    //   clear, and it does so regardless of INPCK - so now that ~ISTRIP makes
+    //   the guest 8-bit clean, a typed 0xFF would otherwise arrive twice.
+    //   Second, on a serial console with parity checking actually enabled it
+    //   would inject the three-byte \377 \0 X marker on a parity error.
+    //   INPCK and IGNPAR are left as inherited; both are clear on a normal
+    //   tty, where the kernel reports no parity error at all and delivers the
+    //   byte unchanged.
+    raw.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
+    // c_oflag is deliberately NOT touched - see the OPOST comment above.
+    // cpmemu clears it; we cannot, because every output path here emits a
+    // bare '\n' and relies on ONLCR.
+    // c_cflag is not touched either: CSIZE/PARENB/CS8 would reprogram a real
+    // serial console's line parameters, and ~ISTRIP above is what actually
+    // preserves the 8th bit.
+    // VMIN=1, matching cpmemu, because every read() here already sits behind
+    // a select() and so never actually waits - and because it is what makes
+    // n == 0 from a tty mean "hangup" and nothing else. With VMIN=0 a byte
+    // stolen between the select and the read returns 0, which this file
+    // treats as EOF; that latched a permanent false EOF and, now that a tty
+    // EOF also winds the emulator down, would end the run outright. The
+    // residual risk of VMIN=1 is the same rare race blocking a status poll
+    // until the next keystroke - recoverable, unlike the alternative.
+    raw.c_cc[VMIN] = 1;
     raw.c_cc[VTIME] = 0;
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
     raw_mode_enabled = true;
@@ -167,8 +225,26 @@ bool emu_console_has_input() {
   // Use read() instead of getchar() to avoid stdio buffering issues
   char buf;
   ssize_t n = read(STDIN_FILENO, &buf, 1);
+  if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
+    return false;  // interrupted or not ready - NOT end of input
+  }
   if (n <= 0) {
     stdin_eof = true;
+    return false;
+  }
+  // The reserved key must be filtered HERE, not only on the blocking read.
+  // peek_char is drained by three consumers, and two of them - VDAKRD
+  // (hbios_dispatch.cc) and IN port 0x01 (hbios_cpu.cc) - call this function
+  // and emu_console_read_char() inside a SINGLE executed instruction, so
+  // poll_stdin() never gets its chance to run emu_console_check_escape()
+  // in between and the escape byte would go straight to the guest.
+  // stdin_is_tty is load-bearing: the pipe read path deliberately does not
+  // reserve anything (emu_console_check_escape returns early for a non-tty),
+  // and escape_requested is tested before that early-out, so latching here
+  // for a pipe would drop a piped script into sim> on its first 0x05.
+  if (stdin_is_tty && current_escape_char != 0 &&
+      (unsigned char)buf == (unsigned char)current_escape_char) {
+    escape_requested = true;
     return false;
   }
   peek_char = (unsigned char)buf;
@@ -176,19 +252,29 @@ bool emu_console_has_input() {
 }
 
 int emu_console_read_char() {
-  // Check queued input first
+  // Check queued input first. emu_console_queue_char() has no CLI caller
+  // (only the web frontend uses it), but emu_console_check_escape() parks a
+  // byte here when it has to look past one, so on a tty this is reachable -
+  // and the LF rewrite therefore has to be gated exactly like the paths
+  // below, or a tty Ctrl+J would come back out of the queue as Enter.
   if (!input_queue.empty()) {
     int ch = input_queue.front();
     input_queue.pop();
-    if (ch == '\n') ch = '\r';  // LF -> CR for CP/M
+    if (!stdin_is_tty && ch == '\n') ch = '\r';  // LF -> CR (pipes only)
     return ch;
   }
 
-  // Check peeked char
+  // Check peeked char. peek_char is filled from a tty as well as from a pipe
+  // - emu_console_has_input() has no isatty guard and runs for both, and
+  // poll_stdin() drives emu_console_check_escape() after every executed
+  // instruction - so on an interactive run this is the usual delivery route,
+  // not an edge case. The LF rewrite therefore has to be gated exactly the
+  // way the two read paths below are, or a typed Ctrl+J becomes Enter again
+  // through here.
   if (peek_char >= 0) {
     int ch = peek_char;
     peek_char = -1;
-    if (ch == '\n') ch = '\r';  // LF -> CR for CP/M
+    if (!stdin_is_tty && ch == '\n') ch = '\r';  // LF -> CR (pipes only)
     return ch;
   }
 
@@ -198,7 +284,13 @@ int emu_console_read_char() {
   // main loop exits through end of main so NVRAM and the trace file still
   // get written (see emu_console_input_exhausted).
   if (stdin_eof) {
-    if (!stdin_is_tty) stdin_eof_consumed = true;
+    // A guest read past a latched EOF means no further input can arrive,
+    // tty or not. Without the tty case a hung-up terminal left the guest
+    // taking 0x1A at full speed forever, because CIOIN resets the idle
+    // counter on every call so the main loop's idle sleep never engages.
+    // Safe only because EINTR no longer latches stdin_eof (see above and the
+    // tty read below).
+    stdin_eof_consumed = true;
     return -1;
   }
 
@@ -208,9 +300,12 @@ int emu_console_read_char() {
     ssize_t n = read(STDIN_FILENO, &buf, 1);
     if (n > 0) {
       int ch = (unsigned char)buf;
+      // Kept here: c_iflag never applies to a pipe, so a piped script really
+      // does terminate its lines with LF.
       if (ch == '\n') ch = '\r';
       return ch;
     }
+    if (n < 0 && errno == EINTR) return -1;  // signal, not EOF
     // EOF on pipe - remember it and let the main loop wind down
     stdin_eof = true;
     stdin_eof_consumed = true;
@@ -229,15 +324,37 @@ int emu_console_read_char() {
     ssize_t n = read(STDIN_FILENO, &buf, 1);
     if (n > 0) {
       int ch = (unsigned char)buf;
-      // Check for escape character
-      if (ch == current_escape_char) {
+      // The escape key is reserved by the emulator: latch it for
+      // emu_console_check_escape() and tell the caller there is no byte for
+      // the guest. Returning it as well fired the guest's own binding for
+      // that key too - one press of the default ^E both moved the WordStar
+      // cursor up (CP/M 2.2 reads it as physical end of line) and dropped
+      // into sim>. The cast matters: ch is 0..255 while current_escape_char
+      // is a plain (signed) char, so an escape >= 0x80 would never match.
+      if (current_escape_char != 0 &&
+          ch == (unsigned char)current_escape_char) {
         escape_requested = true;
+        return EMU_CONSOLE_RETRY;
       }
-      if (ch == '\n') ch = '\r';  // LF -> CR for CP/M
+      // No LF -> CR here: emu_io_init() clears ICRNL, so the tty delivers
+      // Enter as CR already and a 0x0A on this path is a real Ctrl+J, a
+      // distinct key the guest is entitled to see. If ICRNL is ever restored
+      // above, this rewrite has to come back with it.
       return ch;
     }
+    if (n < 0 && errno == EINTR) return -1;  // signal, not EOF
+    stdin_eof = true;                        // n == 0: real hangup
+    return -1;
   }
-  // Error or signal - treat as EOF
+  if (sel < 0 && errno == EINTR) {
+    // A caught signal must unblock the guest so the main loop can observe
+    // stop_requested - the handlers in romwbw_emu.cc are installed with
+    // sa_flags = 0 precisely so they interrupt this select. It is NOT EOF:
+    // latching stdin_eof here would make emu_console_has_input() answer "no
+    // input" for the rest of the run, and console input would never recover.
+    return -1;
+  }
+  // Real error - treat as EOF
   stdin_eof = true;
   return -1;
 }
@@ -257,6 +374,13 @@ void emu_console_write_char(uint8_t ch) {
 }
 
 bool emu_console_check_escape(char escape_char) {
+  // 0 means the frontend reserves no key at all (--escape=none). Return
+  // before the store below: current_escape_char is written ONLY here, and it
+  // is what the blocking read consults, so leaving a stale value behind would
+  // keep stealing the old key on the one path an interactive user actually
+  // hits.
+  if (escape_char == 0) return false;
+
   // Save escape char for blocking read to check
   current_escape_char = escape_char;
 
@@ -266,15 +390,28 @@ bool emu_console_check_escape(char escape_char) {
     return true;
   }
 
-  if (!isatty(STDIN_FILENO)) return false;
+  // stdin_is_tty, not isatty(): this runs once per executed Z80 instruction
+  // via poll_stdin(), and the syscall dominated the profile (measured at over
+  // 80% of syscall time on a piped run, every call failing with ENOTTY).
+  if (!stdin_is_tty) return false;
+
+  int esc = (unsigned char)escape_char;  // ch below is 0..255
 
   // Check peeked char
   if (peek_char >= 0) {
-    if (peek_char == escape_char) {
+    if (peek_char == esc) {
       peek_char = -1;  // Consume
       return true;
     }
-    return false;
+    // A byte the guest has not collected yet must not block escape
+    // detection. peek_char holds exactly one byte and only a guest read
+    // drains it, so a guest sitting in a compute loop with no console I/O
+    // would park a byte here and make the escape key undetectable for the
+    // rest of the run. Move it into the FIFO - which emu_console_read_char()
+    // drains before peek_char, so ordering is preserved - and carry on to
+    // the select() below.
+    input_queue.push(peek_char);
+    peek_char = -1;
   }
 
   // Non-blocking check with select
@@ -291,32 +428,20 @@ bool emu_console_check_escape(char escape_char) {
 
   char buf;
   ssize_t n = read(STDIN_FILENO, &buf, 1);
+  if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
+    return false;  // interrupted or not ready - NOT end of input
+  }
   if (n <= 0) {
     stdin_eof = true;
     return false;
   }
   int ch = (unsigned char)buf;
-  if (ch == escape_char) {
+  if (ch == esc) {
     return true;
   }
   // Not escape - save for later
   peek_char = ch;
   return false;
-}
-
-bool emu_console_check_ctrl_c_exit(int ch, int count) {
-  if (ch == 0x03) {
-    consecutive_ctrl_c++;
-    if (consecutive_ctrl_c >= count) {
-      emu_error("\n[Exiting: %d consecutive ^C received]\n", count);
-      emu_io_cleanup();
-      exit(0);
-    }
-    return false;
-  } else {
-    consecutive_ctrl_c = 0;
-    return false;
-  }
 }
 
 //=============================================================================
@@ -620,9 +745,11 @@ void emu_console_clear_queue() {
 }
 
 bool emu_console_input_exhausted() {
-  // True once the guest has read past EOF on a non-interactive stdin
-  // (pipe/file): no further input can ever arrive and the guest has drained
-  // everything queued, so the main loop should wind down cleanly.
+  // True once the guest has read past a latched EOF - a hung-up tty as well
+  // as a drained pipe/file: no further input can ever arrive and the guest
+  // has drained everything queued, so the main loop should wind down
+  // cleanly. The tty case is what stops a closed terminal leaving the guest
+  // taking 0x1A at full speed forever.
   return stdin_eof_consumed;
 }
 

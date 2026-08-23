@@ -148,22 +148,50 @@ static bool waiting_for_int_delivery = false;
 
 // HBIOS function codes and result codes are now in hbios_dispatch.h
 
-// Console mode escape character (default ^E like SIMH)
+// Console mode escape character (default ^E like SIMH). 0 means NO key is
+// reserved: nothing is taken from the guest and console mode is unreachable.
+// NUL is the sentinel rather than a separate bool because the emu_io contract
+// (emu_io.h, DOWNSTREAM.md) passes the escape as a bare char to every port's
+// emu_console_check_escape(), and adding a required symbol there would be a
+// link break in four ports. It is a sentinel, not a bindable key: every check
+// site short-circuits before the value is ever compared against input, which
+// matters because a terminal really can send 0x00 - xterm and the rest emit
+// it for Ctrl+Space.
 static char console_escape_char = 0x05;  // Ctrl+E
 static bool console_mode_requested = false;
 
-// Parse an escape-character spec: "^X" for a control char, or a literal
-// character. Used by --escape and the config file's "escape" key.
+// Parse an escape-character spec: "none"/"off" to reserve no key at all,
+// "^X" for a control char, or a literal character. Used by --escape and the
+// config file's "escape" key.
 static bool parse_escape_char(const char* esc, char* out) {
-  if (esc[0] == '^' && esc[1] != '\0') {
-    char c = toupper(esc[1]);
+  // Every Ctrl-letter is live in the guest - the default ^E is cursor-up in
+  // the WordStar diamond - so the key the emulator reserves has to be
+  // surrenderable, the way z80cpmw's keyboard.ctrlRToCpm is. This test must
+  // come first: the literal branch below would otherwise read "none" as the
+  // letter 'n' and quietly reserve that instead.
+  if (emu_strcasecmp(esc, "none") == 0 || emu_strcasecmp(esc, "off") == 0) {
+    *out = 0;
+    return true;
+  }
+  // Both branches insist on an exact length. Without that, the literal
+  // branch swallowed the first byte of anything it did not recognise, so
+  // --escape=non reserved 'n' and --escape=of reserved 'o' - near-misses of
+  // the new keywords that used to be merely odd and are now silent, because
+  // the reserved byte is no longer delivered to the guest at all. It also
+  // rejects a multi-byte literal like --escape=e-acute, which truncated to
+  // its UTF-8 lead byte and left the guest receiving the orphaned trail.
+  if (esc[0] == '^' && esc[1] != '\0' && esc[2] == '\0') {
+    char c = toupper((unsigned char)esc[1]);
     if (c >= '@' && c <= '_') {
       *out = c - '@';
       return true;
     }
     return false;
   }
-  if (esc[0] != '\0') {
+  // A literal must be printable ASCII: escape_key_name() spells the key back
+  // as a bare byte, and a lone >= 0x80 byte is not valid UTF-8, so
+  // --save-config would throw on it. DEL is not a bindable key either.
+  if (esc[0] != '\0' && esc[1] == '\0' && (unsigned char)esc[0] < 0x7F) {
     *out = esc[0];
     return true;
   }
@@ -172,6 +200,7 @@ static bool parse_escape_char(const char* esc, char* out) {
 
 // Check for escape character (non-blocking) - called periodically from main loop
 static bool check_console_escape_async() {
+  if (console_escape_char == 0) return false;  // --escape=none: no key reserved
   if (emu_console_check_escape(console_escape_char)) {
     console_mode_requested = true;
     return true;
@@ -336,13 +365,25 @@ enum ConsoleResult {
 // Step count for stepping
 static int step_count = 0;
 
+// Spell the reserved key the way a user types it. One helper because the key
+// is named in four places (this banner, the console-mode banner, the usage
+// text and --save-config) and they used to disagree: the console-mode banner
+// said "^E" no matter what --escape was set to.
+static std::string escape_key_name() {
+  if (console_escape_char == 0) return "none";
+  unsigned char c = (unsigned char)console_escape_char;
+  if (c < 0x20) return std::string("^") + (char)('@' + c);
+  return std::string(1, (char)c);
+}
+
 // Handle console mode - returns action to take
 static ConsoleResult handle_console_mode(qkz80* cpu, banked_mem* memory) {
   char line[256];
   char cmd[64];
   char arg1[64], arg2[64], arg3[64];
 
-  fprintf(stderr, "\n[Console mode - ^E to enter, 'help' for commands]\n");
+  fprintf(stderr, "\n[Console mode - %s to enter, 'help' for commands]\n",
+          escape_key_name().c_str());
   fprintf(stderr, "PC=%s\n", format_address(cpu->regs.PC.get_pair16()).c_str());
 
   while (true) {
@@ -744,6 +785,10 @@ public:
   // Poll stdin for escape character only
   // Input is read directly by CIOIN/VDAKRD via emu_console_read_char
   void poll_stdin() {
+    // Runs after every executed instruction, so the early-out matters twice
+    // over: with --escape=none it keeps the guest's keys, and it removes the
+    // per-instruction select() this used to cost.
+    if (console_escape_char == 0) return;
     // Check for console escape first
     if (emu_console_check_escape(console_escape_char)) {
       console_mode_requested = true;
@@ -800,12 +845,18 @@ void print_usage(const char* prog) {
   fprintf(stderr, "  Combo disks with 1MB MBR prefix + multiple slices are supported.\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Other options:\n");
-  fprintf(stderr, "  --escape=CHAR     Console escape char (default ^E)\n");
+  fprintf(stderr, "  --escape=CHAR     Key reserved for console mode: ^A..^_ or a literal\n");
+  fprintf(stderr, "                    char (default ^E). The key is TAKEN AWAY from the\n");
+  fprintf(stderr, "                    guest - ^E is cursor-up in the WordStar diamond.\n");
+  fprintf(stderr, "  --escape=none     Reserve no key; every byte reaches CP/M ('off' is\n");
+  fprintf(stderr, "                    the same). Console mode is then unreachable.\n");
   fprintf(stderr, "  --trace=FILE      Write execution trace to FILE\n");
   fprintf(stderr, "  --symbols=FILE    Load symbol table from FILE (.sym)\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Console mode:\n");
-  fprintf(stderr, "  Press the escape char (default Ctrl+E) to enter console mode.\n");
+  fprintf(stderr, "  Press the escape char (default Ctrl+E) to enter console mode. That key\n");
+  fprintf(stderr, "  never reaches CP/M; use --escape=none when the guest needs it (WordStar\n");
+  fprintf(stderr, "  and its descendants use ^E for cursor-up).\n");
   fprintf(stderr, "  Type 'help' in console mode for available commands.\n");
   fprintf(stderr, "  Use 'quit' to exit.\n");
   fprintf(stderr, "\n");
@@ -1029,7 +1080,7 @@ int main(int argc, char** argv) {
       const char* esc = argv[i] + 9;
       if (esc[0] != '\0') {
         if (!parse_escape_char(esc, &console_escape_char)) {
-          fprintf(stderr, "Invalid escape char: %s (use ^A through ^_)\n", esc);
+          fprintf(stderr, "Invalid escape char: %s (use ^A through ^_, a literal character, or none)\n", esc);
           return 1;
         }
         cli_escape_set = true;
@@ -1120,7 +1171,7 @@ int main(int argc, char** argv) {
   // override (CLI values were validated inline as they were parsed)
   if (!cli_escape_set && have_config && !file_cfg.escape.empty() &&
       !parse_escape_char(file_cfg.escape.c_str(), &console_escape_char)) {
-    fprintf(stderr, "Error: config %s: invalid \"escape\" value '%s' (use ^A through ^_ or a literal)\n",
+    fprintf(stderr, "Error: config %s: invalid \"escape\" value '%s' (use ^A through ^_, a literal character, or \"none\")\n",
             config_path.c_str(), file_cfg.escape.c_str());
     return 1;
   }
@@ -1158,11 +1209,10 @@ int main(int argc, char** argv) {
     EmuConfig eff;
     if (binary) eff.rom = binary;
     eff.boot = boot_string;  // non-empty only if --boot/config set it (NVRAM loads later)
-    if (console_escape_char >= 0 && console_escape_char < 0x20) {
-      eff.escape = std::string("^") + (char)('@' + console_escape_char);
-    } else {
-      eff.escape = std::string(1, console_escape_char);
-    }
+    // Round-trip a disabled escape as the word, not as "^@": the two parse
+    // to the same value, but a saved file that says "^@" reads like a real
+    // binding and 0x00 is a byte terminals genuinely send (Ctrl+Space).
+    eff.escape = escape_key_name();
     eff.symbols = symbols_file;
     eff.romldr = romldr_path;
     eff.debug = debug;
@@ -1288,12 +1338,23 @@ int main(int argc, char** argv) {
     }
   }
 
-  // Print console escape char info
-  if (console_escape_char < 0x20) {
-    fprintf(stderr, "Console escape: ^%c (Ctrl+%c)\n",
-            console_escape_char + '@', console_escape_char + '@');
+  // Print console escape char info. Name the key AND say it is taken away:
+  // the default ^E is cursor-up in the WordStar diamond, and a user who does
+  // not know it is reserved concludes the editor is broken.
+  if (console_escape_char == 0) {
+    fprintf(stderr, "Console escape: none - every key goes to the guest (sim> unreachable)\n");
+  } else if (!isatty(STDIN_FILENO)) {
+    // The escape is a tty-only mechanism: emu_console_check_escape() returns
+    // early for a pipe or a file, so on redirected stdin the key reaches the
+    // guest and there is no way into sim>. Say so rather than claiming a
+    // reservation that is not in force. isatty() directly, not the cached
+    // stdin_is_tty - emu_io_init() has not run yet at this point.
+    fprintf(stderr, "Console escape: %s - reserved on an interactive terminal only;"
+                    " stdin is not a tty, so the key reaches the guest\n",
+            escape_key_name().c_str());
   } else {
-    fprintf(stderr, "Console escape: '%c'\n", console_escape_char);
+    fprintf(stderr, "Console escape: %s - reserved by the emulator, the guest never sees it"
+                    " (--escape=none to disable)\n", escape_key_name().c_str());
   }
 
   // Enable raw terminal mode

@@ -5,6 +5,20 @@ to WebAssembly with Emscripten and driven from a single-page terminal UI
 built on xterm.js 5.3.0 (plus the fit addon 0.8.0), both loaded from the
 jsdelivr CDN by `romwbw.html-template`.
 
+Keyboard input is `term.onData`: xterm.js has already resolved the keystroke to
+bytes - control keys as their native byte, special keys as their escape
+sequence - and the page forwards them to `_romwbw_key_input` unchanged,
+dropping only code points above 0xFF. The page installs no key handler of its
+own for anything xterm.js already translates, so every Ctrl-letter belongs to
+the guest, and the terminal is focused after `term.open()` so the browser does
+not get them first. The one handler it does install covers `Ctrl+Shift`+letter,
+which xterm.js does not translate *or* cancel: it delivers the plain control
+byte and calls `preventDefault()`, except for the combinations the browser owns
+(`Ctrl+Shift+V` paste, and the devtools and tab/window shortcuts, most of which
+a page cannot cancel anyway). Note that `Terminal.input()` does not exist in
+the pinned 5.3.0 - it landed later - so synthetic bytes have to go through the
+page's own `sendToGuest()`.
+
 The build shares the core engine sources from `../src`:
 `hbios_dispatch.cc`, `hbios_cpu.cc`, `emu_io_wasm.cc`, `emu_io_common.cc`,
 and `emu_init.cc`. The qkz80 Z80/8080 CPU core comes from a sibling checkout

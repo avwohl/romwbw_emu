@@ -141,7 +141,11 @@ extern "C" {
 // Send keyboard input
 EMSCRIPTEN_KEEPALIVE
 void romwbw_key_input(int ch) {
-  if (ch == '\n') ch = '\r';  // LF -> CR for CP/M
+  // No LF -> CR rewrite here. Unlike the CLI's pipe path, nothing that
+  // reaches this function can be a stray 0x0A: xterm.js maps Enter to CR
+  // (evaluateKeyboardEvent case 13) and normalises pasted text with
+  // replace(/\r?\n/g, "\r") before term.onData sees it. The only 0x0A that
+  // ever arrives is a deliberate Ctrl+J, which belongs to the guest.
   emu_console_queue_char(ch);
   // Clear waiting flag so run_batch continues
   if (emu) emu->hbios.clearWaitingForInput();
@@ -344,6 +348,11 @@ void romwbw_start() {
   emu->batch_count = 0;
 
   emu->running = true;
+  // Drop anything typed before Start (or between runs). The page focuses the
+  // terminal on load, so keystrokes now land in the input queue rather than
+  // in the browser, and without this they would be replayed into the boot
+  // ROM the moment the guest starts reading.
+  emu_console_clear_queue();
   emu->hbios.clearWaitingForInput();
 
   emu_status("RomWBW starting...");

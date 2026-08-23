@@ -368,6 +368,17 @@
     term.loadAddon(fitAddon);
     term.open(document.getElementById('terminal'));
     fitAddon.fit();
+    // Point the keyboard at the guest from the start. Without this, focus
+    // sits on <body> after load and every Ctrl-letter belongs to the browser
+    // until the user happens to click the terminal - a plain Ctrl+R reloads
+    // the page and takes the session and the in-memory disks with it, which
+    // is exactly the failure the ^R sweep was chasing. xterm.js only claims
+    // Ctrl-letters while its textarea has focus.
+    // Skipped on touch-primary devices, where focusing a textarea raises the
+    // on-screen keyboard over the page before the user has asked for it.
+    if (!window.matchMedia || !window.matchMedia('(pointer: coarse)').matches) {
+      term.focus();
+    }
 
     const statusDiv = document.getElementById('status');
     const startBtn = document.getElementById('startBtn');
@@ -625,13 +636,64 @@
     // and control keys as their native bytes - Ctrl+C is "\x03"), and is the
     // only path xterm.js routes clipboard paste through (paste arrives
     // pre-normalized CRLF/LF -> CR by xterm.js).
-    term.onData(function(data) {
+    // Named so the Ctrl+Shift handler below can feed the same sink. xterm
+    // 5.3.0 has no public Terminal.input() - it landed after this pin - and
+    // Terminal.paste() would run the text through prepareTextForTerminal and
+    // bracketTextForPaste, so a synthetic keystroke has to go through here.
+    function sendToGuest(data) {
       if (!Module._romwbw_key_input) return;
       for (const ch of data) {
         const code = ch.codePointAt(0);
         if (code > 0xFF) continue;  // drop non-Latin-1 (Unicode paste/IME); CP/M is byte-oriented
         Module._romwbw_key_input(code);
       }
+    }
+    term.onData(sendToGuest);
+
+    // xterm.js only translates Ctrl+<letter> when NO other modifier is held:
+    // evaluateKeyboardEvent's default case takes the plain-Ctrl branch only
+    // for !shift && !alt && !meta. With Shift held it produces no key at all,
+    // so Terminal._keyDown returns on `!result.key` before reaching its
+    // this.cancel() - no preventDefault runs and the BROWSER default fires.
+    // Ctrl+Shift+R is a hard reload: it throws away the session and every
+    // in-memory disk, and it is one slipped finger away from the Ctrl+R the
+    // CCP uses to retype the line. Real terminals ignore Shift for
+    // Ctrl+letter, so do the same - cancel the browser action and deliver the
+    // plain control byte.
+    //
+    // The exclusions are combos the BROWSER owns, not the terminal:
+    //   V  paste-as-plain-text. This is the only keyboard paste that reaches
+    //      xterm.js on Windows/Linux, because plain Ctrl+V is consumed as
+    //      0x16; cancelling it would suppress the DOM paste event that
+    //      xterm's textarea listener depends on.
+    //   C/I/J/K/P  devtools (Ctrl+Shift+C is the element inspector in every
+    //      major browser, NOT copy - browser copy is plain Ctrl+C).
+    //   N/T/W/Q  window and tab commands.
+    // Everything after V in that list is uncancelable by a page anyway; they
+    // are named so nobody later assumes this handler is holding them back.
+    // Restricting to keyCode 65..90 also keeps our hands off Ctrl+Insert
+    // (copy) and Ctrl+Minus/Plus/0 (zoom), which xterm.js deliberately leaves
+    // uncancelled.
+    const BROWSER_OWNED_CTRL_SHIFT = new Set(['C','I','J','K','N','P','Q','T','V','W']);
+    term.attachCustomKeyEventHandler(function(e) {
+      if (e.type !== 'keydown') return true;   // also fires for keyup/keypress
+      if (!e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return true;
+      if (e.keyCode < 65 || e.keyCode > 90) return true;
+      if (BROWSER_OWNED_CTRL_SHIFT.has(String.fromCharCode(e.keyCode))) return true;
+      // Only claim these keys when there is something to lose. The terminal
+      // is focused from load, so without this gate Ctrl+Shift+R would be
+      // swallowed on a page that has not started yet - and since plain
+      // Ctrl+R is already consumed by xterm.js, that would leave no keyboard
+      // route to reload at all. Same condition as the beforeunload guard.
+      if (!emuRunning() && !anyDiskDirty()) return true;
+      e.preventDefault();
+      sendToGuest(String.fromCharCode(e.keyCode - 64));  // same byte as plain Ctrl+letter
+      // triggerDataEvent does these two for a real keystroke; a synthetic one
+      // bypasses it, so a stale selection would survive and the viewport
+      // would not follow the guest's output.
+      if (term.hasSelection()) term.clearSelection();
+      term.scrollToBottom();
+      return false;   // xterm.js must not process this event a second time
     });
 
     // Helper to load ROM data into emulator
@@ -1158,10 +1220,19 @@
       }
     });
 
-    // Warn before leaving with guest disk writes that have not been
-    // downloaded - in-memory disks vanish with the tab. Downloading a disk
-    // clears its dirty flag (a later guest write re-sets it). Dirty state
-    // survives Stop, so the warning applies regardless of running state.
+    // Warn before leaving with a live session, or with guest disk writes that
+    // have not been downloaded - in-memory disks vanish with the tab.
+    // Downloading a disk clears its dirty flag (a later guest write re-sets
+    // it). Dirty state survives Stop, so the warning applies regardless of
+    // running state.
+    //
+    // "Running" is in the guard as well as "dirty" because the keys that end
+    // a session are not all cancelable. Ctrl+W, Ctrl+Shift+W and Ctrl+Q are
+    // browser-reserved: xterm.js hands the byte to the guest AND the tab
+    // closes, and no key handler on this page can stop it. A running CP/M
+    // also holds plenty of state that never reaches a disk sector - an editor
+    // buffer, a game in progress, a half-typed command line - so waiting for
+    // a write before saying anything leaves the common case unprotected.
     function anyDiskDirty() {
       if (typeof Module === 'undefined' || !Module._romwbw_is_disk_dirty) return false;
       for (let u = 0; u < 16; u++) {
@@ -1169,8 +1240,12 @@
       }
       return false;
     }
+    function emuRunning() {
+      if (typeof Module === 'undefined' || !Module._romwbw_is_running) return false;
+      return !!Module._romwbw_is_running();
+    }
     window.addEventListener('beforeunload', function(e) {
-      if (anyDiskDirty()) {
+      if (emuRunning() || anyDiskDirty()) {
         e.preventDefault();
         e.returnValue = '';  // browsers show their own generic prompt
       }
@@ -1179,6 +1254,30 @@
     // Click on terminal to focus it
     document.getElementById('terminal-container').addEventListener('click', function() {
       term.focus();
+    });
+
+    // Hand focus back to the guest after a control interaction. Everything in
+    // .controls is a fire-and-forget setting; the terminal is the only thing
+    // on this page that wants keystrokes, and leaving focus on a button means
+    // the next Ctrl-letter is a browser shortcut instead of a CP/M control
+    // code (see the load-time focus above).
+    //
+    // <select> is deliberately NOT included. A closed <select> fires 'change'
+    // on every arrow-key press, so refocusing there would yank focus away on
+    // the first press and send the second arrow to CP/M as ESC [ B - the user
+    // could never reach the second entry of a list by keyboard. Selects hand
+    // focus back when the user clicks the terminal.
+    function refocusTerminal() { term.focus(); }
+    document.querySelectorAll('.controls input[type=file], .controls input[type=checkbox]')
+      .forEach(function(el) { el.addEventListener('change', refocusTerminal); });
+    document.querySelectorAll('.controls button')
+      .forEach(function(el) { el.addEventListener('click', refocusTerminal); });
+
+    // The boot string is a text field: 'change' fires on blur, and stealing
+    // focus there would fight a user tabbing to the next control. Hand focus
+    // back only on an explicit Enter.
+    document.getElementById('bootString').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { e.preventDefault(); this.blur(); term.focus(); }
     });
 
     // Debug monitoring - tracks emulator state periodically

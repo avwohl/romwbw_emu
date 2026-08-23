@@ -65,9 +65,18 @@ void emu_io_cleanup();
 // Returns true if a character is waiting to be read
 bool emu_console_has_input();
 
+// The console read consumed a keystroke that belongs to the emulator rather
+// than to the guest - today only the CLI's escape key. There is no byte for
+// the guest; the caller must hand control back to the main loop (which will
+// act on the escape) and re-run the read afterwards, not deliver a
+// substitute character. A platform that reserves no key never returns it.
+#define EMU_CONSOLE_RETRY (-2)
+
 // Read a character from console (may block if no input)
-// Returns the character, or -1 on EOF
-// LF is converted to CR for CP/M compatibility
+// Returns the character, -1 on EOF, or EMU_CONSOLE_RETRY (see above).
+// LF is converted to CR for CP/M compatibility on the paths where the host
+// really does deliver LF for Enter (pipes); a tty in raw mode delivers CR
+// natively, so Ctrl+J stays a distinct key there.
 int emu_console_read_char();
 
 // Queue a character for input (for async input sources)
@@ -76,10 +85,10 @@ void emu_console_queue_char(int ch);
 // Clear the input queue (call on reset)
 void emu_console_clear_queue();
 
-// Returns true once a non-interactive stdin (pipe/file) has hit EOF and no
-// further input can ever arrive. Interactive and WASM platforms return
-// false. Only the CLI main loop consults this (to exit through end of main
-// so NVRAM/trace persistence still runs).
+// Returns true once the guest has read past a latched EOF on stdin - a
+// hung-up tty as well as a drained pipe or file - so no further input can
+// ever arrive. WASM returns false. Only the CLI main loop consults this (to
+// exit through end of main so NVRAM/trace persistence still runs).
 bool emu_console_input_exhausted();
 
 // Weaker form: EOF has been *detected* on a non-interactive stdin (nothing
@@ -93,15 +102,12 @@ bool emu_console_input_eof();
 void emu_console_write_char(uint8_t ch);
 
 // Check for escape sequence (for entering debug console)
-// escape_char: the escape character to look for
+// escape_char: the escape character to look for, or 0 to reserve no key at
+//   all - every Ctrl-letter is live in CP/M, so a host that claims one has to
+//   be able to give it back (see "Ctrl-A..Ctrl-Z Belong to the Guest" in
+//   DOWNSTREAM.md). With 0 the platform must not consume anything.
 // Returns true if escape was detected and consumed
 bool emu_console_check_escape(char escape_char);
-
-// Check for repeated Ctrl+C exit condition
-// ch: the character just read
-// count: how many consecutive Ctrl+C required to exit
-// Returns true if exit threshold reached
-bool emu_console_check_ctrl_c_exit(int ch, int count);
 
 //=============================================================================
 // Auxiliary Device I/O - for printer, punch, reader

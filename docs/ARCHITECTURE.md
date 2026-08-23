@@ -137,7 +137,7 @@ Platform-independent interface for all emulator I/O. Functions are grouped by su
 // Platform utilities (strcasecmp, strncasecmp, sleep_ms)
 // Init/cleanup (emu_io_init, emu_io_cleanup)
 // Console I/O (has_input, read_char, queue_char, clear_queue,
-//              write_char, check_escape, check_ctrl_c_exit)
+//              write_char, check_escape)
 // Aux devices (printer_set_file, printer_out, printer_ready,
 //              aux_set_input_file, aux_set_output_file, aux_in, aux_out)
 // Debug/logging (set_debug, log, error, fatal, status, disk_flush_all)
@@ -278,11 +278,11 @@ void emu_io_init() { /* Initialize your I/O system */ }
 void emu_io_cleanup() { /* Restore terminal state, etc. */ }
 
 // Console I/O (has_input, read_char, queue_char, clear_queue,
-//              write_char, check_escape, check_ctrl_c_exit)
+//              write_char, check_escape)
 bool emu_console_has_input() { /* ... */ }
 int emu_console_read_char() { /* ... */ }
 void emu_console_write_char(uint8_t ch) { /* ... */ }
-// ... plus queue_char, clear_queue, check_escape, check_ctrl_c_exit
+// ... plus queue_char, clear_queue, check_escape
 
 // Aux devices (printer_set_file, printer_out, printer_ready,
 //              aux_set_input_file, aux_set_output_file, aux_in, aux_out)

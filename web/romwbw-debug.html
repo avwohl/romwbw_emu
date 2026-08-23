@@ -385,21 +385,22 @@
       statusDiv.textContent = 'Downloaded: ' + filename + ' (' + blob.size + ' bytes)';
     };
 
-    // Keyboard input to emulator
-    term.onKey(function(e) {
-      if (Module._romwbw_key_input) {
-        let ch = e.key.charCodeAt(0);
-        if (e.key === 'Enter') ch = 13;
-        else if (e.key === 'Backspace') ch = 8;
-        else if (e.key === 'Delete') ch = 127;
-        else if (e.key === 'Escape') ch = 27;
-        // Handle Ctrl+key combinations
-        if (e.domEvent.ctrlKey && e.key.length === 1) {
-          ch = e.key.toUpperCase().charCodeAt(0) - 64;
-          if (ch < 0) ch = 0;
-          if (ch > 31) ch = 31;
-        }
-        Module._romwbw_key_input(ch);
+    // Keyboard + paste input to emulator - same wiring as the production
+    // page. This used to use onKey and re-derive the byte from e.key, but
+    // e.key is ALREADY xterm's resolved byte string ("\x01" for Ctrl+A), so
+    // the Ctrl branch computed "\x01".toUpperCase().charCodeAt(0) - 64 = -63
+    // and clamped it to 0: every Ctrl-letter reached the guest as NUL, and so
+    // did Ctrl+[ , Ctrl+\ and Ctrl+]. It also truncated multi-byte sequences
+    // (ArrowUp "\x1b[A" became a bare ESC), its four name comparisons were
+    // dead (e.key is "\r", not "Enter"), and it dropped clipboard paste
+    // entirely because onKey never fires for paste. onData delivers the full
+    // resolved sequence and is the only path xterm.js routes paste through.
+    term.onData(function(data) {
+      if (!Module._romwbw_key_input) return;
+      for (const ch of data) {
+        const code = ch.codePointAt(0);
+        if (code > 0xFF) continue;  // drop non-Latin-1 (Unicode paste/IME); CP/M is byte-oriented
+        Module._romwbw_key_input(code);
       }
     });
 
