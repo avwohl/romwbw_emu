@@ -83,6 +83,7 @@ test: $(addprefix test_,$(TESTS))
 	else \
 	  echo "SKIP  web JS tests (node not on PATH)"; echo; \
 	fi; \
+	sh $(THIS_DIR)../disks/verify_disk_utils.sh || status=1; echo; \
 	if [ $$status -ne 0 ]; then echo "TESTS FAILED"; exit 1; fi; \
 	echo "ALL TESTS PASSED"
 

@@ -108,12 +108,22 @@ rather than missing features:
   prefix, while the plain 8 MB hd1k_infocom.img is wbw_hd1k.  using the wrong
   one lists garbage rather than failing, which is how the infocom image was
   briefly and wrongly recorded as having no w8.com at all.
-  - nothing builds r8.com or w8.com as part of any target, so the source and the
-  binary inside every image can drift with nothing to notice.  they did agree
-  this time - HEAD's w8.asm assembled and linked to a file byte-identical to the
-  copy extracted from hd1k_combo.img - but that was luck rather than a check.  a
-  target that assembles both and diffs them against what each tracked image
-  holds would turn it into one.
+  - r8.com and w8.com in the images were not built the same way, and only one of
+  them can be checked.  w8.com is a ul80 memory image: 256 leading NOPs, code at
+  file offset 0x100, every address constant 256 higher to suit.  r8.com is a
+  bare .COM with the code at offset 0.  Both run - CP/M loads either at 0100h
+  and the NOPs slide into the code - but disks/verify_disk_utils.sh can only
+  compare a same-layout pair, so it verifies w8 in both images and reports r8 as
+  not comparable.  Whether r8.asm still corresponds to the shipped r8.com is
+  therefore unknown; answering it needs either a relocating compare or a rebuild
+  of r8.com in ul80's layout, and the second changes a working binary for no
+  user-visible gain.  Deciding which layout these should be built in - and
+  saying so somewhere - would make the check total.
+  - the 256 NOPs in w8.com are waste, not design: ul80 emits from 0000h and
+  nothing strips the pad.  1280 bytes of file to carry 1024 bytes of program,
+  and the entry point runs 256 NOPs before reaching anything.  Harmless, and it
+  is what the previous build did too, so the rebuild kept it rather than
+  silently changing the shape of a shipped binary.
 
   - the web Boot field never reads NVRAM back.  it sets and clears through
   localStorage only, so a boot target the guest itself writes with SYSCONF is
