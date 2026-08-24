@@ -96,17 +96,24 @@ of it out of scope for the commit that found it:
 rows were wrong about this repo, and four of the corrections are bugs here
 rather than missing features:
 
-  - W8's host path is fixed in source and in disks/hd1k_combo.img, but the
-  images this repo does not carry still ship the old w8.com.  the web frontend
-  serves hd1k_cpm22.img, hd1k_games.img and z80cpm_tools.img from somewhere
-  else, and the released hd1k_* assets are attached to a github release, so a
-  user on any of those still gets the CWD-only W8.  rebuilding one is:
-  um80 -o w8.rel src/w8.asm && ul80 -o w8.com w8.rel && cpmcp -f wbw_hd1k_0
-  <image> w8.com 0:w8.com.  the same applies to r8.com whenever r8.asm changes.
-  the deeper problem is that nothing builds these .com files as part of any
-  target, so source and shipped binary can drift silently - they happened to
-  agree this time, checked by assembling HEAD's w8.asm and diffing against the
-  copy extracted from hd1k_combo.img, which matched byte for byte.
+  - both images in this repo now carry the new w8.com, but the ones it does not
+  carry still ship the old one.  the web frontend's disk selects offer
+  hd1k_cpm22.img, hd1k_games.img and z80cpm_tools.img, none of which exist
+  anywhere on disk here, and the released hd1k_* assets live on a github
+  release, so a user coming through either still gets the CWD-only W8.  the
+  recipe, for whoever has those files:
+    um80 -o w8.rel src/w8.asm && ul80 -o w8.com w8.rel
+    cpmcp -f <diskdef> <image> w8.com 0:w8.com
+  mind the diskdef - hd1k_combo.img is wbw_hd1k_0 because of its 1 MB MBR
+  prefix, while the plain 8 MB hd1k_infocom.img is wbw_hd1k.  using the wrong
+  one lists garbage rather than failing, which is how the infocom image was
+  briefly and wrongly recorded as having no w8.com at all.
+  - nothing builds r8.com or w8.com as part of any target, so the source and the
+  binary inside every image can drift with nothing to notice.  they did agree
+  this time - HEAD's w8.asm assembled and linked to a file byte-identical to the
+  copy extracted from hd1k_combo.img - but that was luck rather than a check.  a
+  target that assembles both and diffs them against what each tracked image
+  holds would turn it into one.
 
   - the web Boot field never reads NVRAM back.  it sets and clears through
   localStorage only, so a boot target the guest itself writes with SYSCONF is
