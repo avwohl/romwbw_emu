@@ -11,12 +11,16 @@ copy a selection, Ctrl+Minus must zoom.  then move focus to the ROM select and
 press ArrowDown twice - it must reach the second entry, not send ESC [ B to
 CP/M.  then write to a disk and close the tab to see the beforeunload guard.
 
-- the IEXTEN clear cannot be proven on linux.  it is there because BSD/XNU
-gates VLNEXT (^V) and VDISCARD (^O) on IEXTEN alone, outside the ICANON block;
-on linux those sit inside it and are already off once ICANON is, so a linux run
-passes with or without the clear.  someone with a mac should start WordStar and
-press ^V and ^O.  cpmemu has the identical open item for the identical reason
-and it wants the same machine.
+- cpmemu still has the IEXTEN item this repo used to share: the clear cannot be
+proven on linux, because BSD/XNU gates VLNEXT (^V) and VDISCARD (^O) on IEXTEN
+alone, outside the ICANON block, while on linux they sit inside it and are
+already off once ICANON is.  it no longer needs a person at a mac here -
+tests/cli_console.cc opens a pty and asserts ^V and ^O arrive, which fails on a
+mac if the clear goes and passes on linux for the second reason.  the same
+harness would close cpmemu's copy: openpty, set raw mode, write the byte, read
+it back.  note the failure shape is a timeout, not a wrong byte - VLNEXT eats
+the ^V and then waits for the character it is meant to quote - so any port of
+it needs the alarm() guard.
 
 - with --escape=none there is no way into sim> from a running guest at all.
 that is the point of it, but it means the debugger is reachable only by
@@ -35,12 +39,12 @@ has no terminal without internet: release.yml packages the wasm but not xterm).
 regenerate a hash with: curl -sL <url> | openssl dgst -sha384 -binary | openssl
 base64 -A
 
-- there is no test of any kind in this repo - no target, no CI step, no script
-- so none of the console behaviour just fixed is protected.  the cheap version
-is a check: target in src/makefile with two cases: a piped 'a\nb\n' that must
-still deliver two CRs, and an openpty case asserting Enter arrives as 0x0D
-while Ctrl+J arrives as 0x0A.  both were run by hand for this change and both
-would regress silently.
+- the tests exist now (make -C src test: tests/vda_keyboard.cc, 15 checks, and
+tests/cli_console.cc, 44 checks over 12 forked cases) but nothing runs them but
+a person.  .github/workflows has no test step, so a change that breaks the
+console is caught only if whoever made it thought to run make test.  wiring the
+target into CI is the remaining half and is a few lines - the suites need no
+ROM, no disk and no network, and cli_console.cc needs -lutil on linux.
 
 - found while auditing the input path, none of it control-character work, all
 of it out of scope for the commit that found it:

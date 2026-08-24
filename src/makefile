@@ -52,17 +52,37 @@ romwbw_emu.o: $(wildcard $(THIS_DIR)../VERSION)
 %.o: %.cc
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-# Tests.  Each one links the real core objects against its own emu_io stubs,
-# so it needs every ROMWBW_OBJS member except emu_io_cli.o (the stubs stand in
-# for that) and emu_config.o (nothing under test reads a settings file).
-TEST_OBJS = emu_io_common.o hbios_dispatch.o hbios_cpu.o emu_init.o
-TESTS = vda_keyboard
+# Tests.  Two kinds, and they cannot share a link line:
+#
+#   vda_keyboard  drives the HBIOS dispatcher and brings its own emu_io stubs,
+#                 so it links the core objects but NOT emu_io_cli.o - its stubs
+#                 would collide with that file's definitions.
+#   cli_console   is a test OF emu_io_cli.o, so it links exactly that and
+#                 nothing else: the file needs nothing from the rest of the
+#                 core.  openpty lives in libutil on Linux and in libc on the
+#                 BSDs and macOS.
+TESTS = vda_keyboard cli_console
+
+DISPATCH_OBJS = emu_io_common.o hbios_dispatch.o hbios_cpu.o emu_init.o
+
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Linux)
+PTY_LIBS = -lutil
+else
+PTY_LIBS =
+endif
 
 test: $(addprefix test_,$(TESTS))
+	@status=0; \
+	for t in $^; do ./$$t || status=1; echo; done; \
+	if [ $$status -ne 0 ]; then echo "TESTS FAILED"; exit 1; fi; \
+	echo "ALL TESTS PASSED"
 
-test_%: $(THIS_DIR)../tests/%.cc $(TEST_OBJS)
-	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< $(TEST_OBJS) $(LDLIBS) -o $@
-	./$@
+test_vda_keyboard: $(THIS_DIR)../tests/vda_keyboard.cc $(DISPATCH_OBJS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< $(DISPATCH_OBJS) $(LDLIBS) -o $@
+
+test_cli_console: $(THIS_DIR)../tests/cli_console.cc emu_io_cli.o
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< emu_io_cli.o $(PTY_LIBS) -o $@
 
 clean:
 	@rm -f romwbw_emu $(addprefix test_,$(TESTS)) *.o *.lst *.ihx *.com *.cdb *.rel *.map *~
