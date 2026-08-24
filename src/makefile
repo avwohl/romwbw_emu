@@ -80,6 +80,7 @@ test: $(addprefix test_,$(TESTS))
 	for t in $^; do ./$$t || status=1; echo; done; \
 	if command -v node >/dev/null 2>&1; then \
 	  node $(THIS_DIR)../tests/web_reload_disks.js || status=1; echo; \
+	  node $(THIS_DIR)../tests/web_console_output.js || status=1; echo; \
 	else \
 	  echo "SKIP  web JS tests (node not on PATH)"; echo; \
 	fi; \

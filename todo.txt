@@ -57,8 +57,12 @@ ROM, no disk and no network, and cli_console.cc needs -lutil on linux.
 of it out of scope for the commit that found it:
   - the wasm video/DSKY/sound callbacks are wired to names nothing implements:
   emu_io_wasm.cc emits Module.onVideo*/onDsky*, romwbw.html-template implements
-  onVda*/onSnd*.  ~200 lines on both sides that have never executed, and
-  Module.onError is dropped entirely, which is why nobody noticed.
+  onVda*/onSnd*.  ~200 lines on both sides that have never executed.
+  Module.onError, which was dropped entirely and is a large part of why nobody
+  noticed, is implemented now - so the next person to touch this will at least
+  be told when something fails.  Deliberately NOT fixing the names in the same
+  pass: renaming one side would switch ~200 lines of never-executed code on at
+  once, with no browser here to run it in.  Do that behind a browser.
   - the whole aux/printer family (printer_set_file, printer_out, printer_ready,
   aux_set_input_file, aux_set_output_file, aux_in, aux_out) has no caller
   anywhere.  LST:, PUN: and RDR: do nothing, and there is no --printer flag to
@@ -73,23 +77,16 @@ of it out of scope for the commit that found it:
   everything, so 8-bit output never reaches the terminal at all.  the input side
   deliberately clears ISTRIP to preserve that same bit; the output side throws
   it away unconditionally.  same code in the wasm backend.
-  - the web output filter (romwbw.html-template Module.onConsoleOutput) passes
-  only 0x08, 0x0A, 0x1B and 0x20-0x7E, so TAB, BEL and FF never reach xterm.
-  the CLI putchar()s them.  the ^R sweep in the other direction.
   - the disk selects in romwbw.html-template are worse than one bad entry.  they
   are a hardcoded five-name list fetched by bare relative filename, and only
   hd1k_combo.img exists in the repo - z80cpm_tools.img exists nowhere at all,
   and hd1k_infocom.img, which does exist, is described in the help text but
   never offered.  no deploy or package target copies any .img either, so a stock
   deb/rpm install 404s on both default disks and starts anyway.
-  - the slice-count selects in romwbw.html-template call
-  Module._romwbw_set_disk_slices, which does not exist: romwbw_web.cc defines
-  no such entry point and it is not in EXPORTED_FUNCTIONS, so both selects
-  silently do nothing.  the count is auto-derived from the number of loaded
-  disks anyway, so the honest fix is probably to delete the two selects.
-  - release.yml clones avwohl/cpmemu at default-branch HEAD with no tag or SHA
-  to build libqkz80.a, and installs emsdk latest.  the second of those already
-  broke a release once (13d1c23).
+  - release.yml installs emsdk latest, which already broke a release once
+  (13d1c23).  the cpmemu clone beside it is pinned now (CPMEMU_REF), so this is
+  the remaining half: pin the emsdk version the same way and bump it
+  deliberately.
 
 - found by sweeping z80cpmw's FEATURE_PARITY.md against this repo's source on
 2026-08-24, row by row and each frontend separately.  eleven of its thirteen

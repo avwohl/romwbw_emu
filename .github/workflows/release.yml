@@ -46,9 +46,19 @@ jobs:
 
       - name: Build qkz80 library
         run: |
+          # Pinned, not default-branch HEAD. This clone is the Z80 core the
+          # released binary contains, so an unpinned one makes every release
+          # depend on whatever cpmemu happened to look like that morning - a
+          # commit in another repo could change or break a release here with
+          # nobody touching this one. Bump deliberately, the way the RomWBW pin
+          # is bumped.
           git clone https://github.com/avwohl/cpmemu.git
-          cd cpmemu/src
+          cd cpmemu
+          git checkout --detach ${CPMEMU_REF}
+          cd src
           make libqkz80.a
+        env:
+          CPMEMU_REF: 9fee3c2
 
       - name: Get version
         id: version
