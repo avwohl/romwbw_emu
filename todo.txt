@@ -1,9 +1,13 @@
 Todo list.  Open items only - finished work is written up in the commit
 messages that made the changes, not kept here.
 
-- the web keyboard work needs one pass by hand in a real browser.  nothing in
-this repo can prove it: there is no node and no emcc on the build box, so the
-wasm was never rebuilt and the page was only syntax-checked.  open it, click
+- the web keyboard work needs one pass by hand in a real browser.  note the
+old wording here was wrong in a way that discouraged trying: node IS available
+(v26.3.0), only emcc is missing, so the wasm cannot be rebuilt but the page's
+JS can be run.  tests/web_reload_disks.js does exactly that - it lifts a
+function out of romwbw.html-template and drives it against a stub Module and
+document - so anything in the page that is reachable without the wasm can be
+tested that way now.  what still needs a browser is the rest of it: open it, click
 the terminal, press Ctrl+R and confirm the page does not reload and the CCP
 retypes the line.  then Ctrl+Shift+R, which is the one the handler had to add.
 then check the exclusions still work: Ctrl+Shift+V must paste, Ctrl+Insert must
@@ -91,12 +95,6 @@ of it out of scope for the commit that found it:
 2026-08-24, row by row and each frontend separately.  eleven of its thirteen
 rows were wrong about this repo, and four of the corrections are bugs here
 rather than missing features:
-
-  - the web manifest-write warning loses its suppression.  reloadDisks()
-  (romwbw.html-template:746) re-pushes only _romwbw_set_disk_is_manifest and
-  never setDiskWarningSuppressed, so a user who answers "Don't warn" gets the
-  modal back on the next mid-session ROM or disk reload.  romwbw_web.cc:251 and
-  :258 export both; the JS calls one.
 
   - W8 takes no host path.  w8.asm never reads CMDBUF, only the default FCB, so
   it builds a bare lowercased 8.3 name and emu_host_file_open_write fopen()s it

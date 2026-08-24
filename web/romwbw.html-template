@@ -755,6 +755,23 @@
             Module._romwbw_set_disk_is_manifest(unit, diskIsManifest[unit] ? 1 : 0);
           }
         }
+        // Re-apply "Don't warn" too.  romwbw_load_rom() deletes the whole
+        // EmulatorState and news a fresh one, so every DiskInfo comes back
+        // default-constructed with is_manifest AND warning_suppressed false.
+        // Restoring only the first is what let a mid-session ROM change
+        // silently re-arm a warning the user had already dismissed: the ROM
+        // select's change handler reaches this function but never reaches the
+        // start path, which is where the checkboxes were otherwise applied.
+        // Pushed outside the diskData guard on purpose - the flag is per unit
+        // and closeDisk() does not clear it, so setting it for an empty unit
+        // still holds when a disk is loaded there later.  The checkbox is the
+        // single source of truth, matching the start path.
+        if (Module._romwbw_set_disk_warning_suppressed) {
+          const noWarn = document.getElementById('disk' + unit + 'NoWarn');
+          if (noWarn) {
+            Module._romwbw_set_disk_warning_suppressed(unit, noWarn.checked ? 1 : 0);
+          }
+        }
       }
     }
 

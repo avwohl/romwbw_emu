@@ -72,9 +72,17 @@ else
 PTY_LIBS =
 endif
 
+# The web frontend's JS is tested with node when node is present.  It is not a
+# build dependency - the wasm needs emcc, which this does not - so a machine
+# without node skips it rather than failing.
 test: $(addprefix test_,$(TESTS))
 	@status=0; \
 	for t in $^; do ./$$t || status=1; echo; done; \
+	if command -v node >/dev/null 2>&1; then \
+	  node $(THIS_DIR)../tests/web_reload_disks.js || status=1; echo; \
+	else \
+	  echo "SKIP  web JS tests (node not on PATH)"; echo; \
+	fi; \
 	if [ $$status -ne 0 ]; then echo "TESTS FAILED"; exit 1; fi; \
 	echo "ALL TESTS PASSED"
 
