@@ -96,12 +96,17 @@ of it out of scope for the commit that found it:
 rows were wrong about this repo, and four of the corrections are bugs here
 rather than missing features:
 
-  - W8 takes no host path.  w8.asm never reads CMDBUF, only the default FCB, so
-  it builds a bare lowercased 8.3 name and emu_host_file_open_write fopen()s it
-  in the emulator's CWD with no case-insensitive fallback - while R8 copies the
-  command tail and fopen()s it verbatim, with a fallback.  the asymmetry is
-  undocumented outside --help, which says "Export CP/M file to emulator CWD".
-  either give W8 the tail the way R8 has it, or say so in the docs.
+  - W8's host path is fixed in source and in disks/hd1k_combo.img, but the
+  images this repo does not carry still ship the old w8.com.  the web frontend
+  serves hd1k_cpm22.img, hd1k_games.img and z80cpm_tools.img from somewhere
+  else, and the released hd1k_* assets are attached to a github release, so a
+  user on any of those still gets the CWD-only W8.  rebuilding one is:
+  um80 -o w8.rel src/w8.asm && ul80 -o w8.com w8.rel && cpmcp -f wbw_hd1k_0
+  <image> w8.com 0:w8.com.  the same applies to r8.com whenever r8.asm changes.
+  the deeper problem is that nothing builds these .com files as part of any
+  target, so source and shipped binary can drift silently - they happened to
+  agree this time, checked by assembling HEAD's w8.asm and diffing against the
+  copy extracted from hd1k_combo.img, which matched byte for byte.
 
   - the web Boot field never reads NVRAM back.  it sets and clears through
   localStorage only, so a boot target the guest itself writes with SYSCONF is

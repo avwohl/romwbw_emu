@@ -61,7 +61,7 @@ romwbw_emu.o: $(wildcard $(THIS_DIR)../VERSION)
 #                 nothing else: the file needs nothing from the rest of the
 #                 core.  openpty lives in libutil on Linux and in libc on the
 #                 BSDs and macOS.
-TESTS = vda_keyboard cli_console
+TESTS = vda_keyboard cli_console cli_hostfile
 
 DISPATCH_OBJS = emu_io_common.o hbios_dispatch.o hbios_cpu.o emu_init.o
 
@@ -91,6 +91,9 @@ test_vda_keyboard: $(THIS_DIR)../tests/vda_keyboard.cc $(DISPATCH_OBJS)
 
 test_cli_console: $(THIS_DIR)../tests/cli_console.cc emu_io_cli.o
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< emu_io_cli.o $(PTY_LIBS) -o $@
+
+test_cli_hostfile: $(THIS_DIR)../tests/cli_hostfile.cc emu_io_cli.o
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< emu_io_cli.o -o $@
 
 clean:
 	@rm -f romwbw_emu $(addprefix test_,$(TESTS)) *.o *.lst *.ihx *.com *.cdb *.rel *.map *~

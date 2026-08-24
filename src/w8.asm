@@ -1,7 +1,14 @@
 ; W8.COM - Write CP/M file to host filesystem (RomWBW/HBIOS version)
 ;
-; Usage: W8 <cpmname>
-;   Exports CP/M file to host with lowercase filename
+; Usage: W8 <cpmname> [hostpath]
+;   Exports a CP/M file to the host.  With no hostpath the name is the CP/M
+;   name lowercased, in the emulator's working directory - what this did
+;   before hostpath existed.  With a hostpath the file goes exactly there,
+;   the way R8 already takes one.
+;
+;   CP/M's CCP uppercases the whole command line, so the path arrives here in
+;   upper case and the emulator is what puts the case back: it resolves the
+;   directory components case-insensitively and lowercases the final name.
 ;
 ; Uses HBIOS extension functions for host file access
 
@@ -11,6 +18,9 @@
 TPA	equ	0100h
 FCB	equ	005Ch	; Default FCB (contains CP/M filename)
 DMA	equ	0080h
+CMDBUF	equ	0080h	; Command tail (length byte, then text) - the same address
+			; as the default DMA, so it must be read before F_DMA
+			; moves the buffer and a record read overwrites it
 
 ; BDOS function codes
 BDOS	equ	0005h
@@ -33,6 +43,11 @@ start:
 	ld	de,msg_banner
 	ld	c,C_PRINT
 	call	BDOS
+
+	; Read the optional host path off the command tail first: it lives at
+	; 0080h, which is also the default DMA, so nothing may move the DMA
+	; before this runs.
+	call	parse_host_arg
 
 	; Check if we have a filename in FCB
 	ld	a,(FCB+1)
@@ -59,8 +74,11 @@ start:
 	ld	c,C_PRINT
 	call	BDOS
 
-	; Create host path from FCB (lowercase)
-	call	fcb_to_hostpath
+	; Host path: the second command-line token when one was given, otherwise
+	; the CP/M name lowercased (the original behaviour).
+	ld	a,(have_hostarg)
+	or	a
+	call	z,fcb_to_hostpath
 
 	; Display host path
 	ld	de,msg_tohost
@@ -175,6 +193,70 @@ read_done:
 	call	BDOS
 
 	rst	0
+
+; Parse an optional second token from the command tail into hostpath.
+;
+; The tail is "<cpmname> <hostpath>" including the CCP's leading space, so this
+; skips spaces, steps over the first token, skips spaces again, and copies what
+; is left up to the next space.  Anything short of a full second token - empty
+; tail, all spaces, one token only, trailing spaces - leaves have_hostarg zero
+; and the caller falls back to fcb_to_hostpath.
+;
+; Clobbers A, BC, DE, HL.
+parse_host_arg:
+	xor	a
+	ld	(have_hostarg),a
+	ld	a,(CMDBUF)
+	or	a
+	ret	z		; empty tail
+	ld	b,a		; B = bytes left in the tail
+	ld	hl,CMDBUF+1
+
+pha_skip1:			; leading spaces
+	ld	a,(hl)
+	cp	' '
+	jr	nz,pha_tok1
+	inc	hl
+	djnz	pha_skip1
+	ret			; nothing but spaces
+
+pha_tok1:			; step over the CP/M filename
+	ld	a,(hl)
+	cp	' '
+	jr	z,pha_skip2
+	inc	hl
+	djnz	pha_tok1
+	ret			; one token only - no host path given
+
+pha_skip2:			; spaces between the two tokens
+	ld	a,(hl)
+	cp	' '
+	jr	nz,pha_copy
+	inc	hl
+	djnz	pha_skip2
+	ret			; trailing spaces only
+
+pha_copy:			; copy the host path
+	ld	de,hostpath
+	ld	c,127		; the tail cannot exceed 127, so this cap is only a
+			; backstop - it can no longer be reached by any input
+pha_loop:
+	ld	a,(hl)
+	cp	' '
+	jr	z,pha_end
+	ld	(de),a
+	inc	hl
+	inc	de
+	dec	c
+	jr	z,pha_end	; unreachable for a legal tail; here so a corrupt
+			; length byte cannot run off the buffer
+	djnz	pha_loop
+pha_end:
+	xor	a
+	ld	(de),a		; NUL-terminate
+	ld	a,1
+	ld	(have_hostarg),a
+	ret
 
 ; Create host path from FCB (8.3 -> lowercase)
 fcb_to_hostpath:
@@ -389,7 +471,7 @@ host_close_error:
 msg_banner:
 	db	'W8 - Write to host filesystem',0Dh,0Ah,'$'
 msg_usage:
-	db	'Usage: W8 <cpmname>',0Dh,0Ah,'$'
+	db	'Usage: W8 <cpmname> [hostpath]',0Dh,0Ah,'$'
 msg_writing:
 	db	'Writing: $'
 msg_tohost:
@@ -411,7 +493,12 @@ msg_host_close:
 
 ; Data areas
 hostpath:
-	ds	64
+	ds	128		; the whole CP/M tail can be 127 bytes + NUL.  Was 64,
+			; which was enough for the 8.3 name fcb_to_hostpath
+			; builds but silently cut a typed path at 63 - and
+			; still reported success, so the export landed under a
+			; shortened name.  R8's buffer is 128 for the same
+			; reason; the two now accept the same paths.
 cpm_fcb:
 	ds	36
 dma_buffer:
@@ -420,5 +507,7 @@ byte_count:
 	dw	0,0
 print_flag:
 	db	0
+have_hostarg:
+	db	0		; non-zero once parse_host_arg found a second token
 
 	end	start

@@ -471,6 +471,16 @@ bool emu_host_file_open_write(const char* filename) {
   // Close any existing write buffer
   host_write_buffer.clear();
   host_write_filename = filename ? filename : "download.bin";
+  // W8 can now be given a host path (src/w8.asm), which means what arrives here
+  // may contain directories. The browser has no filesystem to honour them with -
+  // this becomes the suggested name on a download - and a name with slashes in
+  // it is not a usable download filename, so keep the basename only. A path is
+  // not an error here, it just cannot mean what it means on the CLI.
+  size_t slash = host_write_filename.find_last_of('/');
+  if (slash != std::string::npos) {
+    host_write_filename = host_write_filename.substr(slash + 1);
+  }
+  if (host_write_filename.empty()) host_write_filename = "download.bin";
   host_file_state = HOST_FILE_WRITING;
   return true;
 }

@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstdarg>
 #include <cstring>
+#include <cctype>
 #include <cerrno>
 #include <strings.h>
 #include <queue>
@@ -785,12 +786,34 @@ bool emu_host_file_open_read(const char* filename) {
   return false;
 }
 
+// Put the case back into a path the CCP uppercased, for a file that does not
+// exist yet.
+//
+// resolve_path_case_insensitive() cannot be used as-is here: it requires every
+// component to exist, and the last one is the file we are about to create. So
+// resolve only the parent - which does have to exist - and lowercase the
+// basename, which is the same convention W8 has always used for the name it
+// derives from the FCB. CP/M destroys the typed case before we ever see it, so
+// lowercase is a choice, not a recovery; it is documented as such in README.
+static std::string resolve_write_path(const std::string& path) {
+  size_t slash = path.find_last_of('/');
+  std::string base = (slash == std::string::npos) ? path : path.substr(slash + 1);
+  for (char& c : base) c = (char)tolower((unsigned char)c);
+  if (slash == std::string::npos) return base;          // no directory part
+  std::string dir = path.substr(0, slash);
+  if (dir.empty()) return "/" + base;                   // path was "/name"
+  std::string resolved_dir = resolve_path_case_insensitive(dir.c_str());
+  if (resolved_dir.empty()) resolved_dir = dir;         // no match: use as typed
+  return resolved_dir + "/" + base;
+}
+
 bool emu_host_file_open_write(const char* filename) {
   if (cli_host_write_file) {
     fclose(cli_host_write_file);
     cli_host_write_file = nullptr;
   }
   cli_host_write_filename = filename ? filename : "output.bin";
+  cli_host_write_filename = resolve_write_path(cli_host_write_filename);
   cli_host_write_file = fopen(cli_host_write_filename.c_str(), "wb");
   if (cli_host_write_file) {
     cli_host_state = HOST_FILE_WRITING;
