@@ -11,16 +11,19 @@ copy a selection, Ctrl+Minus must zoom.  then move focus to the ROM select and
 press ArrowDown twice - it must reach the second entry, not send ESC [ B to
 CP/M.  then write to a disk and close the tab to see the beforeunload guard.
 
-- cpmemu still has the IEXTEN item this repo used to share: the clear cannot be
-proven on linux, because BSD/XNU gates VLNEXT (^V) and VDISCARD (^O) on IEXTEN
-alone, outside the ICANON block, while on linux they sit inside it and are
-already off once ICANON is.  it no longer needs a person at a mac here -
-tests/cli_console.cc opens a pty and asserts ^V and ^O arrive, which fails on a
-mac if the clear goes and passes on linux for the second reason.  the same
-harness would close cpmemu's copy: openpty, set raw mode, write the byte, read
-it back.  note the failure shape is a timeout, not a wrong byte - VLNEXT eats
-the ^V and then waits for the character it is meant to quote - so any port of
-it needs the alarm() guard.
+- the IEXTEN item is closed on both sides, and the correction is worth keeping
+because an earlier edit of this file got it wrong.  the clear cannot be proven
+on linux - BSD/XNU gates VLNEXT (^V) and VDISCARD (^O) on IEXTEN alone, outside
+the ICANON block, while on linux they sit inside it and are already off once
+ICANON is - so it used to want a person at a mac.  it does not now.  here,
+tests/cli_console.cc opens a pty and asserts ^V and ^O arrive.  cpmemu closed
+its own copy in 55cc13f: src/os/linux/platform.cc:120 clears IEXTEN and
+tests/pty_console.cc probes the platform and prints which bytes the clear is
+saving, so the assertion says out loud whether it is testing anything.  nothing
+is open here; do not re-file it.  the one thing to carry if the harness is
+ported anywhere else: the failure shape is a timeout, not a wrong byte - VLNEXT
+eats the ^V and then waits for the character it is meant to quote - so it needs
+an alarm() guard or a regression hangs the suite instead of failing it.
 
 - with --escape=none there is no way into sim> from a running guest at all.
 that is the point of it, but it means the debugger is reachable only by
@@ -58,15 +61,23 @@ of it out of scope for the commit that found it:
   reach them.  emu_io_cleanup() also fcloses them and emu_io_init() never
   reopens, so one press of the escape key would kill redirection for the run if
   it were ever wired up.
-  - emu_console_write_char drops every CR, not just the CR of a CR LF pair, so
-  a guest returning to column 0 without a newline (progress counters, status
-  line redraws) overwrites nothing.  OPOST/ONLCR cannot restore a byte that was
-  deleted before the tty saw it.  same code in the wasm backend.
+  - emu_console_write_char (emu_io_cli.cc:366-374) does two things to every
+  output byte.  it drops every CR, not just the CR of a CR LF pair, so a guest
+  returning to column 0 without a newline (progress counters, status line
+  redraws) overwrites nothing - OPOST/ONLCR cannot restore a byte deleted before
+  the tty saw it.  and the line above it, `ch &= 0x7F`, strips the high bit off
+  everything, so 8-bit output never reaches the terminal at all.  the input side
+  deliberately clears ISTRIP to preserve that same bit; the output side throws
+  it away unconditionally.  same code in the wasm backend.
   - the web output filter (romwbw.html-template Module.onConsoleOutput) passes
   only 0x08, 0x0A, 0x1B and 0x20-0x7E, so TAB, BEL and FF never reach xterm.
   the CLI putchar()s them.  the ^R sweep in the other direction.
-  - romwbw.html-template offers z80cpm_tools.img in both disk selects and no
-  such file exists anywhere in the repo.
+  - the disk selects in romwbw.html-template are worse than one bad entry.  they
+  are a hardcoded five-name list fetched by bare relative filename, and only
+  hd1k_combo.img exists in the repo - z80cpm_tools.img exists nowhere at all,
+  and hd1k_infocom.img, which does exist, is described in the help text but
+  never offered.  no deploy or package target copies any .img either, so a stock
+  deb/rpm install 404s on both default disks and starts anyway.
   - the slice-count selects in romwbw.html-template call
   Module._romwbw_set_disk_slices, which does not exist: romwbw_web.cc defines
   no such entry point and it is not in EXPORTED_FUNCTIONS, so both selects
@@ -75,6 +86,33 @@ of it out of scope for the commit that found it:
   - release.yml clones avwohl/cpmemu at default-branch HEAD with no tag or SHA
   to build libqkz80.a, and installs emsdk latest.  the second of those already
   broke a release once (13d1c23).
+
+- found by sweeping z80cpmw's FEATURE_PARITY.md against this repo's source on
+2026-08-24, row by row and each frontend separately.  eleven of its thirteen
+rows were wrong about this repo, and four of the corrections are bugs here
+rather than missing features:
+
+  - the web manifest-write warning loses its suppression.  reloadDisks()
+  (romwbw.html-template:746) re-pushes only _romwbw_set_disk_is_manifest and
+  never setDiskWarningSuppressed, so a user who answers "Don't warn" gets the
+  modal back on the next mid-session ROM or disk reload.  romwbw_web.cc:251 and
+  :258 export both; the JS calls one.
+
+  - W8 takes no host path.  w8.asm never reads CMDBUF, only the default FCB, so
+  it builds a bare lowercased 8.3 name and emu_host_file_open_write fopen()s it
+  in the emulator's CWD with no case-insensitive fallback - while R8 copies the
+  command tail and fopen()s it verbatim, with a fallback.  the asymmetry is
+  undocumented outside --help, which says "Export CP/M file to emulator CWD".
+  either give W8 the tail the way R8 has it, or say so in the docs.
+
+  - the web Boot field never reads NVRAM back.  it sets and clears through
+  localStorage only, so a boot target the guest itself writes with SYSCONF is
+  lost on reload - the CLI persists to $XDG_CONFIG_HOME/romwbw_emu/nvram and the
+  web build has no equivalent read path.
+
+  - the CLI has no way to clear a persisted boot target.  --boot= sets it and
+  the file keeps it; a one-off --boot overwrites the saved value at exit, and
+  there is no --boot=none or --clear-nvram to get back to the menu.
 
 - state of the other ports as of this sweep, so nobody re-reads four repos to
 learn it: ioscpm and cpmdroid pass every Ctrl-letter to the guest and claim
