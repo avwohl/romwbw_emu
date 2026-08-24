@@ -52,8 +52,22 @@ romwbw_emu.o: $(wildcard $(THIS_DIR)../VERSION)
 %.o: %.cc
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+# Tests.  Each one links the real core objects against its own emu_io stubs,
+# so it needs every ROMWBW_OBJS member except emu_io_cli.o (the stubs stand in
+# for that) and emu_config.o (nothing under test reads a settings file).
+TEST_OBJS = emu_io_common.o hbios_dispatch.o hbios_cpu.o emu_init.o
+TESTS = vda_keyboard
+
+test: $(addprefix test_,$(TESTS))
+
+test_%: $(THIS_DIR)../tests/%.cc $(TEST_OBJS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< $(TEST_OBJS) $(LDLIBS) -o $@
+	./$@
+
 clean:
-	@rm -f romwbw_emu *.o *.lst *.ihx *.com *.cdb *.rel *.map *~
+	@rm -f romwbw_emu $(addprefix test_,$(TESTS)) *.o *.lst *.ihx *.com *.cdb *.rel *.map *~
+
+.PHONY: all test clean install uninstall
 
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin

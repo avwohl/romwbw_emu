@@ -44,11 +44,6 @@ would regress silently.
 
 - found while auditing the input path, none of it control-character work, all
 of it out of scope for the commit that found it:
-  - VDAKRD (hbios_dispatch.cc) does not rewind PC the way CIOIN does when no
-  key is pending, so on a build with a text display - the wasm one advertises
-  has_text_display = true - the guest returns from it with DE untouched and
-  never gets its key.  VDAKST never sets the result byte, so it reports "no
-  key" in A whatever is pending.
   - the wasm video/DSKY/sound callbacks are wired to names nothing implements:
   emu_io_wasm.cc emits Module.onVideo*/onDsky*, romwbw.html-template implements
   onVda*/onSnd*.  ~200 lines on both sides that have never executed, and

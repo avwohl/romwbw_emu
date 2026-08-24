@@ -9,6 +9,7 @@
 
 # Executables
 src/romwbw_emu
+src/test_*
 
 # WebAssembly build artifacts
 web/*.js

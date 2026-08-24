@@ -2062,26 +2062,53 @@ void HBIOSDispatch::handleVDA() {
     }
 
     case HBF_VDAKST: {
-      // Keyboard status - check emu_console input
+      // Keyboard status - the VDA twin of HBF_CIOIST, and it answers the same
+      // way: A is the status the caller tests, E the pending count. Setting
+      // only E left `result` at HBR_SUCCESS (0), so A said "no key" however
+      // much was queued and a guest polling this device never read one.
       bool has_key = emu_console_has_input();
-      cpu->regs.DE.set_low(has_key ? 0xFF : 0x00);
+      result = has_key ? 0xFF : 0;                 // A = status
+      cpu->regs.DE.set_low(has_key ? 0xFF : 0);    // E = pending count
       // Track consecutive "no input" polls for idle detection
       if (has_key) idle_poll_count = 0; else idle_poll_count++;
       break;
     }
 
     case HBF_VDAKRD: {
-      // Keyboard read - if none available, set waiting flag
-      if (!emu_console_has_input()) {
+      // Keyboard read - the VDA twin of HBF_CIOIN, and handles a missing key
+      // the same way. It used to set waiting_for_input and return without
+      // rewinding PC, but dispatch is a 2-byte OUT (0xEF),A followed by the
+      // proxy's own RET: skipping the rewind let that RET fire with E holding
+      // whatever the last call left there, so the guest took stale data for a
+      // keystroke and never came back for the real one.
+      if (!blocking_allowed && !emu_console_has_input()) {
+        // Non-blocking (web/WASM, iOS) - rewind over the OUT so the call
+        // re-runs once a key arrives.
+        uint16_t pc = cpu->regs.PC.get_pair16();
+        cpu->regs.PC.set_pair16(pc - 2);
         waiting_for_input = true;
-        return;  // Don't fall through to doRet()
+        return;  // Don't call setResult/doRet - will retry
+      }
+      // Blocking mode (CLI) - flush pending output before we stop for a key,
+      // so a prompt written just above is on screen while we wait.
+      while (!output_buffer.empty()) {
+        emu_console_write_char(output_buffer.front());
+        output_buffer.erase(output_buffer.begin());
       }
       int ch = emu_console_read_char();
-      // Gated by has_input above, so neither EOF (-1) nor EMU_CONSOLE_RETRY
-      // (-2) is reachable here today - but a raw negative would be handed to
-      // the guest as 0xFF/0xFE, so clamp rather than rely on that.
+      if (ch == EMU_CONSOLE_RETRY) {
+        // The keystroke was the host's reserved escape key, so there is no
+        // byte for the guest. Rewind exactly as the branch above does; the
+        // main loop sees the escape and this call re-runs afterwards.
+        uint16_t pc = cpu->regs.PC.get_pair16();
+        cpu->regs.PC.set_pair16(pc - 2);
+        return;  // Don't call setResult/doRet - will retry
+      }
+      // A raw negative would reach the guest as 0xFF/0xFE, so clamp: EOF is
+      // ^Z, the same end-of-file marker CIOIN hands back.
       if (ch < 0) ch = 0x1A;
       cpu->regs.DE.set_low(ch & 0xFF);
+      waiting_for_input = false;
       idle_poll_count = 0;
       break;
     }
