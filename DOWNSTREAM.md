@@ -4,10 +4,14 @@ This document explains how to integrate the RomWBW emulator core into downstream
 
 Dated migration notices for specific core releases live in docs/ - most
 recently [docs/DOWNSTREAM_2026-08-25.md](docs/DOWNSTREAM_2026-08-25.md), the
-W8 host-path sync: a new HBIOS function (`HBF_HOST_GETNAME`, 0xE8) that tells
-the guest where its export really landed, a shared `emu_host_path_basename()`
-for the front ends that cannot honour a directory, and a tightened contract on
-`emu_host_file_get_write_name()` that every port has to act on. Before it,
+W8 host-path sync. **It changes the build contract: the core no longer defines
+`emu_host_path_caps()`, so every port that compiles this core must add it or
+fail to link** - that link error is the deliberate signal to read that notice,
+which also covers `HBF_HOST_GETNAME` (0xE8), the shared `emu_host_path_basename()`,
+a tightened `emu_host_file_get_write_name()` contract, and - not enforced by any
+compiler, so read it - a disk-image refresh, an R8 destructive-delete fix, and a
+release ordering (`docs/RELEASE_ORDER_2026-08-25.md`) that keeps the two from
+being shipped in the wrong order. Before it,
 [docs/DOWNSTREAM_2026-08-23.md](docs/DOWNSTREAM_2026-08-23.md) is the
 all-ports to-do list for the v1.35 -> v1.36 sync (control keys reach the guest,
 one dead platform function removed), and

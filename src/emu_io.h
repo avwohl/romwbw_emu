@@ -405,6 +405,13 @@ const char* emu_host_file_get_write_name();
 // to LINK instead, which is the whole point: the guarantee and the code that
 // makes it true arrive together, or not at all.
 //
+// If you reached this comment from a linker error ("undefined symbol
+// emu_host_path_caps"), that error is the intended signal that your port has a
+// core sync to absorb. Do NOT just add a stub to make it compile: read
+// docs/DOWNSTREAM_2026-08-25.md first - defining this function is one of
+// several steps, and the rest (a disk-image refresh, an R8 fix, a release
+// ordering) will not announce themselves the way this one did.
+//
 // EMU_HOST_CAP_SAFE_PATHS means: this backend will not use a guest-supplied
 // path DESTRUCTIVELY. It writes the one file the path names and nothing else -
 // no delete of anything the path resolves near, no silent substitution of a
