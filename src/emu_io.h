@@ -392,6 +392,37 @@ size_t emu_host_file_get_write_size();
 // nullptr; callers must tolerate both.
 const char* emu_host_file_get_write_name();
 
+// What this front end's host-file backend guarantees about a guest-supplied
+// path, as a bitmask. The core's HBF_HOST_CAPS (0xE9) hands the low byte to the
+// guest, and W8.COM refuses to send a host path to a backend that does not set
+// EMU_HOST_CAP_SAFE_PATHS.
+//
+// This is DELIBERATELY declared here and NOT defined in the shared core. Every
+// backend must define it, so the assertion it makes is written by the code the
+// assertion is about. The core returning a constant - which is what this
+// replaced - meant a port that had not thought about guest paths asserted it
+// had, just by compiling. A port that has not been updated for this now fails
+// to LINK instead, which is the whole point: the guarantee and the code that
+// makes it true arrive together, or not at all.
+//
+// EMU_HOST_CAP_SAFE_PATHS means: this backend will not use a guest-supplied
+// path DESTRUCTIVELY. It writes the one file the path names and nothing else -
+// no delete of anything the path resolves near, no silent substitution of a
+// different file, no traversal used to reach outside an intended area and
+// remove it. That is the property W8 needs before it will hand over a path.
+//
+// It is NOT "the path is confined to one directory". A backend that opens an
+// absolute path exactly as given (the CLI, the Windows port) still SETS the
+// bit, because writing where you were told is not the destructive behaviour
+// this guards against - the bug it exists for was iOS building a URL from the
+// path and calling removeItem on it, deleting the user's whole Documents
+// folder. Set the bit if your open-write path is a plain "create/replace the
+// named file"; clear it only if you cannot yet promise even that.
+enum {
+  EMU_HOST_CAP_SAFE_PATHS = 0x01,  // a guest path is never used destructively
+};
+uint8_t emu_host_path_caps();
+
 // Last path component of `path`, for a backend that cannot honour a directory
 // at all (a browser download, a sandboxed app's own Exports folder). Accepts
 // both separators, because the string comes from a guest command line that may

@@ -44,6 +44,10 @@ static std::string g_write_name;
 
 emu_host_file_state emu_host_file_get_state() { return g_state; }
 const char* emu_host_file_get_write_name() { return g_write_name.c_str(); }
+// HBF_HOST_CAPS forwards this. The test drives HBF_HOST_GETNAME, not CAPS, so
+// the value is irrelevant here; a real backend returns EMU_HOST_CAP_SAFE_PATHS
+// only if it confines guest paths.
+uint8_t emu_host_path_caps() { return EMU_HOST_CAP_SAFE_PATHS; }
 
 //=============================================================================
 // The rest of emu_io: enough to link, never exercised here
@@ -298,7 +302,7 @@ int main() {
     r.cpu.regs.DE.set_pair16(0xA5A5);
     r.call(HBF_HOST_CAPS, 0, 0);
     check(r.A() == 0, "answers with nothing open - it takes no state");
-    check((r.cpu.regs.DE.get_low() & HOST_CAP_SAFE_PATHS) != 0,
+    check((r.cpu.regs.DE.get_low() & EMU_HOST_CAP_SAFE_PATHS) != 0,
           "and reports that a guest path cannot escape where the front end writes");
     check(r.cpu.regs.DE.get_high() == 0, "the reserved high byte is zero");
   }

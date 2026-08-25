@@ -180,24 +180,12 @@ enum HBiosFunc {
   HBF_SYSBOOT   = 0xFE,  // EMU: Boot from device
 };
 
-// HBF_HOST_CAPS bits, returned in E.
-enum HBiosHostCaps {
-  // A host path from the guest cannot escape the place this front end writes
-  // to. Set by every build of this core from v1.36, and it is an assertion
-  // about the BACKEND as much as the core: a front end that cannot honour a
-  // directory must reduce the guest's string (emu_host_path_basename) rather
-  // than store it whole. Compiling this core is what asserts it - see
-  // docs/DOWNSTREAM_2026-08-25.md, which says so in as many words.
-  //
-  // Why a guest would ask: W8 refuses to send a host path to an emulator that
-  // does not set this. Before v1.36 the iOS front end joined the guest's string
-  // to its Exports folder and called removeItem on the result, so
-  // "W8 ANYFILE.TXT .." deleted the user's whole Documents folder. Refreshed
-  // disk images reach old front ends by routes no release process controls -
-  // someone copies an image in by hand - and this bit is what makes the new
-  // W8.COM refuse rather than rely on that never happening.
-  HOST_CAP_SAFE_PATHS = 0x01,
-};
+// HBF_HOST_CAPS bits are defined in emu_io.h (EMU_HOST_CAP_SAFE_PATHS), because
+// the value is supplied by the backend function emu_host_path_caps() declared
+// there, not by the core. The dispatcher just forwards it to the guest in E.
+// See the note above that declaration for why it is a backend function: a
+// front end that has not confined guest paths must fail to link rather than
+// silently claim it has.
 
 // SYSRESET subtypes (C register for SYSRESET)
 enum HBiosSysResetType {

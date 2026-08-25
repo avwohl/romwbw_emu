@@ -44,10 +44,11 @@ ordering, and why it is that order.
 >   no backend hook, so a port that compiles the v1.36 core for any reason
 >   starts *claiming* safety whether or not it sanitises — and `W8` believes it.
 >   Before the interlock, the core version had no bearing on path safety at all.
->   **Neither port may take the v1.36 core without its section-2 sanitiser in the
->   same build.** (The clean fix is to make the capability a backend function
->   the core does not define, so an unsanitised port fails to *link* rather than
->   lie — see the note at the end of this file.)
+>   As of the `emu_host_path_caps()` refactor this is now enforced by the
+>   linker, not by prose: `HBF_HOST_CAPS` calls a backend function the core does
+>   not define, so **neither port can build against the v1.36 core until it adds
+>   `emu_host_path_caps()`** — and adding it is the moment to confirm the backend
+>   is not destructive. See the design note at the end of this file.
 > - **`R8` gained no interlock.** Its host path is unprobed, and its own
 >   destructive bug (an ambiguous FCB handed to `F_DELETE`) is live on every
 >   port today and fixed only by the step-4 image refresh. So step 4 still may
@@ -263,9 +264,13 @@ both set the bit and both deliberately honour arbitrary absolute paths, so the
 bit's documented contract ("a host path cannot escape where the front end
 writes") is literally untrue there.
 
-The fix that removes the trap: declare `uint8_t emu_host_path_caps()` in
-`emu_io.h`, do **not** define it in the core, and have the `HBF_HOST_CAPS`
-handler return its value. A port that has not been touched then fails to *link*
-instead of silently lying, and the guarantee and the code that makes it true
-arrive together by construction. Until that lands, section 1b of
-`DOWNSTREAM_2026-08-25.md` is prose standing in for a compiler check.
+**This is fixed as of v1.36's `a4d3db8`+ (the `emu_host_path_caps()` refactor).**
+`HBF_HOST_CAPS` now returns the value of `emu_host_path_caps()`, a backend
+function `emu_io.h` declares but the core does not define - so a port that syncs
+the core without supplying it fails to *link* rather than silently asserting a
+guarantee its code does not make. The guarantee and the code that makes it true
+now arrive together by construction. The CLI and browser backends here define it
+(both set the bit); `z80cpmw` and `cpmdroid` must add it before they can build
+against the core, which is the point. The bit's meaning was also corrected: it
+is "the path is never used destructively", not "confined to one directory", so a
+backend that honours absolute paths sets it honestly.

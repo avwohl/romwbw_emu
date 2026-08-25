@@ -93,6 +93,9 @@ bool emu_host_file_close_write() { return true; }
 // HBF_HOST_GETNAME reaches this from handleEXT; the dispatcher asks for the
 // state first, and this stub is never WRITING, so the name is never read.
 const char* emu_host_file_get_write_name() { return ""; }
+// HBF_HOST_CAPS reaches handleEXT; the dispatcher forwards this. The stub
+// promises nothing, which is the safe default for a test that never exports.
+uint8_t emu_host_path_caps() { return 0; }
 
 //=============================================================================
 // Scaffolding

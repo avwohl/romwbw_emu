@@ -467,6 +467,15 @@ bool emu_host_file_open_read(const char* filename) {
   return true;
 }
 
+// The browser download reduces any path to its last component
+// (emu_host_path_basename, in emu_host_file_open_write below), so a guest path
+// cannot escape to a directory - there is no directory. It confines, so it
+// promises EMU_HOST_CAP_SAFE_PATHS and W8 will send a path, which becomes the
+// suggested download name.
+uint8_t emu_host_path_caps() {
+  return EMU_HOST_CAP_SAFE_PATHS;
+}
+
 bool emu_host_file_open_write(const char* filename) {
   // Close any existing write buffer
   host_write_buffer.clear();

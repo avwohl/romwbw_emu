@@ -855,6 +855,17 @@ static std::string absolutise(const std::string& path) {
   return dir + path;
 }
 
+// The CLI writes exactly the file the guest names - a plain fopen("wb"), which
+// creates or replaces that one file and touches nothing else. It honours
+// absolute paths deliberately (that is the point of R8/W8 on a real machine),
+// and it never deletes a directory or substitutes a file, so it does not have
+// the destructive behaviour EMU_HOST_CAP_SAFE_PATHS is about. It sets the bit.
+// This is not the confinement the sandboxed backends do; it does not need to be
+// - see the note on the bit in emu_io.h.
+uint8_t emu_host_path_caps() {
+  return EMU_HOST_CAP_SAFE_PATHS;
+}
+
 bool emu_host_file_open_write(const char* filename) {
   if (cli_host_write_file) {
     fclose(cli_host_write_file);

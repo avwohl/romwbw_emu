@@ -57,6 +57,15 @@ images.
   ask it *before* opening anything. An emulator predating it answers `0xFF` and
   `W8` stops without opening, creating or truncating a thing.
 
+  The bit is supplied by a backend function `emu_host_path_caps()` that
+  `emu_io.h` declares but the core does **not** define, so a port that syncs
+  this core without confirming its own path safety fails to *link* rather than
+  assert a guarantee it has not made. It means "a guest path is never used
+  destructively", not "confined to one directory", so the CLI and browser
+  backends both set it honestly (the CLI writes exactly the named file); a
+  backend that cannot yet promise even that returns 0 and W8 withholds the path
+  form.
+
   This is the part of the fix that does not depend on anyone's release order.
   Disk images and the emulator that runs them travel separately — the front
   ends fetch images from a pinned release tag, but nothing stops an image being

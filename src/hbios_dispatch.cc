@@ -2582,10 +2582,13 @@ void HBIOSDispatch::handleEXT() {
     }
 
     case HBF_HOST_CAPS: {
-      // What this implementation guarantees. No inputs and no state, so it is
-      // safe to call before anything is open - which is the whole point, see
-      // the note in hbios_dispatch.h.
-      cpu->regs.DE.set_low(HOST_CAP_SAFE_PATHS);
+      // What this front end's backend guarantees. No inputs and no state, so it
+      // is safe to call before anything is open - which is the whole point, see
+      // the note in hbios_dispatch.h. The value comes from emu_host_path_caps(),
+      // which each backend defines: the core deliberately does not, so a port
+      // that has not been updated fails to link rather than assert a guarantee
+      // its code does not make.
+      cpu->regs.DE.set_low(emu_host_path_caps());
       cpu->regs.DE.set_high(0);   // reserved for a second byte of bits
       result = HBR_SUCCESS;
       break;

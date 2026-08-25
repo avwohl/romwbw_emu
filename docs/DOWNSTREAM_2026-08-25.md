@@ -169,31 +169,35 @@ refreshed image from silently invoking a bug on an old front end.
 Now read the next sentence twice, because it is the one obligation in this
 release that a rebuild does not satisfy for you:
 
-> **Compiling this core is what asserts the bit.** If your front end cannot
-> honour a directory and does not reduce the guest's string, you will set
-> `HOST_CAP_SAFE_PATHS`, `W8` will believe you, and section 0 is live in your
-> port. There is no way for the core to check this on your behalf. Worse than
-> neutral, in fact: before this release the core version had no bearing on path
-> safety, so a routine core sync could not affect it. Now a sync flips the bit
-> on. The CLI and Windows backends already expose the gap - both set the bit
-> today and both deliberately honour arbitrary absolute paths, so the contract
-> above is literally false for them.
+`HBF_HOST_CAPS` is answered by a **backend function you must define**:
 
-For `ioscpm` this resolves cleanly: its first build carrying the v1.36 core is
-also its first build with the sanitiser, so the bit and the guarantee arrived
-together. **`cpmdroid` and `z80cpmw`: do not take the v1.36 core without your
-section-2 sanitiser in the same build.** `cpmdroid` is unverified here - the
-only evidence on this machine (`z80cpmw/FEATURE_PARITY.md:279-297`) suggests it
-already strips paths in its Kotlin layer, but that is second-hand and, more to
-the point, the bit speaks for the C++ shim, not the Kotlin layer, so "it looks
-fine in Kotlin" is not the thing to check.
+```cpp
+uint8_t emu_host_path_caps();   // declared in emu_io.h, NOT defined in the core
+```
 
-**The clean fix, recommended:** make the capability a backend function -
-`uint8_t emu_host_path_caps()` declared in `emu_io.h`, undefined in the core,
-returned by the `HBF_HOST_CAPS` handler. Then a port that has not opted in fails
-to *link* rather than silently lie, and the claim and the code that makes it true
-arrive together. Until that lands, this section is prose standing in for a
-compiler check.
+The core does not define it, so a port that syncs the v1.36 core without
+supplying it **fails to link**. That is deliberate, and it is the mechanism that
+replaced an earlier, weaker design where the core returned the bit as a constant
+- under which a port that had not thought about guest paths asserted safety just
+by compiling. Return `EMU_HOST_CAP_SAFE_PATHS` if your open-write path creates
+or replaces the one named file and does nothing destructive with the path (no
+delete of what it resolves near, no silent substitution); return `0` if you
+cannot promise even that. See the note on the bit in `emu_io.h` - it is *not*
+"the path is confined to one directory", so a backend that honours absolute
+paths (the CLI, the Windows port) still sets it.
+
+For `ioscpm` this resolves cleanly: its first build carrying the v1.36 core
+(build 52) is also its first with the sanitiser and its `emu_host_path_caps()`,
+so the bit and the guarantee arrive together and the linker enforces it.
+
+**`z80cpmw` and `cpmdroid`: you must add `emu_host_path_caps()` to your backend
+to build against the v1.36 core at all** - the link error is the reminder. When
+you do, that is the moment to confirm your open-write path is not destructive:
+`z80cpmw`'s `fopen`-based one qualifies and should return the bit; `cpmdroid` is
+unverified here (the only evidence on this machine,
+`z80cpmw/FEATURE_PARITY.md:279-297`, suggests it strips paths in its Kotlin
+layer, but that is second-hand, and the function speaks for the C++ shim, so
+"it looks fine in Kotlin" is not the thing to check).
 
 Why the interlock exists at all, given the release order in
 [RELEASE_ORDER_2026-08-25.md](RELEASE_ORDER_2026-08-25.md): that order controls
