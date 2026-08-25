@@ -72,9 +72,37 @@ requested name, and R8 in the guest prints its usual success line. Reduce to a
 leaf name, look that up, and report a miss (`emu_host_file_cancel()`) rather
 than substituting.
 
-This is not new in this release - W8 has been able to send a path since
-`98eb6a1`. It is in this notice because this is the release that gives you the
-helper to fix it with.
+### How reachable is it today
+
+Measured, because it decides the order you should do things in, not whether to
+do them.
+
+**A stock install is not exposed.** `..` cannot come out of the *old* W8 - the
+one your released `hd1k_*` images carry. Without a `[hostpath]` argument W8
+derives the name from the CCP-parsed FCB, and the CP/M 2.2 CCP treats `.` as a
+filename delimiter, so a `.` can never reach the FCB's name field: `W8 ..`
+prints the usage message, and cpmtools will not even create a CP/M file called
+`..` ("illegal CP/M filename"). Checked against a build of `98eb6a1^`, not
+argued from the source.
+
+**The mechanism is already half-live, though.** `/` is *not* a CCP delimiter,
+so the old W8 will happily emit a name with a separator in it: a CP/M file
+literally named `A/B` (cpmtools creates one) gives `To host: a/b`, which on your
+side becomes `Exports/a/b`. The `removeItem` then targets a path that does not
+exist and the write fails, so it is a failed export rather than a loss - but it
+is the same unsanitised string reaching the same two calls.
+
+**A user can reach the destructive case right now** by importing their own disk
+image. `ContentView.swift`'s `fileImporter` accepts `.data`/`.item`, and
+`romwbw_emu/disks/hd1k_combo.img` carries the new W8 as of this commit. Copy
+that image in through Files and `W8 ANYFILE.TXT ..` is live.
+
+**And every user reaches it the moment you refresh your release images**, which
+is section 4 and is on both todo lists. So take this fix *before* that refresh,
+not with it.
+
+Related and live today with no image change at all, because R8 has always taken
+a path: the read-side substitution described just above needs nothing new.
 
 ## 1. New: HBF_HOST_GETNAME (0xE8) - where the export really went
 
