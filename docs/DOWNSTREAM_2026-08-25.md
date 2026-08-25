@@ -145,9 +145,28 @@ std::string emu_host_path_basename(const std::string& path,
                                    const char* fallback = "download.bin");
 ```
 
-In `emu_io_common.cc`, which every port already compiles. It reduces a path to
-its last component for a backend that has no filesystem to honour a directory
-with. It accepts **both separators**, because the string comes off a guest
+In `emu_io_common.cc`. It reduces a path to its last component for a backend
+that has no filesystem to honour a directory with.
+
+**Where each port stands, because "just compile it" is wrong for one of you:**
+
+- **ioscpm** symlinks `emu_io_common.cc` into `iOSCPM/Core/`, so you get the
+  function by rebuilding. Nothing to add.
+- **z80cpmw does NOT compile `emu_io_common.cc`** - the vcxproj takes only
+  `hbios_dispatch.cc`, `hbios_cpu.cc`, `emu_init.cc` and the headers - and
+  adding it would not work: `emu_io_windows.cpp` defines its own
+  `emu_file_load`, `emu_file_load_to_mem`, `emu_file_save`, `emu_disk_*` and
+  `emu_get_time`, so the file would collide on ten symbols. Copy the function
+  (it is ~25 lines and depends on nothing), or say so and it can be moved
+  somewhere both trees build. Same applies to `emu_rename` in section 6: it is
+  declared in `emu_io.h` and defined in `emu_io_common.cc`, so it is a
+  declaration you do not have a definition for - harmless while you do not call
+  it, since you have your own `MoveFileExA` already.
+- **cpmdroid** - not checked out here, so check which of the two shapes you are.
+
+Nothing that z80cpmw *does* compile references either new function, so this
+release does not break that build: `hbios_dispatch.cc` calls only
+`emu_host_file_get_write_name()`, which you already define. It accepts **both separators**, because the string comes off a guest
 command line that may have been typed on any host, and it never returns
 something that would escape the directory it is joined to: `""`, `"."`, `".."`
 and a bare drive letter all become the fallback. `"a/b/"` gives `"b"`.
