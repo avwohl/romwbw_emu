@@ -151,25 +151,55 @@ truncation marker) and both ends of the widened range.
 
 `E` bit 0, `HOST_CAP_SAFE_PATHS`, means: **a host path from the guest cannot
 escape the place this front end writes to.** The core sets it unconditionally
-from v1.36, and `W8.COM` acts on it - it refuses to send a host path at all to
-an emulator that does not set it, before opening anything.
+from v1.36, and `W8.COM` acts on it - it refuses to send a host path to an
+emulator that does not set it, before opening anything.
 
-Read the next sentence twice, because it is the one obligation in this release
-that a rebuild does not satisfy for you:
+**This is a usability guard, not a security control**, and the difference
+matters. The check lives in `W8.COM`, but the trust boundary is HBIOS function
+`0xE2`, and the core does not sanitise there. A guest program that calls `0xE2`
+directly skips the probe - a 384-byte `.COM` doing `ld de,path / ld b,0E2h /
+rst 8` was verified writing outside its working directory on the newest,
+fully-interlocked emulator and image. Disk images are downloaded content, so
+this is the guest defending against the guest, and it cannot. **The only layer
+that can contain a host path is your backend** - `emu_host_file_open_write` -
+which is section 2, and the interlock does not reduce that obligation. What the
+interlock buys is real but narrow: it stops an *honest* `W8 <file> <path>` on a
+refreshed image from silently invoking a bug on an old front end.
+
+Now read the next sentence twice, because it is the one obligation in this
+release that a rebuild does not satisfy for you:
 
 > **Compiling this core is what asserts the bit.** If your front end cannot
 > honour a directory and does not reduce the guest's string, you will set
 > `HOST_CAP_SAFE_PATHS`, `W8` will believe you, and section 0 is live in your
-> port. There is no way for the core to check this on your behalf.
+> port. There is no way for the core to check this on your behalf. Worse than
+> neutral, in fact: before this release the core version had no bearing on path
+> safety, so a routine core sync could not affect it. Now a sync flips the bit
+> on. The CLI and Windows backends already expose the gap - both set the bit
+> today and both deliberately honour arbitrary absolute paths, so the contract
+> above is literally false for them.
 
 For `ioscpm` this resolves cleanly: its first build carrying the v1.36 core is
 also its first build with the sanitiser, so the bit and the guarantee arrived
-together. **`cpmdroid`: do not take this core without section 2.**
+together. **`cpmdroid` and `z80cpmw`: do not take the v1.36 core without your
+section-2 sanitiser in the same build.** `cpmdroid` is unverified here - the
+only evidence on this machine (`z80cpmw/FEATURE_PARITY.md:279-297`) suggests it
+already strips paths in its Kotlin layer, but that is second-hand and, more to
+the point, the bit speaks for the C++ shim, not the Kotlin layer, so "it looks
+fine in Kotlin" is not the thing to check.
+
+**The clean fix, recommended:** make the capability a backend function -
+`uint8_t emu_host_path_caps()` declared in `emu_io.h`, undefined in the core,
+returned by the `HBF_HOST_CAPS` handler. Then a port that has not opted in fails
+to *link* rather than silently lie, and the claim and the code that makes it true
+arrive together. Until that lands, this section is prose standing in for a
+compiler check.
 
 Why the interlock exists at all, given the release order in
 [RELEASE_ORDER_2026-08-25.md](RELEASE_ORDER_2026-08-25.md): that order controls
-the *catalog*, and the catalog is not the only way an image travels. Someone
-copies one in by hand. The order cannot cover that; this can.
+the *catalog*, and the catalog is not the only way an image travels - someone
+copies one in by hand. The order cannot cover that route; the interlock covers
+the honest-`W8` part of it, and only the backend covers the rest.
 
 ## 2. New: emu_host_path_basename() in the shared core
 
