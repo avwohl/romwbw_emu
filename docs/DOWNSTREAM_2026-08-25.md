@@ -4,7 +4,10 @@ Addressed to every port that compiles this core: the Windows port (`z80cpmw`),
 iOS/macOS (`ioscpm`), Android (`cpmdroid`), and the web/WASM frontend in this
 repo. The canonical integration contract remains
 [../DOWNSTREAM.md](../DOWNSTREAM.md); this file is the dated to-do list for
-this sync.
+this sync, and [RELEASE_ORDER_2026-08-25.md](RELEASE_ORDER_2026-08-25.md) is
+the order the fixes and the disk-image refresh have to happen in - **read that
+one first if you are about to publish anything**, because doing these in the
+wrong order arms section 0 for every user at once.
 
 This one is about `W8.COM` and the outer-OS path it is given. **Read section 0
 first if you maintain ioscpm** - the audit behind this release found a
