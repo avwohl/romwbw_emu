@@ -15,10 +15,25 @@ symlinks into `src/`, `z80cpmw`'s vcxproj compiles it in place, and `cpmdroid`'s
 CMakeLists pulls it from a sibling checkout — so a commit here reaches all three
 on their next build, tag or no tag.
 
-## [Unreleased]
+## [1.36] - 2026-08-25
 
-`VERSION` reads **1.36**, bumped in `48f8c19`; there is no `v1.36` tag yet, so
-everything below is unreleased. It follows the `v1.35` tag.
+`VERSION` was bumped in `48f8c19` and tagged here. It follows `v1.35`.
+
+Downstream ports do not need this tag — they build these sources out of a
+sibling working tree, so they had the core changes at the commit. What the tag
+is *for* is this repository's own users: the deb/rpm CLI binary, and the web
+build, whose wasm nothing in this tree can produce (emcc is not a build
+dependency here). The browser half of this release — the shared basename
+reduction, the zero-byte download, a refused disk reported as refused, and
+`W8`'s whole `To host:` change — reaches a web user only when CI builds it.
+
+The disk images are a separate channel again and are **not** in this release:
+`release.yml` stages the binary, the web page and `roms/` only. The refreshed
+`r8.com`/`w8.com` reach the mobile and Windows ports through `ioscpm`'s release
+assets, which all three catalogs point at — and the ordering constraint in
+[docs/DOWNSTREAM_2026-08-25.md](docs/DOWNSTREAM_2026-08-25.md) applies to that
+refresh: the sanitiser fix has to land in `ioscpm` before, or with, the new
+images.
 
 ### Added
 
