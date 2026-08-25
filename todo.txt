@@ -1,101 +1,91 @@
-Todo list.  Open items only - finished work is written up in the commit
+Todo list.  Open items only - finished work is in CHANGELOG.md and in the commit
 messages that made the changes, not kept here.
 
-- the web keyboard work needs one pass by hand in a real browser.  note the
-old wording here was wrong in a way that discouraged trying: node IS available
-(v26.3.0), only emcc is missing, so the wasm cannot be rebuilt but the page's
-JS can be run.  tests/web_reload_disks.js does exactly that - it lifts a
-function out of romwbw.html-template and drives it against a stub Module and
-document - so anything in the page that is reachable without the wasm can be
-tested that way now.  what still needs a browser is the rest of it: open it, click
-the terminal, press Ctrl+R and confirm the page does not reload and the CCP
-retypes the line.  then Ctrl+Shift+R, which is the one the handler had to add.
-then check the exclusions still work: Ctrl+Shift+V must paste, Ctrl+Insert must
-copy a selection, Ctrl+Minus must zoom.  then move focus to the ROM select and
-press ArrowDown twice - it must reach the second entry, not send ESC [ B to
-CP/M.  then write to a disk and close the tab to see the beforeunload guard.
+- the web keyboard work needs one pass by hand in a real browser.  open the
+page, click the terminal, press Ctrl+R and confirm the page does not reload and
+the CCP retypes the line.  then Ctrl+Shift+R, which is the one the handler had
+to add (romwbw.html-template:680-701).  then check the exclusions still work:
+Ctrl+Shift+V must paste, Ctrl+Insert must copy a selection, Ctrl+Minus must
+zoom.  then move focus to the ROM select and press ArrowDown twice - it must
+reach the second entry, not send ESC [ B to CP/M.  then write to a disk and
+close the tab to see the beforeunload guard (romwbw.html-template:1260).  node
+is here (v26.3.0) and the page's JS can be driven headless - tests/
+web_reload_disks.js and tests/web_console_output.js lift a function out of the
+template and run it against a stub Module and document - but none of the above
+is reachable that way: it all needs a real DOM and a real browser default
+action.  only emcc is missing, so the wasm cannot be rebuilt here.
 
-- the IEXTEN item is closed on both sides, and the correction is worth keeping
-because an earlier edit of this file got it wrong.  the clear cannot be proven
-on linux - BSD/XNU gates VLNEXT (^V) and VDISCARD (^O) on IEXTEN alone, outside
-the ICANON block, while on linux they sit inside it and are already off once
-ICANON is - so it used to want a person at a mac.  it does not now.  here,
-tests/cli_console.cc opens a pty and asserts ^V and ^O arrive.  cpmemu closed
-its own copy in 55cc13f: src/os/linux/platform.cc:120 clears IEXTEN and
-tests/pty_console.cc probes the platform and prints which bytes the clear is
-saving, so the assertion says out loud whether it is testing anything.  nothing
-is open here; do not re-file it.  the one thing to carry if the harness is
-ported anywhere else: the failure shape is a timeout, not a wrong byte - VLNEXT
-eats the ^V and then waits for the character it is meant to quote - so it needs
-an alarm() guard or a regression hangs the suite instead of failing it.
+- with --escape=none there is no way into sim> from a running guest at all
+(romwbw_emu.cc:203, :791).  that is the point of it, but it means the debugger
+is reachable only by restarting with a different flag.  a two-key sequence - the
+escape char twice - would give both, and would let the default stop reserving ^E
+(romwbw_emu.cc:160), a WordStar key.  nobody has asked for it.
 
-- with --escape=none there is no way into sim> from a running guest at all.
-that is the point of it, but it means the debugger is reachable only by
-restarting with a different flag.  a two-key sequence - the escape char twice -
-would give both, and would let the default stop reserving a WordStar key.
-nobody has asked for it.
+- the three CDN tags in romwbw.html-template (lines 6, 324-325) and
+romwbw-debug.html (6, 124-125) have no subresource integrity.  this is not a
+"the CDN can move" worry - xterm@5.3.0 is an exact npm pin, served immutable,
+and the package was renamed to @xterm/xterm at 5.4, so that version is frozen -
+it is injection: a jsdelivr compromise or a TLS intercept puts arbitrary JS into
+a page holding the user's disk images.  add integrity= and crossorigin=, or
+vendor the three files into web/ and close the offline gap at the same time (an
+installed deb has no terminal without internet: release.yml stages
+romwbw.html/.js/.wasm and roms/, and no xterm).  regenerate a hash with: curl
+-sL <url> | openssl dgst -sha384 -binary | openssl base64 -A
 
-- the three CDN tags in romwbw.html-template and romwbw-debug.html have no
-subresource integrity.  the "a CDN can move" worry in the last sweep was wrong
-as stated - xterm@5.3.0 is an exact npm pin, served immutable, and the package
-was renamed to @xterm/xterm at 5.4, so that version is frozen - but a jsdelivr
-compromise or a TLS intercept still injects arbitrary JS into a page holding
-the user's disk images.  add integrity= and crossorigin=, or vendor the three
-files into web/ and close the offline gap at the same time (an installed deb
-has no terminal without internet: release.yml packages the wasm but not xterm).
-regenerate a hash with: curl -sL <url> | openssl dgst -sha384 -binary | openssl
-base64 -A
+- nothing runs the tests but a person.  .github/workflows holds only release.yml
+and it has no test step, so a change that breaks the console is caught only if
+whoever made it thought to run make -C src test.  wiring the target into CI is a
+few lines: it runs tests/vda_keyboard.cc, tests/cli_console.cc,
+tests/cli_hostfile.cc, tests/web_reload_disks.js, tests/web_console_output.js
+and disks/verify_disk_utils.sh, and needs no ROM, no disk and no network.
+cli_console.cc needs -lutil on linux (src/makefile:70, PTY_LIBS); the two JS
+suites skip without node; verify_disk_utils.sh skips without um80, ul80 and
+cpmtools.
 
-- the tests exist now (make -C src test: tests/vda_keyboard.cc, 15 checks, and
-tests/cli_console.cc, 44 checks over 12 forked cases) but nothing runs them but
-a person.  .github/workflows has no test step, so a change that breaks the
-console is caught only if whoever made it thought to run make test.  wiring the
-target into CI is the remaining half and is a few lines - the suites need no
-ROM, no disk and no network, and cli_console.cc needs -lutil on linux.
-
-- found while auditing the input path, none of it control-character work, all
-of it out of scope for the commit that found it:
+- found while auditing the input path, none of it control-character work, all of
+it out of scope for the commit that found it:
   - the wasm video/DSKY/sound callbacks are wired to names nothing implements:
-  emu_io_wasm.cc emits Module.onVideo*/onDsky*, romwbw.html-template implements
-  onVda*/onSnd*.  ~200 lines on both sides that have never executed.
-  Module.onError, which was dropped entirely and is a large part of why nobody
-  noticed, is implemented now - so the next person to touch this will at least
-  be told when something fails.  Deliberately NOT fixing the names in the same
-  pass: renaming one side would switch ~200 lines of never-executed code on at
-  once, with no browser here to run it in.  Do that behind a browser.
-  - the whole aux/printer family (printer_set_file, printer_out, printer_ready,
-  aux_set_input_file, aux_set_output_file, aux_in, aux_out) has no caller
-  anywhere.  LST:, PUN: and RDR: do nothing, and there is no --printer flag to
-  reach them.  emu_io_cleanup() also fcloses them and emu_io_init() never
-  reopens, so one press of the escape key would kill redirection for the run if
-  it were ever wired up.
-  - emu_console_write_char (emu_io_cli.cc:366-374) does two things to every
+  emu_io_wasm.cc:81-113 emits Module.onVideo*/onDsky*, romwbw.html-template:
+  454-576 implements onVda*/onSnd*.  ~200 lines on both sides that have never
+  executed, and Module.onPrinterOutput (emu_io_wasm.cc:76-79) has no
+  implementation either.  Renaming one side would switch all of it on at once,
+  so do it behind a browser.
+  - the whole aux/printer family (emu_printer_set_file, emu_printer_out,
+  emu_printer_ready, emu_aux_set_input_file, emu_aux_set_output_file, emu_aux_in,
+  emu_aux_out - emu_io.h:117-135, emu_io_cli.cc:456-527) has no caller anywhere.
+  LST:, PUN: and RDR: do nothing, and there is no --printer flag to reach them.
+  emu_io_cleanup() (emu_io_cli.cc:197) also fcloses them and emu_io_init() never
+  reopens, so one press of the escape key - romwbw_emu.cc:340 cleans up, :345
+  and :353 re-init - would kill redirection for the run if it were ever wired
+  up.
+  - emu_console_write_char (emu_io_cli.cc:367-375) does two things to every
   output byte.  it drops every CR, not just the CR of a CR LF pair, so a guest
   returning to column 0 without a newline (progress counters, status line
   redraws) overwrites nothing - OPOST/ONLCR cannot restore a byte deleted before
-  the tty saw it.  and the line above it, `ch &= 0x7F`, strips the high bit off
-  everything, so 8-bit output never reaches the terminal at all.  the input side
-  deliberately clears ISTRIP to preserve that same bit; the output side throws
-  it away unconditionally.  same code in the wasm backend.
-  - the disk selects in romwbw.html-template are worse than one bad entry.  they
-  are a hardcoded five-name list fetched by bare relative filename, and only
-  hd1k_combo.img exists in the repo - z80cpm_tools.img exists nowhere at all,
-  and hd1k_infocom.img, which does exist, is described in the help text but
-  never offered.  no deploy or package target copies any .img either, so a stock
-  deb/rpm install 404s on both default disks and starts anyway.
-  - release.yml installs emsdk latest, which already broke a release once
-  (13d1c23).  the cpmemu clone beside it is pinned now (CPMEMU_REF), so this is
-  the remaining half: pin the emsdk version the same way and bump it
-  deliberately.
+  the tty saw it, and the web page has to carry an LF -> CR LF rewrite to undo
+  it.  and the line above it, `ch &= 0x7F`, strips the high bit off everything,
+  so 8-bit output never reaches the terminal at all.  the input side
+  deliberately clears ISTRIP to preserve that same bit, and emu_io_cli.cc:139-145
+  now names the asymmetry without closing it.  same code in the wasm backend,
+  emu_io_wasm.cc:184-190.
+  - the disk selects in romwbw.html-template (lines 252-259 and 267-274) are
+  worse than one bad entry.  they are a hardcoded five-name list fetched by bare
+  relative filename, and only hd1k_combo.img exists in the repo -
+  z80cpm_tools.img exists nowhere at all, hd1k_games.img, hd1k_cpm22.img and
+  hd1k_zsdos.img are not here either, and hd1k_infocom.img, which does exist, is
+  described in the help text (line 306) but never offered.  no deploy or package
+  target copies any .img - release.yml stages the page, the wasm and roms/ only -
+  so a stock deb/rpm install 404s on both default disks and starts anyway.
+  - release.yml installs emsdk latest (the "Install build dependencies" step),
+  which already broke a release once (13d1c23).  pin it the way the cpmemu clone
+  beside it is pinned - CPMEMU_REF - and bump it deliberately.
 
-- found by sweeping z80cpmw's FEATURE_PARITY.md against this repo's source on
-2026-08-24, row by row and each frontend separately.  eleven of its thirteen
-rows were wrong about this repo, and four of the corrections are bugs here
-rather than missing features:
+- found by sweeping z80cpmw's FEATURE_PARITY.md against this repo's source, row
+by row and each frontend separately.  what is left of it:
 
-  - both images in this repo now carry the new w8.com, but the ones it does not
-  carry still ship the old one.  the web frontend's disk selects offer
-  hd1k_cpm22.img, hd1k_games.img and z80cpm_tools.img, none of which exist
+  - both images in this repo carry the new w8.com; the ones it does not carry
+  still ship the old one.  the web frontend's disk selects offer hd1k_cpm22.img,
+  hd1k_games.img, hd1k_zsdos.img and z80cpm_tools.img, none of which exist
   anywhere on disk here, and the released hd1k_* assets live on a github
   release, so a user coming through either still gets the CWD-only W8.  the
   recipe, for whoever has those files:
@@ -103,38 +93,41 @@ rather than missing features:
     cpmcp -f <diskdef> <image> w8.com 0:w8.com
   mind the diskdef - hd1k_combo.img is wbw_hd1k_0 because of its 1 MB MBR
   prefix, while the plain 8 MB hd1k_infocom.img is wbw_hd1k.  using the wrong
-  one lists garbage rather than failing, which is how the infocom image was
-  briefly and wrongly recorded as having no w8.com at all.
-  - r8.com and w8.com in the images were not built the same way, and only one of
-  them can be checked.  w8.com is a ul80 memory image: 256 leading NOPs, code at
-  file offset 0x100, every address constant 256 higher to suit.  r8.com is a
-  bare .COM with the code at offset 0.  Both run - CP/M loads either at 0100h
-  and the NOPs slide into the code - but disks/verify_disk_utils.sh can only
-  compare a same-layout pair, so it verifies w8 in both images and reports r8 as
-  not comparable.  Whether r8.asm still corresponds to the shipped r8.com is
-  therefore unknown; answering it needs either a relocating compare or a rebuild
-  of r8.com in ul80's layout, and the second changes a working binary for no
-  user-visible gain.  Deciding which layout these should be built in - and
-  saying so somewhere - would make the check total.
-  - the 256 NOPs in w8.com are waste, not design: ul80 emits from 0000h and
-  nothing strips the pad.  1280 bytes of file to carry 1024 bytes of program,
-  and the entry point runs 256 NOPs before reaching anything.  Harmless, and it
-  is what the previous build did too, so the rebuild kept it rather than
-  silently changing the shape of a shipped binary.
+  one lists garbage rather than failing.
 
-  - the web Boot field never reads NVRAM back.  it sets and clears through
-  localStorage only, so a boot target the guest itself writes with SYSCONF is
-  lost on reload - the CLI persists to $XDG_CONFIG_HOME/romwbw_emu/nvram and the
-  web build has no equivalent read path.
+  - decide which layout r8.com and w8.com should be built in, and say so
+  somewhere; that is what would make disks/verify_disk_utils.sh total.  w8.com
+  is a ul80 memory image - 256 leading NOPs, code at file offset 0x100, every
+  address constant 256 higher to suit - while r8.com is a bare .COM with the
+  code at offset 0.  Both run, because CP/M loads either at 0100h and the NOPs
+  slide into the code, but the script can only compare a same-layout pair, so it
+  verifies w8 in both images and reports r8 as not comparable.  Whether r8.asm
+  still corresponds to the shipped r8.com is therefore unknown; answering it
+  needs either a relocating compare or a rebuild of r8.com in ul80's layout, and
+  the second changes a working binary for no user-visible gain.  Note the 256
+  NOPs are waste rather than design - ul80 emits from 0000h and nothing strips
+  the pad, so it is 1280 bytes of file to carry 1024 bytes of program - and the
+  rebuild kept them rather than silently changing the shape of a shipped binary.
 
-  - the CLI has no way to clear a persisted boot target.  --boot= sets it and
-  the file keeps it; a one-off --boot overwrites the saved value at exit, and
-  there is no --boot=none or --clear-nvram to get back to the menu.
+  - the web Boot field never reads NVRAM back.  romwbw.html-template pushes it
+  to the core (_romwbw_set_boot_string, :1160-1170), clears it
+  (_romwbw_clear_nvram, :1192-1200) and persists the text in localStorage only;
+  there is no getter in EXPORTED_FUNCTIONS (web/makefile:21), so a boot target
+  the guest itself writes with SYSCONF is lost on reload.  the CLI persists to
+  $XDG_CONFIG_HOME/romwbw_emu/nvram (romwbw_emu.cc:75-108) and the web build has
+  no equivalent read path.
 
-- state of the other ports as of this sweep, so nobody re-reads four repos to
-learn it: ioscpm and cpmdroid pass every Ctrl-letter to the guest and claim
-none for themselves, so do not port the escape work or z80cpmw's
-keyboard.ctrlRToCpm into them - there is nothing there to switch off.  z80cpmw
-is fixed (e35f336, in 1.0.20).  cpmemu's ^C exit is now switchable and
-time-boxed and its raw mode clears IEXTEN (1584295); the ^V loss to Windows
-Terminal is the one part still true there.
+  - the CLI has no way to clear a persisted boot target.  --boot=
+  (romwbw_emu.cc:1072) sets it and the file keeps it; a one-off --boot
+  overwrites the saved value at exit (romwbw_emu.cc:1613-1619), and there is no
+  --boot=none or --clear-nvram to get back to the menu.  the operation exists in
+  the web core already - romwbw_clear_nvram(), web/romwbw_web.cc:171 - so this
+  is a flag and a call, and --escape already has the "none" spelling to copy
+  (parse_escape_char, romwbw_emu.cc:166-199).
+
+- handed over from z80cpmw, which suppresses it on its side: hbios_dispatch.cc
+emits six C4267 warnings under MSVC at /W3.  All six are a size_t loop index
+promoting a uint16_t guest address, where the truncation to sixteen bits IS the
+Z80 64K wrap HBIOS wants, so there is nothing to fix today - but a matching cast
+is worth adding if this repo ever turns C4267 or -Wshorten-64-to-32 on for
+itself.  cpmemu's 9fee3c2 sweep for this class did not reach this file.
