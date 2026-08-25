@@ -141,6 +141,36 @@ Tests: `tests/hbios_hostname.cc`, 29 checks, including the buffer bound (the
 terminator must land inside it, byte C of the buffer must not be touched, the
 truncation marker) and both ends of the widened range.
 
+## 1b. New: HBF_HOST_CAPS (0xE9) - and what compiling this core now asserts
+
+```
+  B  = 0xE9
+  ->  A = 0    and E = capability bits (D reserved, zero)
+      A = 0xFF on an emulator that predates the call
+```
+
+`E` bit 0, `HOST_CAP_SAFE_PATHS`, means: **a host path from the guest cannot
+escape the place this front end writes to.** The core sets it unconditionally
+from v1.36, and `W8.COM` acts on it - it refuses to send a host path at all to
+an emulator that does not set it, before opening anything.
+
+Read the next sentence twice, because it is the one obligation in this release
+that a rebuild does not satisfy for you:
+
+> **Compiling this core is what asserts the bit.** If your front end cannot
+> honour a directory and does not reduce the guest's string, you will set
+> `HOST_CAP_SAFE_PATHS`, `W8` will believe you, and section 0 is live in your
+> port. There is no way for the core to check this on your behalf.
+
+For `ioscpm` this resolves cleanly: its first build carrying the v1.36 core is
+also its first build with the sanitiser, so the bit and the guarantee arrived
+together. **`cpmdroid`: do not take this core without section 2.**
+
+Why the interlock exists at all, given the release order in
+[RELEASE_ORDER_2026-08-25.md](RELEASE_ORDER_2026-08-25.md): that order controls
+the *catalog*, and the catalog is not the only way an image travels. Someone
+copies one in by hand. The order cannot cover that; this can.
+
 ## 2. New: emu_host_path_basename() in the shared core
 
 ```cpp

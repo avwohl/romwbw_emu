@@ -2581,6 +2581,16 @@ void HBIOSDispatch::handleEXT() {
       break;
     }
 
+    case HBF_HOST_CAPS: {
+      // What this implementation guarantees. No inputs and no state, so it is
+      // safe to call before anything is open - which is the whole point, see
+      // the note in hbios_dispatch.h.
+      cpu->regs.DE.set_low(HOST_CAP_SAFE_PATHS);
+      cpu->regs.DE.set_high(0);   // reserved for a second byte of bits
+      result = HBR_SUCCESS;
+      break;
+    }
+
     case HBF_HOST_GETARG: {
       // Get command line argument by index
       // Input: C = argument index (0 = first arg after command), DE = buffer address

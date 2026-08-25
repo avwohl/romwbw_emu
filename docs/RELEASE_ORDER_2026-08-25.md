@@ -8,6 +8,35 @@ This is the coordination plan across four repositories. The technical detail is
 in [DOWNSTREAM_2026-08-25.md](DOWNSTREAM_2026-08-25.md); this file is only the
 ordering, and why it is that order.
 
+> ### Update: the order is no longer the only thing standing between a user and the bug
+>
+> An ordering plan only governs the channel it controls, and this one controls
+> the catalog. It never covered an image travelling any other way — someone
+> copies one in by hand, takes one from a friend, or downloads
+> `romwbw_emu/disks/`. That gap was live and this document could not close it.
+>
+> `W8.COM` now closes it itself. It asks the emulator, before opening anything,
+> whether a host path is safe to send (`HBF_HOST_CAPS`, 0xE9 — a call no older
+> emulator has). If the answer is no, it refuses and writes nothing. So a
+> refreshed image meeting an unfixed front end is now a **refusal**, not a
+> deletion, whatever route the image took.
+>
+> Two things this does **not** change:
+>
+> - **Step 1 is still first, and still urgent.** The interlock makes the
+>   dangerous combination fail safe; it does not fix the port. Until step 1
+>   ships, `ioscpm` users get a refusal where they should get an export, and any
+>   image built between `98eb6a1` and the interlock still carries a `W8` that
+>   asks for nothing and gets no protection.
+> - **The `v1.4.5` rule below is unchanged.** Overwriting those assets would
+>   still push new images to every installed app with no update. Safe now rather
+>   than destructive — but still not something to do by accident.
+>
+> And it adds one obligation, in `DOWNSTREAM_2026-08-25.md` section 1b:
+> compiling the v1.36 core is what asserts the safety bit `W8` trusts. A port
+> that takes the core without sanitising sets the bit, `W8` believes it, and the
+> interlock is bypassed. **`cpmdroid` must not take the core without step 2.**
+
 ---
 
 ## The hazard in one paragraph
@@ -72,10 +101,14 @@ Two consequences to be aware of rather than act on:
   above. If step 1 will take a while, consider a line in `README.md` next to
   the disk images saying not to load them into `ioscpm` until its next build.
 
-### Step 1 — `ioscpm` code fix. **Blocks steps 4 and 5.**
+### Step 1 — `ioscpm` code fix. **Done, uncommitted, build 52.**
 
-The only step with a real deadline, because the user-import path is already
-live. Three changes, all in that repo:
+All three changes are made and verified in `/Users/wohl/src/ioscpm`: 48
+host-side checks pass, the app builds, and `W8 ANYFILE.TXT ..` now leaves
+`Documents` intact where the shipped logic reported `Documents: GONE`. A new
+`ExportPath` type owns the reduction and the containment check so both are
+testable (`Tests/ExportPathTests.swift`, 24 checks). `releaseTag` is
+deliberately untouched at `v1.4.5`. What follows is what was done:
 
 1. **`emu_io_ios.mm`, `emu_host_file_open_write()`** — reduce the incoming
    string with `emu_host_path_basename()`. That port symlinks
@@ -96,8 +129,8 @@ Then, separately and worth doing at the same time: make
 `emu_host_file_get_write_name()` return the Exports location the Swift layer
 will really write, so `W8` can tell the user where the file went.
 
-**Ship it as a build users have.** Do not bump `releaseTag` in this build
-unless the new assets already exist.
+**Remaining: ship it as a build users have.** Do not bump `releaseTag` in this
+build unless the new assets already exist.
 
 ### Step 2 — `cpmdroid` code fix. Blocks step 5 for that port only.
 
@@ -123,7 +156,9 @@ Can happen before or after step 4; it is independent.
 
 ### Step 4 — publish refreshed disk images under a **new** `ioscpm` tag.
 
-Only once step 1 is in users' hands. `disks/rebuild_disk_utils.sh` builds and
+Still after step 1 — but now because an unfixed port would *refuse* the feature
+rather than destroy the user's data, which is a broken feature rather than an
+emergency. Publishing before step 1 lands is no longer unsafe; it is just bad. `disks/rebuild_disk_utils.sh` builds and
 installs; `disks/verify_disk_utils.sh` checks. New tag, new assets, `v1.4.5`
 untouched.
 

@@ -60,6 +60,13 @@ H_CLOSE	equ	0E5h	; Close file (C=0 read, C=1 write)
 H_GETNAME equ	0E8h	; Where the open write file really lands (C=bufsize,
 			; DE=buffer).  A=0 and the buffer holds a string; A<>0
 			; on an emulator that does not implement it.
+H_CAPS	equ	0E9h	; What the emulator's host-file support guarantees.
+			; A=0 and E=capability bits; A<>0 on an emulator that
+			; predates the call.  No inputs and no state, so unlike
+			; H_GETNAME it can be asked before anything is open -
+			; which is what makes it usable as a safety interlock.
+CAP_SAFE_PATH equ 01h	; a host path from the guest cannot escape the place
+			; the front end writes to
 
 EOFCHR	equ	1Ah	; CP/M end-of-text marker, and the padding R8 writes into
 			; the last record of an imported file
@@ -110,6 +117,12 @@ start:
 	ld	a,(have_hostarg)
 	or	a
 	call	z,fcb_to_hostpath
+
+	; A host path is only safe to send to an emulator that says it handles
+	; one safely.  See check_host_path_safe - this is the interlock, and it
+	; runs before F_OPEN and before H_OPEN_W so a refusal opens nothing,
+	; creates nothing and truncates nothing.
+	call	check_host_path_safe
 
 	; Open CP/M file for reading
 	ld	de,cpm_fcb
@@ -282,6 +295,45 @@ fd_done:
 	pop	bc
 	pop	hl
 	pop	af
+	ret
+
+; Refuse to hand a host path to an emulator that does not guarantee it is safe.
+;
+; This exists because a disk image and the emulator that runs it travel
+; separately.  The front ends fetch their images from a pinned release tag, so
+; a user who has not updated keeps getting the old images - but nothing stops
+; an image being copied in by hand, and this W8.COM then runs on whatever
+; emulator happens to be there.  On an iOS build before build 52 that was
+; fatal: the front end joined the guest's string to its Exports folder and
+; called removeItem on the result, so "W8 ANYFILE.TXT .." deleted the user's
+; entire Documents folder - every disk image they had - and reported success.
+;
+; So the guest asks first.  H_CAPS is a call no older emulator has, and it takes
+; no arguments and touches no state, so it can be asked before anything is
+; opened.  A<>0 means the emulator predates it; CAP_SAFE_PATH clear means it has
+; the call but does not make the guarantee.  Either way, refuse.
+;
+; Only when a path was actually typed.  With no hostpath the name comes from the
+; FCB, and the CCP cannot put a '.' in an FCB name field - measured: "W8 .."
+; prints the usage message - so it can never be ".." or contain "../".  That
+; matters more than it looks: it means a refreshed disk image still does
+; ordinary "W8 FOO.TXT" exports on an old emulator.  Only the dangerous form is
+; withheld, so updating the images does not break the common case.
+;
+; Fails closed.  The probe cannot tell a safe old emulator (the CLI, which was
+; never vulnerable) from a dangerous one, and the cost of guessing wrong in one
+; direction is an error message while the other is the user's disk library.
+check_host_path_safe:
+	ld	a,(have_hostarg)
+	or	a
+	ret	z		; no path given - nothing to withhold
+	ld	b,H_CAPS
+	rst	8
+	or	a
+	jp	nz,old_host_error	; no such call: predates v1.36
+	ld	a,e
+	and	CAP_SAFE_PATH
+	jp	z,old_host_error	; has the call, makes no guarantee
 	ret
 
 ; Print where the file is actually being written.
@@ -570,6 +622,15 @@ div10_next:
 	ret
 
 ; Error handlers
+;
+; Nothing has been opened when this fires - the interlock runs before F_OPEN -
+; so there is nothing to close and nothing has been created.
+old_host_error:
+	ld	de,msg_old_host
+	ld	c,C_PRINT
+	call	BDOS
+	rst	0
+
 no_args:
 	ld	de,msg_usage
 	ld	c,C_PRINT
@@ -643,6 +704,10 @@ msg_host_write:
 	db	'Error: Host write failed',0Dh,0Ah,'$'
 msg_host_close:
 	db	'Host file close failed - file may be truncated',0Dh,0Ah,'$'
+msg_old_host:
+	db	'This emulator is too old to be given a host path safely.',0Dh,0Ah
+	db	'Nothing was written.  Update the emulator, or use W8 with',0Dh,0Ah
+	db	'no path to export into its own folder.',0Dh,0Ah,'$'
 
 ; Data areas
 hostpath:

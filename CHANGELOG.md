@@ -52,6 +52,29 @@ images.
   printing what was asked for, so a current `w8.com` still runs on an
   already-released front end. `getTrapTypeFromFunc()` widened its extension
   range from 0xE0-0xE7 to 0xE0-0xEF to route it.
+- **`W8` refuses to send a host path to an emulator that cannot promise it is
+  safe**, via a new `HBF_HOST_CAPS` (0xE9): no inputs, no state, so a guest can
+  ask it *before* opening anything. An emulator predating it answers `0xFF` and
+  `W8` stops without opening, creating or truncating a thing.
+
+  This is the part of the fix that does not depend on anyone's release order.
+  Disk images and the emulator that runs them travel separately — the front
+  ends fetch images from a pinned release tag, but nothing stops an image being
+  copied in by hand — so a `W8` able to send a path can meet a front end that
+  mishandles one. On iOS before its build 52 that was fatal. The interlock makes
+  that combination refuse instead of relying on it never happening.
+
+  `HBF_HOST_GETNAME` could not serve as the probe: "no such function" and "no
+  write file open" are both `0xFF`, so it can only be asked once a file is
+  already open.
+
+  Only the path form is withheld. `W8 FOO.TXT` with no path still works on any
+  emulator, because the name then comes from the FCB and the CCP cannot put a
+  `.` in an FCB name field — so it can never be `..`. **A refreshed disk image
+  therefore still does ordinary exports on an old front end;** only the
+  dangerous form is refused. It fails closed: the probe cannot tell a safe old
+  emulator (the CLI, never vulnerable) from a dangerous one, and the cost of
+  guessing wrong one way is a message, the other way is the user's disk library.
 - **`emu_host_path_basename()`** in `emu_io_common.cc`, for the front ends with
   no filesystem to honour a directory with. Takes **both** separators, because
   the string comes off a guest command line that may have been typed on any

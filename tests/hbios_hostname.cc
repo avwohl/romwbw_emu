@@ -286,6 +286,40 @@ int main() {
     check(r.at(BUF) == 0xEE, "and writes nothing into the guest's buffer");
   }
 
+  // --- HBF_HOST_CAPS: the interlock W8 uses before sending a host path -----
+  //
+  // The point of this call is that a guest can ask it BEFORE opening anything.
+  // HBF_HOST_GETNAME cannot serve: "no such function" and "no write file open"
+  // are both 0xFF, so it can only be asked once a file is already open.
+  {
+    Rig r;
+    g_state = HOST_FILE_IDLE;          // nothing open - must not matter
+    g_write_name = "";
+    r.cpu.regs.DE.set_pair16(0xA5A5);
+    r.call(HBF_HOST_CAPS, 0, 0);
+    check(r.A() == 0, "answers with nothing open - it takes no state");
+    check((r.cpu.regs.DE.get_low() & HOST_CAP_SAFE_PATHS) != 0,
+          "and reports that a guest path cannot escape where the front end writes");
+    check(r.cpu.regs.DE.get_high() == 0, "the reserved high byte is zero");
+  }
+  {
+    Rig r;
+    g_state = HOST_FILE_WRITING;       // ...and equally must not matter
+    g_write_name = "/x/y.txt";
+    r.call(HBF_HOST_CAPS, 0, 0);
+    check(r.A() == 0, "and the same answer mid-transfer");
+  }
+  {
+    // The distinction the interlock rests on. An emulator predating the call
+    // answers from the unknown-function path; this asserts the two answers a
+    // guest can see are both non-zero, so "or a / jp nz" is the right test
+    // whichever it gets - and that a code still inside the widened range but
+    // unimplemented does not accidentally look like success.
+    Rig r;
+    r.call(0xEE, 0, 0);
+    check(r.A() != 0, "an unimplemented code in the range does not look like a capability");
+  }
+
   printf("------------------------------------------------------------\n");
   printf("%d passed, %d failed\n", checks - failures, failures);
   return failures ? 1 : 0;

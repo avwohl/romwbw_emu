@@ -148,6 +148,17 @@ enum HBiosFunc {
   // rather than as an error - a new W8.COM has to keep running on an already
   // released front end.
   HBF_HOST_GETNAME = 0xE8, // Get effective host write path (C=bufsize, DE=buf)
+  // What this host-file implementation guarantees.  No inputs, no state, safe
+  // to call at any time - which is the point: it is the ONLY way a guest
+  // program can tell a new emulator from an old one BEFORE it does anything.
+  // HBF_HOST_GETNAME cannot serve as the probe, because "no such function" and
+  // "no write file open" are both 0xFF, so it can only be asked after a file is
+  // already open - by which time the damage a probe exists to prevent may
+  // already be arranged.
+  // Returns A = 0 and E = HOST_CAP_* bits.  An emulator that predates this
+  // answers A = 0xFF from the unknown-function path, which is the answer W8
+  // acts on.
+  HBF_HOST_CAPS = 0xE9,    // Get host-file capability bits (E = HOST_CAP_*)
 
   // System Functions - 0xF0-0xFC
   HBF_SYS       = 0xF0,
@@ -167,6 +178,25 @@ enum HBiosFunc {
 
   // EMU custom extension (avoid conflict with standard codes)
   HBF_SYSBOOT   = 0xFE,  // EMU: Boot from device
+};
+
+// HBF_HOST_CAPS bits, returned in E.
+enum HBiosHostCaps {
+  // A host path from the guest cannot escape the place this front end writes
+  // to. Set by every build of this core from v1.36, and it is an assertion
+  // about the BACKEND as much as the core: a front end that cannot honour a
+  // directory must reduce the guest's string (emu_host_path_basename) rather
+  // than store it whole. Compiling this core is what asserts it - see
+  // docs/DOWNSTREAM_2026-08-25.md, which says so in as many words.
+  //
+  // Why a guest would ask: W8 refuses to send a host path to an emulator that
+  // does not set this. Before v1.36 the iOS front end joined the guest's string
+  // to its Exports folder and called removeItem on the result, so
+  // "W8 ANYFILE.TXT .." deleted the user's whole Documents folder. Refreshed
+  // disk images reach old front ends by routes no release process controls -
+  // someone copies an image in by hand - and this bit is what makes the new
+  // W8.COM refuse rather than rely on that never happening.
+  HOST_CAP_SAFE_PATHS = 0x01,
 };
 
 // SYSRESET subtypes (C register for SYSRESET)
