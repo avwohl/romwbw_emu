@@ -11,10 +11,36 @@
 #include <cstring>
 #include <ctime>
 #include <set>
+#include <string>
+
+// For emu_rename below. NOMINMAX and WIN32_LEAN_AND_MEAN because this header
+// otherwise defines min/max as macros and drags in half of COM, either of
+// which can break code compiled after it - and this file is compiled by four
+// ports with four different sets of surrounding headers.
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 //=============================================================================
 // File I/O Implementation
 //=============================================================================
+
+// See emu_io.h: plain rename() will not replace an existing target on Windows.
+// The MSVC and mingw CRTs both fail it rather than replacing, which made the
+// safe write path in emu_file_save() the broken one there.
+int emu_rename(const char* from, const char* to) {
+#ifdef _WIN32
+  return MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING) ? 0 : -1;
+#else
+  return rename(from, to);
+#endif
+}
 
 // Upper bound for whole-file loads. Every caller loads a ROM, a ROM app
 // image, or a disk image, and the biggest disk RomWBW can address is 256
@@ -70,18 +96,26 @@ size_t emu_file_load_to_mem(const std::string& path, uint8_t* mem,
   FILE* f = fopen(path.c_str(), "rb");
   if (!f) return 0;
 
-  fseek(f, 0, SEEK_END);
-  size_t file_size = ftell(f);
-  fseek(f, 0, SEEK_SET);
+  // measure_stream rather than the bare fseek/ftell pair this used to have:
+  // ftell fails on a non-seekable path (a fifo, /dev/stdin on a pipe, a
+  // document handed over by a mobile file picker) and its -1 became a huge
+  // size_t. The clamp below hid it - the read was capped at the buffer - so
+  // this one was survivable where emu_file_load's was not, but it is the same
+  // defect and the same fix, and it is the last site in this file still using
+  // the 32-bit pair.
+  uint64_t file_size = 0;
+  if (!measure_stream(f, &file_size)) {
+    fclose(f);
+    return 0;
+  }
 
-  // Guard before subtracting: offset past mem_size would underflow, and a
-  // failed ftell makes file_size (size_t)-1, so clamp to the space available.
+  // Guard before subtracting: an offset past mem_size would underflow.
   if (offset >= mem_size) {
     fclose(f);
     return 0;
   }
   size_t avail = mem_size - offset;
-  size_t to_read = (file_size < avail) ? file_size : avail;
+  size_t to_read = (file_size < (uint64_t)avail) ? (size_t)file_size : avail;
 
   size_t read = fread(mem + offset, 1, to_read, f);
   fclose(f);
@@ -104,7 +138,7 @@ bool emu_file_save(const std::string& path, const std::vector<uint8_t>& data) {
   bool ok = (written == data.size());
   if (fclose(f) != 0) ok = false;
 
-  if (!ok || rename(temp_path.c_str(), path.c_str()) != 0) {
+  if (!ok || emu_rename(temp_path.c_str(), path.c_str()) != 0) {
     remove(temp_path.c_str());
     return false;
   }
@@ -242,4 +276,49 @@ void emu_get_time(emu_time* t) {
   t->minute = tm->tm_min;
   t->second = tm->tm_sec;
   t->weekday = tm->tm_wday;
+}
+
+//=============================================================================
+// Host File Path Helpers
+//=============================================================================
+
+// Reduce a guest-supplied path to its last component, for a backend with no
+// filesystem to honour the directory part with. See emu_io.h for the contract.
+//
+// This lives here rather than in each backend because every sandboxed front
+// end needs the same answer and they were arriving at different ones: the
+// browser backend split on '/' only, so a Windows-shaped path typed into the
+// web build became the whole string as one download name, and the iOS backend
+// did not split at all. A path is not an error - W8 has to accept one, since
+// the same disk image and the same W8.COM run on the CLI where it means
+// something - it just cannot mean there what it means on a desktop.
+std::string emu_host_path_basename(const std::string& path,
+                                   const char* fallback) {
+  const std::string fb = (fallback && *fallback) ? fallback : "download.bin";
+
+  // Ignore trailing separators: "a/b/" names b, not "".
+  size_t end = path.size();
+  while (end > 0 && (path[end - 1] == '/' || path[end - 1] == '\\')) end--;
+  if (end == 0) return fb;
+
+  size_t start = end;
+  while (start > 0 && path[start - 1] != '/' && path[start - 1] != '\\') start--;
+  std::string base = path.substr(start, end - start);
+
+  // A Windows path can name a file on another drive's current directory with
+  // no separator at all ("C:OUT.TXT"), and the drive letter is not part of the
+  // name. Strip exactly that prefix - a letter and a colon at the start - and
+  // nothing else: a colon is a legal character in a POSIX filename, so cutting
+  // at the last one turned "/tmp/my:file.txt" into "file.txt" in the browser
+  // while the CLI wrote "my:file.txt", which is the divergence this helper was
+  // written to prevent.
+  if (base.size() >= 2 && base[1] == ':' &&
+      ((base[0] >= 'A' && base[0] <= 'Z') || (base[0] >= 'a' && base[0] <= 'z'))) {
+    base = base.substr(2);
+  }
+
+  // What is left has to be a name that cannot escape the directory it will be
+  // joined to. "." and ".." are the two that can.
+  if (base.empty() || base == "." || base == "..") return fb;
+  return base;
 }

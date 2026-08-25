@@ -311,9 +311,10 @@
     <p>Units 0/1 are the on-board RAM/ROM memory disks (no OS) - booting <code>0</code> reports "No system image on disk". The first hard disk is unit <code>2</code>. Press <code>D</code> to list disk units, <code>W</code> to save your choice as the autoboot default.</p>
 
     <h3>File Transfer (R8 / W8)</h3>
-    <p><code>R8 FILENAME</code> - import a host file into CP/M (opens a file picker; the file is saved in CP/M as FILENAME).</p>
-    <p><code>W8 FILENAME</code> - export a CP/M file: your browser downloads it.</p>
-    <p>R8.COM/W8.COM are on <code>hd1k_combo.img</code> (default disk 0, drive A:), <code>hd1k_games.img</code> (default disk 1), <code>hd1k_cpm22.img</code>, and <code>z80cpm_tools.img</code>.</p>
+    <p><code>R8 FILENAME</code> - import a host file into CP/M. Opens a file picker; the emulator waits until you pick or cancel. The CP/M name comes from the file you pick, uppercased and cut to 8.3 - characters CP/M cannot hold in a name become <code>_</code>, and R8 says so when it has to do that.</p>
+    <p><code>W8 CPMFILE</code> - export a CP/M file: your browser downloads it, under the CP/M name lowercased.</p>
+    <p><code>W8 CPMFILE somewhere/else.txt</code> also works, but a browser has no filesystem to put a directory in: only the last part is used, as the download name. W8 prints the name the download will really have, so you can see what happened.</p>
+    <p>R8.COM and W8.COM are on <code>hd1k_combo.img</code>, the default disk 0.</p>
 
     <h3>Drive Letters & Slices</h3>
     <p>Hard disks are assigned first, then memory disks. The boot slice becomes A:.</p>
@@ -725,15 +726,25 @@
     // Helper to load disk data into emulator
     // isManifest: true if loaded from server dropdown (can be auto-updated)
     function loadDiskData(unit, data, name, isManifest = false) {
-      // Store disk data so we can reload after ROM changes
+      // Actually load into emulator, and believe what it says. The core
+      // refuses anything too small to be a disk image, and this used to
+      // discard the answer and report "Disk N loaded" for a file that was
+      // never mounted - a stray small file dropped into the slot looked like
+      // a successful load with the only trace in the JS console.
+      const ptr = Module._malloc(data.length);
+      Module.HEAPU8.set(data, ptr);
+      const rc = Module._romwbw_load_disk(unit, ptr, data.length);
+      Module._free(ptr);
+      if (rc !== 0) {
+        statusDiv.textContent = 'Disk ' + unit + ': ' + name + ' is not a disk image';
+        return;
+      }
+      // Store disk data so we can reload after ROM changes. Only once the core
+      // has accepted it - otherwise a refused disk would be pushed back in by
+      // reloadDisks() on the next ROM change.
       diskData[unit] = data;
       diskNames[unit] = name;
       diskIsManifest[unit] = isManifest;
-      // Actually load into emulator
-      const ptr = Module._malloc(data.length);
-      Module.HEAPU8.set(data, ptr);
-      Module._romwbw_load_disk(unit, ptr, data.length);
-      Module._free(ptr);
       // Mark as manifest disk in emulator
       if (Module._romwbw_set_disk_is_manifest) {
         Module._romwbw_set_disk_is_manifest(unit, isManifest ? 1 : 0);

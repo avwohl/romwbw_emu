@@ -51,6 +51,19 @@ typedef off_t emu_off_t;
 #define emu_ftell ftello
 #endif
 
+// Rename `from` over `to`, replacing `to` if it exists. Returns 0 on success,
+// non-zero on failure - the same shape as rename().
+//
+// ISO C leaves rename() undefined when the target exists, and both the MSVC
+// CRT and mingw's msvcrt refuse it outright rather than replacing. That is not
+// an edge case here: emu_file_save() writes a temp file and renames it over the
+// image precisely so a failed write cannot destroy the previous one, so on
+// Windows the safe path was the broken one. The Windows port had already
+// worked around it locally with MoveFileExA(MOVEFILE_REPLACE_EXISTING) and
+// asked for the shim, so the shared copy stops carrying a dormant bug that
+// port does not have.
+int emu_rename(const char* from, const char* to);
+
 //=============================================================================
 // Console I/O - for emulated terminal
 //=============================================================================
@@ -314,7 +327,27 @@ bool emu_host_file_open_read(const char* filename);
 // filename: name/path for the output; same path contract as
 //   emu_host_file_open_read for native backends. Browser backends use it
 //   only as the suggested download filename (creates an in-memory buffer).
-// Returns: true if ready to write
+//
+//   This really is a *path* and not a name: W8 takes an optional host path
+//   (src/w8.asm) and passes it here verbatim. Two consequences every backend
+//   has to handle rather than assume away:
+//
+//   - The CCP has uppercased it, and the typed case is gone before the
+//     emulator ever sees the string. The convention across backends is to
+//     resolve existing directory components case-insensitively and to
+//     LOWERCASE the file name being created - what W8 has always done for the
+//     name it derives from the FCB. A backend that picks a different
+//     convention makes the same W8 command produce differently-named files on
+//     different front ends.
+//   - A backend with no filesystem to honour a directory with must reduce the
+//     string with emu_host_path_basename() below rather than store it whole.
+//     Storing it whole means a guest typing a path produces an export *name*
+//     containing separators, and a UI layer that then joins that to its own
+//     export directory can be walked out of it with "..".
+//
+// Returns: true if ready to write. A buffering backend that cannot know yet
+//   (browser, mobile) returns true and reports the real outcome from
+//   emu_host_file_close_write(); the guest is told either way.
 bool emu_host_file_open_write(const char* filename);
 
 // Read byte from host file
@@ -340,6 +373,35 @@ void emu_host_file_provide_data(const uint8_t* data, size_t size);
 // Get write buffer for download (returns nullptr if not writing)
 const uint8_t* emu_host_file_get_write_data();
 size_t emu_host_file_get_write_size();
+
+// Where the bytes handed to emu_host_file_write_byte() will actually land,
+// as a string fit to show the person who typed the W8 command.
+//
+// This is NOT an echo of the name passed to emu_host_file_open_write(). It is
+// the *effective* destination after the backend has done whatever it does to a
+// requested path: the CLI's case-insensitive parent resolution and lowercased
+// basename, a browser's reduction to a bare download name, a mobile port's
+// Exports folder, a packaged Windows build's redirected LocalCache. Those
+// transformations are exactly why the guest cannot compute the answer itself,
+// and why W8 asks for it (HBF_HOST_GETNAME, 0xE8) instead of printing what the
+// user typed - which on three of the five front ends names a file that does
+// not exist.
+//
+// Valid between a successful emu_host_file_open_write() and the matching
+// emu_host_file_close_write(). Outside that window the return value is "" or
+// nullptr; callers must tolerate both.
 const char* emu_host_file_get_write_name();
+
+// Last path component of `path`, for a backend that cannot honour a directory
+// at all (a browser download, a sandboxed app's own Exports folder). Accepts
+// both separators, because the string comes from a guest command line that may
+// have been typed on any host: C:\USERS\ME\OUT.TXT reduces to "OUT.TXT"
+// exactly as "/home/me/out.txt" reduces to "out.txt".
+//
+// Never returns something that would escape the directory it is joined to: a
+// result of "", ".", ".." or a bare drive letter is replaced by `fallback`.
+// Trailing separators are ignored, so "a/b/" gives "b" rather than "".
+std::string emu_host_path_basename(const std::string& path,
+                                   const char* fallback = "download.bin");
 
 #endif // EMU_IO_H

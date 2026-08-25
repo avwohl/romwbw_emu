@@ -470,17 +470,24 @@ bool emu_host_file_open_read(const char* filename) {
 bool emu_host_file_open_write(const char* filename) {
   // Close any existing write buffer
   host_write_buffer.clear();
-  host_write_filename = filename ? filename : "download.bin";
-  // W8 can now be given a host path (src/w8.asm), which means what arrives here
-  // may contain directories. The browser has no filesystem to honour them with -
-  // this becomes the suggested name on a download - and a name with slashes in
-  // it is not a usable download filename, so keep the basename only. A path is
-  // not an error here, it just cannot mean what it means on the CLI.
-  size_t slash = host_write_filename.find_last_of('/');
-  if (slash != std::string::npos) {
-    host_write_filename = host_write_filename.substr(slash + 1);
+  // W8 can be given a host path (src/w8.asm), which means what arrives here may
+  // contain directories. The browser has no filesystem to honour them with -
+  // this becomes the suggested name on a download - and a name with separators
+  // in it is not a usable download filename, so keep the basename only. A path
+  // is not an error here, it just cannot mean what it means on the CLI, and W8
+  // asks (HBF_HOST_GETNAME) for the name that comes out of this so it can tell
+  // the user what the download will actually be called.
+  host_write_filename =
+      emu_host_path_basename(filename ? filename : "download.bin", "download.bin");
+  // Lowercase it, for the same reason the CLI backend lowercases the name it
+  // creates: the CCP shouted the whole command line, so the alternative is a
+  // browser download called MYFILE.TXT. The typed case is gone before either
+  // backend sees it, so this is a convention rather than a recovery - and the
+  // two front ends have to pick the same one or the same W8 command produces
+  // differently-named files.
+  for (char& c : host_write_filename) {
+    if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
   }
-  if (host_write_filename.empty()) host_write_filename = "download.bin";
   host_file_state = HOST_FILE_WRITING;
   return true;
 }
@@ -504,8 +511,12 @@ void emu_host_file_close_read() {
 }
 
 bool emu_host_file_close_write() {
-  if (host_file_state == HOST_FILE_WRITING && !host_write_buffer.empty()) {
-    // Trigger download
+  if (host_file_state == HOST_FILE_WRITING) {
+    // Download even when the buffer is empty. An empty CP/M file is a real
+    // file, the CLI and Windows backends both create it, and dropping it here
+    // meant W8 printed "Done: 0 bytes" in the browser with nothing arriving -
+    // indistinguishable from a browser that blocked the download.
+    // data() on an empty vector may be null; the JS side takes a length too.
     js_host_file_download(host_write_filename.c_str(),
                           host_write_buffer.data(),
                           host_write_buffer.size());

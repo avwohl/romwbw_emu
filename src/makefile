@@ -55,13 +55,15 @@ romwbw_emu.o: $(wildcard $(THIS_DIR)../VERSION)
 # Tests.  Two kinds, and they cannot share a link line:
 #
 #   vda_keyboard  drives the HBIOS dispatcher and brings its own emu_io stubs,
-#                 so it links the core objects but NOT emu_io_cli.o - its stubs
-#                 would collide with that file's definitions.
+#   hbios_hostname  so each links the core objects but NOT emu_io_cli.o - their
+#                 stubs would collide with that file's definitions.
 #   cli_console   is a test OF emu_io_cli.o, so it links exactly that and
 #                 nothing else: the file needs nothing from the rest of the
 #                 core.  openpty lives in libutil on Linux and in libc on the
 #                 BSDs and macOS.
-TESTS = vda_keyboard cli_console cli_hostfile
+#   cli_hostfile  is also a test of emu_io_cli.o, plus emu_io_common.o for the
+#                 shared path helper the sandboxed backends reduce a path with.
+TESTS = vda_keyboard hbios_hostname cli_console cli_hostfile
 
 DISPATCH_OBJS = emu_io_common.o hbios_dispatch.o hbios_cpu.o emu_init.o
 
@@ -91,11 +93,14 @@ test: $(addprefix test_,$(TESTS))
 test_vda_keyboard: $(THIS_DIR)../tests/vda_keyboard.cc $(DISPATCH_OBJS)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< $(DISPATCH_OBJS) $(LDLIBS) -o $@
 
+test_hbios_hostname: $(THIS_DIR)../tests/hbios_hostname.cc $(DISPATCH_OBJS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< $(DISPATCH_OBJS) $(LDLIBS) -o $@
+
 test_cli_console: $(THIS_DIR)../tests/cli_console.cc emu_io_cli.o
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< emu_io_cli.o $(PTY_LIBS) -o $@
 
-test_cli_hostfile: $(THIS_DIR)../tests/cli_hostfile.cc emu_io_cli.o
-	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< emu_io_cli.o -o $@
+test_cli_hostfile: $(THIS_DIR)../tests/cli_hostfile.cc emu_io_cli.o emu_io_common.o
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< emu_io_cli.o emu_io_common.o -o $@
 
 clean:
 	@rm -f romwbw_emu $(addprefix test_,$(TESTS)) *.o *.lst *.ihx *.com *.cdb *.rel *.map *~

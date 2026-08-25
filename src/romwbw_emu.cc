@@ -825,7 +825,13 @@ void print_usage(const char* prog) {
   fprintf(stderr, "\n");
   fprintf(stderr, "File transfer (run inside CP/M):\n");
   fprintf(stderr, "  R8 <hostpath>     Import host file (path relative to emulator CWD, or absolute)\n");
-  fprintf(stderr, "  W8 <cpmfile>      Export CP/M file to emulator CWD (lowercased name)\n");
+  fprintf(stderr, "  W8 <cpmfile> [hostpath]\n");
+  fprintf(stderr, "                    Export CP/M file.  With no hostpath it lands in the\n");
+  fprintf(stderr, "                    emulator CWD under the CP/M name, lowercased.\n");
+  fprintf(stderr, "  Both take the whole rest of the line as the path, so a directory name may\n");
+  fprintf(stderr, "  contain spaces.  CP/M uppercases it, so the emulator matches the existing\n");
+  fprintf(stderr, "  directories case-insensitively and lowercases the file name it creates;\n");
+  fprintf(stderr, "  W8 prints the path it actually wrote.\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Settings file (JSON; CLI flags always override):\n");
   fprintf(stderr, "  --config=FILE     Load settings from FILE (missing/malformed = error)\n");

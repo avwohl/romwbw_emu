@@ -168,8 +168,22 @@ void HBIOSDispatch::clearInputBuffer() {
 // Disk Management
 //=============================================================================
 
+// The smallest thing that can be a disk. One 512-byte sector is already far
+// below any real CP/M volume, but it is the bound that matters: everything
+// downstream divides by 512 and indexes by LBA, and a zero-length image
+// produced a mounted unit with no sectors that the guest could seek into.
+// z80cpmw reported the same hole in its own loader (a 0-byte file mounted as an
+// empty disk rather than being refused), and asked for it to be closed here as
+// well so the two do not diverge.
+static const size_t EMU_MIN_DISK_SIZE = 512;
+
 bool HBIOSDispatch::loadDisk(int unit, const uint8_t* data, size_t size) {
   if (unit < 0 || unit >= 16) return false;
+  if (!data || size < EMU_MIN_DISK_SIZE) {
+    emu_error("[HBIOS] Refusing disk %d: %zu bytes is not a disk image "
+              "(minimum %zu)\n", unit, size, EMU_MIN_DISK_SIZE);
+    return false;
+  }
 
   closeDisk(unit);
 
@@ -198,9 +212,17 @@ bool HBIOSDispatch::loadDiskFromFile(int unit, const std::string& path) {
     }
   }
 
+  size_t size = emu_disk_size(handle);
+  if (size < EMU_MIN_DISK_SIZE) {
+    emu_disk_close(handle);
+    emu_error("[HBIOS] Refusing disk %d: %s is %zu bytes, not a disk image "
+              "(minimum %zu)\n", unit, path.c_str(), size, EMU_MIN_DISK_SIZE);
+    return false;
+  }
+
   disks[unit].handle = handle;
   disks[unit].path = path;
-  disks[unit].size = emu_disk_size(handle);
+  disks[unit].size = size;
   disks[unit].is_open = true;
   disks[unit].file_backed = true;
 
@@ -579,7 +601,7 @@ int HBIOSDispatch::getTrapTypeFromFunc(uint8_t func) {
   if (func <= 0x3F) return 6;        // DSKY (0x30-0x3F)
   if (func <= 0x4F) return 4;        // VDA (0x40-0x4F)
   if (func <= 0x5F) return 5;        // SND (0x50-0x5F)
-  if (func >= 0xE0 && func <= 0xE7) return 7;  // EXT (0xE0-0xE7, includes host file)
+  if (func >= 0xE0 && func <= 0xEF) return 7;  // EXT (0xE0-0xEF, includes host file)
   if (func >= 0xF0) return 3;        // SYS (0xF0-0xFF)
   return -1;
 }
@@ -2503,6 +2525,62 @@ void HBIOSDispatch::handleEXT() {
       break;
     }
 
+    case HBF_HOST_GETNAME: {
+      // Where the open write file will actually land.
+      // Input:  C = buffer size at DE, including room for the terminator
+      //         DE = buffer address
+      // Output: A = 0 and the buffer holds a NUL-terminated string
+      //         A = 0xFF and the buffer is untouched
+      //
+      // W8 prints this instead of the path the user typed, because on most
+      // front ends they are not the same string: the CLI lowercases the
+      // basename and resolves the parent through whatever case the directory
+      // really has, the browser reduces the whole path to a download name, and
+      // a sandboxed app writes into its own Exports folder wherever the guest
+      // pointed. Printing the typed path names a file that does not exist.
+      uint8_t bufsize = cpu->regs.BC.get_low();
+      uint16_t buf_addr = cpu->regs.DE.get_pair16();
+      const char* name = (emu_host_file_get_state() == HOST_FILE_WRITING)
+                             ? emu_host_file_get_write_name()
+                             : nullptr;
+      if (!name || !*name || bufsize < 2) {
+        // Nothing to report, or no room for even one character and a NUL.
+        // Leave the guest's buffer alone: it still holds the path it asked
+        // for, which is what W8 falls back to printing.
+        result = HBR_FAILED;
+        break;
+      }
+      // C is one byte, so at most 254 characters and a terminator fit. A
+      // destination longer than that is not rare - absolutise() prepends the
+      // whole working directory to every bare name, and a deep checkout is
+      // easily 250 characters - and simply clamping would hand the guest a
+      // path chopped mid-component that W8 would then print as fact. That is
+      // the exact failure this call exists to remove, so keep the END of the
+      // path, where the file name is, and mark the cut with a leading "...".
+      // The result is then visibly a fragment rather than a wrong path.
+      const size_t room = (size_t)bufsize - 1;      // >= 1: bufsize >= 2
+      size_t len = strlen(name);
+      const char* src = name;
+      std::string shortened;
+      if (len > room) {
+        static const char kCut[] = "...";
+        const size_t cut = sizeof(kCut) - 1;
+        // With no room for the marker plus a character of path, the marker
+        // alone would say nothing; take the tail and let it be short.
+        shortened = (room > cut) ? (std::string(kCut) + (name + (len - (room - cut))))
+                                 : std::string(name + (len - room));
+        src = shortened.c_str();
+        len = room;
+      }
+      for (size_t i = 0; i < len; i++) {
+        memory->store_mem(buf_addr + (uint16_t)i, (uint8_t)src[i]);
+      }
+      memory->store_mem(buf_addr + (uint16_t)len, 0);
+      if (debug_log) debug_log("[HOST] Effective write path: %s\n", name);
+      result = HBR_SUCCESS;
+      break;
+    }
+
     case HBF_HOST_GETARG: {
       // Get command line argument by index
       // Input: C = argument index (0 = first arg after command), DE = buffer address
@@ -2532,9 +2610,16 @@ void HBIOSDispatch::handleEXT() {
         while (*p && *p != ' ') p++;
 
         if (current_arg == arg_idx) {
-          // Copy this argument to buffer
+          // Copy this argument to buffer. The terminator has to be clamped
+          // along with the copy: an argument longer than 255 characters left
+          // the guest's buffer unterminated AND dropped a zero byte past the
+          // end of it, since this took the unclamped length. Unlike
+          // HBF_HOST_GETNAME this call takes no size from the guest - C is the
+          // index - so 256 bytes is the implied contract and 255 characters
+          // plus a terminator is what fits.
           size_t len = p - arg_start;
-          for (size_t i = 0; i < len && i < 255; i++) {
+          if (len > 255) len = 255;
+          for (size_t i = 0; i < len; i++) {
             memory->store_mem(buf_addr + i, arg_start[i]);
           }
           memory->store_mem(buf_addr + len, 0);  // Null terminate

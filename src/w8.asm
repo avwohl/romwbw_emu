@@ -3,14 +3,36 @@
 ; Usage: W8 <cpmname> [hostpath]
 ;   Exports a CP/M file to the host.  With no hostpath the name is the CP/M
 ;   name lowercased, in the emulator's working directory - what this did
-;   before hostpath existed.  With a hostpath the file goes exactly there,
-;   the way R8 already takes one.
+;   before hostpath existed.  With a hostpath the file goes there, the way R8
+;   already takes one.  The hostpath is the whole rest of the command line, so
+;   a directory with a space in its name works: on a desktop host that is not
+;   an exotic case, it is /Users/me/My Documents and C:\Program Files.
 ;
 ;   CP/M's CCP uppercases the whole command line, so the path arrives here in
 ;   upper case and the emulator is what puts the case back: it resolves the
 ;   directory components case-insensitively and lowercases the final name.
+;   Which means the path typed is NOT the path written, so this does not print
+;   it - it asks the emulator where the file actually went (H_GETNAME) once the
+;   file is open, and prints that.  On the browser and mobile front ends the
+;   answer is not a path at all: those cannot honour a directory, and the file
+;   arrives as a download or in the app's own Exports folder under the last
+;   component of whatever was typed.  Printing what the user typed named a file
+;   that did not exist on three of the five front ends.
+;
+;   An emulator built before H_GETNAME existed answers "no such function", and
+;   this falls back to printing the requested path - a new W8.COM has to keep
+;   working on an already-released front end.
 ;
 ; Uses HBIOS extension functions for host file access
+;
+; Build:  um80 -o w8.rel w8.asm && ul80 -o w8.com w8.rel
+;   There is deliberately no ORG here.  M80 assembles this as one relocatable
+;   code segment and L80 bases a .COM at 0100h by itself; an `org 0100h` in the
+;   source is applied ON TOP of that base, which put the code at 0200h behind
+;   256 zero bytes.  That built a working program only because CP/M loads the
+;   whole file at 0100h and the Z80 slides through 256 NOPs into it - 256 bytes
+;   of file carried for nothing, and a binary that could not be compared
+;   against the bare .COM layout r8.com was already built in.
 
 	.z80
 
@@ -35,8 +57,17 @@ F_DMA	equ	26
 H_OPEN_W equ	0E2h	; Open host file for writing (DE=path)
 H_WRITE	equ	0E4h	; Write byte (E=byte)
 H_CLOSE	equ	0E5h	; Close file (C=0 read, C=1 write)
+H_GETNAME equ	0E8h	; Where the open write file really lands (C=bufsize,
+			; DE=buffer).  A=0 and the buffer holds a string; A<>0
+			; on an emulator that does not implement it.
 
-	org	TPA
+EOFCHR	equ	1Ah	; CP/M end-of-text marker, and the padding R8 writes into
+			; the last record of an imported file
+HRSIZE	equ	255	; size of hostreal, the buffer H_GETNAME fills.  One symbol
+			; for the ds and for the C the call is given: two separate
+			; literals could drift apart, and the emulator writes
+			; exactly as many bytes as C says - straight into cpm_fcb
+			; and the DMA buffer behind it if C were the larger.
 
 start:
 	; Print banner
@@ -74,21 +105,11 @@ start:
 	ld	c,C_PRINT
 	call	BDOS
 
-	; Host path: the second command-line token when one was given, otherwise
+	; Host path: the rest of the command line when one was given, otherwise
 	; the CP/M name lowercased (the original behaviour).
 	ld	a,(have_hostarg)
 	or	a
 	call	z,fcb_to_hostpath
-
-	; Display host path
-	ld	de,msg_tohost
-	ld	c,C_PRINT
-	call	BDOS
-	ld	de,hostpath
-	call	print_string
-	ld	de,msg_crlf
-	ld	c,C_PRINT
-	call	BDOS
 
 	; Open CP/M file for reading
 	ld	de,cpm_fcb
@@ -104,6 +125,11 @@ start:
 	or	a
 	jp	nz,host_open_error
 
+	; Now that the file exists, ask where it went and say so.  This is the
+	; whole reason the message moved below the open: before the open there
+	; is nothing to ask about.
+	call	print_destination
+
 	; Set DMA to our buffer
 	ld	de,dma_buffer
 	ld	c,F_DMA
@@ -113,6 +139,7 @@ start:
 	ld	hl,0
 	ld	(byte_count),hl
 	ld	(byte_count+2),hl
+	ld	(zpend),hl
 
 	; Read loop
 read_loop:
@@ -123,49 +150,53 @@ read_loop:
 	or	a
 	jr	nz,read_done
 
-	; Write 128 bytes to host (or until ^Z)
+	; Copy the record to the host, deferring EOF characters - see the note
+	; on zpend below for why they are not simply written or simply dropped.
 	ld	hl,dma_buffer
 	ld	b,128
 
 write_loop:
 	ld	a,(hl)
+	cp	EOFCHR
+	jr	z,defer_eof
 
-	; ^Z means EOF
-	cp	1Ah
-	jr	z,read_done
+	; A real byte.  Anything deferred was interior padding after all, so it
+	; is part of the file: write it out before this byte, in order.
+	call	flush_deferred
+	call	put_byte
+	jr	next_byte
 
-	; Write byte to host
-	ld	e,a
+defer_eof:
+	; Count it, do not write it.  If the file ends here the whole run is
+	; R8's record padding and must not reach the host; if it does not, the
+	; run is data and flush_deferred above writes it.
 	push	hl
-	push	bc
-	ld	b,H_WRITE
-	rst	8
-	pop	bc
-	pop	hl
-	or	a
-	jp	nz,host_write_error
-
-	; Increment byte count
-	push	hl
-	push	bc
-	ld	hl,(byte_count)
+	ld	hl,(zpend)
 	inc	hl
-	ld	(byte_count),hl
+	ld	(zpend),hl
 	ld	a,h
-	or	l
-	jr	nz,no_high_inc
-	ld	hl,(byte_count+2)
-	inc	hl
-	ld	(byte_count+2),hl
-no_high_inc:
-	pop	bc
+	and	l
+	inc	a		; A = 0 only when zpend has reached 0FFFFh
 	pop	hl
+	jr	nz,next_byte
+	; 65535 deferred.  The counter is 16 bits, so rather than wrap and lose
+	; 64K of file, write the run out now.  A trailing run this long would
+	; then leave a multiple of 65535 EOF characters in the host file - a
+	; bounded, documented wrong answer instead of an unbounded one, and it
+	; needs a CP/M file holding 512 consecutive empty records to reach.
+	call	flush_deferred
 
+next_byte:
 	inc	hl
 	djnz	write_loop
 	jr	read_loop
 
 read_done:
+	; Whatever is still deferred was the padding in the final record.  Drop
+	; it: that is what makes a text file R8 imported come back out byte for
+	; byte, and it is the only part of the old "stop at the first EOF
+	; character" rule worth keeping.
+	;
 	; Close host file - A=0 on success; nonzero means the final flush
 	; failed and the host file may be truncated (e.g. disk full)
 	ld	b,H_CLOSE
@@ -185,8 +216,7 @@ read_done:
 	call	BDOS
 
 	; Print byte count
-	ld	hl,(byte_count)
-	call	print_dec16
+	call	print_dec32
 
 	ld	de,msg_bytes
 	ld	c,C_PRINT
@@ -194,13 +224,103 @@ read_done:
 
 	rst	0
 
-; Parse an optional second token from the command tail into hostpath.
+; Write A to the host file and add one to byte_count.  Preserves BC, HL.
+; Does not return on a write error - jumps to the handler, which warm-boots.
+put_byte:
+	push	hl
+	push	bc
+	ld	e,a
+	ld	b,H_WRITE
+	rst	8
+	or	a
+	jr	nz,pb_error
+	ld	hl,(byte_count)
+	inc	hl
+	ld	(byte_count),hl
+	ld	a,h
+	or	l
+	jr	nz,pb_done
+	ld	hl,(byte_count+2)
+	inc	hl
+	ld	(byte_count+2),hl
+pb_done:
+	pop	bc
+	pop	hl
+	ret
+pb_error:
+	pop	bc
+	pop	hl
+	jp	host_write_error
+
+; Write out the deferred run of EOF characters and clear it.
+;
+; Preserves A as well as BC and HL, and A is the one that matters: write_loop
+; holds the byte it is about to export in A across this call.  Every exit here
+; would otherwise leave A=0 - both the "nothing deferred" test and the loop's
+; own countdown end on `ld a,b / or c` - so the guest's file arrived at the host
+; as the right number of zero bytes, with only the EOF characters this routine
+; writes itself surviving.  Caught by an adversarial read of the assembly after
+; a live test that checked the exported length and not its contents.
+flush_deferred:
+	push	af
+	push	hl
+	push	bc
+	ld	bc,(zpend)
+	ld	a,b
+	or	c
+	jr	z,fd_done
+fd_loop:
+	ld	a,EOFCHR
+	call	put_byte	; preserves BC, so the count survives the call
+	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,fd_loop
+fd_done:
+	ld	hl,0
+	ld	(zpend),hl
+	pop	bc
+	pop	hl
+	pop	af
+	ret
+
+; Print where the file is actually being written.
+;
+; H_GETNAME answers with the destination after the emulator has done whatever
+; its platform does to the requested path - resolved a shouted directory,
+; lowercased the name, reduced a path to a download name, redirected it into a
+; sandbox.  A failure here is not an error: an emulator that predates the call
+; returns "no such function", and the requested path is then the best answer
+; available.
+print_destination:
+	ld	de,msg_tohost
+	ld	c,C_PRINT
+	call	BDOS
+	ld	c,HRSIZE	; buffer size including the terminator
+	ld	de,hostreal
+	ld	b,H_GETNAME
+	rst	8
+	or	a
+	ld	de,hostreal
+	jr	z,pd_show
+	ld	de,hostpath	; older emulator: say what was asked for
+pd_show:
+	call	print_string
+	ld	de,msg_crlf
+	ld	c,C_PRINT
+	jp	BDOS
+
+; Parse the optional host path out of the command tail into hostpath.
 ;
 ; The tail is "<cpmname> <hostpath>" including the CCP's leading space, so this
-; skips spaces, steps over the first token, skips spaces again, and copies what
-; is left up to the next space.  Anything short of a full second token - empty
-; tail, all spaces, one token only, trailing spaces - leaves have_hostarg zero
-; and the caller falls back to fcb_to_hostpath.
+; skips spaces, steps over the first token, skips spaces again, and takes ALL
+; of the rest - not up to the next space.  A host path is the last thing on the
+; line and a directory name may contain spaces, which on a desktop host is
+; ordinary rather than exotic.  Trailing spaces are trimmed, so a line the user
+; ended with a space does not create a file whose name ends in one.
+;
+; Anything short of a second token - empty tail, all spaces, one token only -
+; leaves have_hostarg zero and the caller falls back to fcb_to_hostpath.
 ;
 ; Clobbers A, BC, DE, HL.
 parse_host_arg:
@@ -236,24 +356,33 @@ pha_skip2:			; spaces between the two tokens
 	djnz	pha_skip2
 	ret			; trailing spaces only
 
-pha_copy:			; copy the host path
+pha_copy:			; copy the rest of the tail verbatim
 	ld	de,hostpath
-	ld	c,127		; the tail cannot exceed 127, so this cap is only a
-			; backstop - it can no longer be reached by any input
+	ld	(hp_end),de	; one past the last non-space stored so far
+	ld	c,127		; the tail cannot exceed 127, so this cap is only
+			; a backstop - it can no longer be reached by any input
 pha_loop:
 	ld	a,(hl)
-	cp	' '
-	jr	z,pha_end
 	ld	(de),a
 	inc	hl
 	inc	de
+	cp	' '
+	jr	z,pha_nospc
+	ld	(hp_end),de	; remember where the name really ends
+pha_nospc:
 	dec	c
 	jr	z,pha_end	; unreachable for a legal tail; here so a corrupt
 			; length byte cannot run off the buffer
 	djnz	pha_loop
 pha_end:
+	; Terminate after the last non-space rather than after the last byte
+	; copied, which trims any trailing spaces without a second pass.
+	ld	de,(hp_end)
 	xor	a
-	ld	(de),a		; NUL-terminate
+	ld	(de),a
+	ld	a,(hostpath)
+	or	a
+	ret	z		; nothing but spaces: leave have_hostarg clear
 	ld	a,1
 	ld	(have_hostarg),a
 	ret
@@ -370,57 +499,74 @@ print_ext:
 	djnz	print_ext
 	ret
 
-; Print HL as decimal number
-print_dec16:
-	xor	a
-	ld	(print_flag),a
-	ld	de,10000
-	call	div16
-	ld	de,1000
-	call	div16
-	ld	de,100
-	call	div16
-	ld	de,10
-	call	div16
-	ld	a,l
+; Print byte_count (32 bits) as decimal, no leading zeros.
+;
+; It was 16 bits, which is not enough for a file this program can be asked to
+; copy: a CP/M 2.2 file reaches 8 MB, and the low-word-only count reported a
+; 100000-byte export as "34464".  Destroys byte_count, which is its last use.
+print_dec32:
+	ld	de,digits
+	ld	b,0		; digit count
+pd32_next:
+	push	bc
+	push	de
+	call	div10
+	pop	de
+	pop	bc
 	add	a,'0'
-	ld	e,a
-	ld	c,C_WRITE
-	jp	BDOS
-
-; Divide HL by DE, print quotient digit, remainder in HL
-div16:
-	ld	b,0
-div_loop:
-	or	a
-	sbc	hl,de
-	jr	c,div_done
+	ld	(de),a
+	inc	de
 	inc	b
-	jr	div_loop
-div_done:
-	add	hl,de
-	ld	a,b
-	or	a
-	jr	z,skip_zero
-	add	a,'0'
-	push	hl
+	ld	hl,byte_count
+	ld	a,(hl)
+	inc	hl
+	or	(hl)
+	inc	hl
+	or	(hl)
+	inc	hl
+	or	(hl)
+	jr	nz,pd32_next
+	; digits were produced least significant first
+	dec	de
+pd32_out:
+	push	bc
+	push	de
+	ld	a,(de)
 	ld	e,a
 	ld	c,C_WRITE
 	call	BDOS
-	pop	hl
-	ld	a,1
-	ld	(print_flag),a
+	pop	de
+	pop	bc
+	dec	de
+	djnz	pd32_out
 	ret
-skip_zero:
-	ld	a,(print_flag)
-	or	a
-	ret	z
-	ld	a,'0'
-	push	hl
-	ld	e,a
-	ld	c,C_WRITE
-	call	BDOS
-	pop	hl
+
+; byte_count := byte_count / 10, remainder in A.  Restoring division: the
+; quotient shifts in at the bottom as the dividend shifts out at the top, so
+; the two share the same four bytes.
+div10:
+	ld	c,0		; running remainder, always < 10
+	ld	b,32
+div10_loop:
+	ld	hl,byte_count
+	sla	(hl)
+	inc	hl
+	rl	(hl)
+	inc	hl
+	rl	(hl)
+	inc	hl
+	rl	(hl)
+	rl	c		; carry out of the top becomes the next bit
+	ld	a,c
+	cp	10
+	jr	c,div10_next
+	sub	10
+	ld	c,a
+	ld	hl,byte_count
+	set	0,(hl)		; quotient bit
+div10_next:
+	djnz	div10_loop
+	ld	a,c
 	ret
 
 ; Error handlers
@@ -436,11 +582,18 @@ cpm_open_error:
 	call	BDOS
 	rst	0
 
+; The host file was never created, so there is nothing to close - but say which
+; path failed, because with no hostpath given it is one this program invented.
 host_open_error:
 	ld	de,cpm_fcb
 	ld	c,F_CLOSE
 	call	BDOS
 	ld	de,msg_host_err
+	ld	c,C_PRINT
+	call	BDOS
+	ld	de,hostpath
+	call	print_string
+	ld	de,msg_crlf
 	ld	c,C_PRINT
 	call	BDOS
 	rst	0
@@ -485,7 +638,7 @@ msg_bytes:
 msg_cpm_err:
 	db	'Error: Cannot open CP/M file',0Dh,0Ah,'$'
 msg_host_err:
-	db	'Error: Cannot create host file',0Dh,0Ah,'$'
+	db	'Error: Cannot create host file: $'
 msg_host_write:
 	db	'Error: Host write failed',0Dh,0Ah,'$'
 msg_host_close:
@@ -498,15 +651,30 @@ hostpath:
 			; builds but silently cut a typed path at 63 - and
 			; still reported success, so the export landed under a
 			; shortened name.  R8's buffer is 128 for the same
-			; reason; the two now accept the same paths.
+			; reason; the two accept the same paths.
+hostreal:
+	ds	HRSIZE		; what H_GETNAME answers with.  Bigger than
+			; hostpath on purpose: the destination is routinely
+			; longer than the request, because a bare name comes
+			; back as an absolute path.
 cpm_fcb:
 	ds	36
 dma_buffer:
 	ds	128
 byte_count:
 	dw	0,0
-print_flag:
-	db	0
+zpend:
+	dw	0		; EOF characters seen but not yet written.  They
+			; are written only if more file follows, and dropped at
+			; end of file, which is what tells R8's record padding
+			; apart from a 1Ah that is simply a byte of a binary.
+			; Stopping at the first one - what this used to do -
+			; truncated every binary silently: W8.COM itself came
+			; out 368 bytes of 1408, reported as "Done: 368 bytes".
+digits:
+	ds	10		; 32 bits is at most 10 decimal digits
+hp_end:
+	dw	0		; parse_host_arg's trailing-space trim point
 have_hostarg:
 	db	0		; non-zero once parse_host_arg found a second token
 

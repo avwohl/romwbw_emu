@@ -131,7 +131,11 @@ invokes them via `EM_JS` shims in `../src/emu_io_wasm.cc`:
   file; the page opens a file picker and answers with
   `_emu_host_file_load` or `_emu_host_file_cancel`.
 - `Module.onHostFileDownload(filename, blob)` - W8 closed a written file;
-  the page triggers a browser download.
+  the page triggers a browser download. `filename` is always a bare name,
+  never a path: W8 may be given a host path, and the core reduces it with
+  `emu_host_path_basename()` (both separators) and lowercases it, because a
+  name with a separator in it is not a usable download filename. The blob can
+  be zero bytes - an empty CP/M file is a real file and still downloads.
 - `Module.onVideoClear()`, `Module.onVideoSetCursor(row, col)`,
   `Module.onVideoWriteChar(ch)` - VDA output, emitted from the HBIOS VDA
   handlers.

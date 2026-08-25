@@ -762,16 +762,33 @@ emu_host_file_state emu_host_file_get_state() {
   return cli_host_state;
 }
 
+// fopen("rb") succeeds on a directory on Linux and macOS - only the first read
+// fails - so without this R8 opened /tmp/somedir, reported success, and the
+// guest then went on to F_DELETE and F_MAKE before discovering an instant EOF.
+// A CP/M file of the same name was destroyed and replaced with an empty one,
+// and "Done: 0 bytes" is indistinguishable from importing a genuinely empty
+// file. The guest cannot tell the two apart, so the refusal has to be here;
+// failing the open is what makes R8's existing host_open_error fire, which it
+// does before the delete.
+static bool is_directory(const char* path) {
+  struct stat st;
+  return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
 bool emu_host_file_open_read(const char* filename) {
   if (cli_host_read_file) {
     fclose(cli_host_read_file);
     cli_host_read_file = nullptr;
   }
+  if (is_directory(filename)) {
+    cli_host_state = HOST_FILE_IDLE;
+    return false;
+  }
   cli_host_read_file = fopen(filename, "rb");
   if (!cli_host_read_file) {
     // The guest's CCP uppercased the path; retry case-insensitively
     std::string alt = resolve_path_case_insensitive(filename);
-    if (!alt.empty() && alt != filename) {
+    if (!alt.empty() && alt != filename && !is_directory(alt.c_str())) {
       cli_host_read_file = fopen(alt.c_str(), "rb");
       if (cli_host_read_file) {
         emu_log("[HOST] Resolved '%s' as '%s'\n", filename, alt.c_str());
@@ -804,7 +821,38 @@ static std::string resolve_write_path(const std::string& path) {
   if (dir.empty()) return "/" + base;                   // path was "/name"
   std::string resolved_dir = resolve_path_case_insensitive(dir.c_str());
   if (resolved_dir.empty()) resolved_dir = dir;         // no match: use as typed
+  // Canonicalise the parent. W8 prints this back to the user (HBF_HOST_GETNAME)
+  // and the shouted directory is not always corrected by the scan above: on a
+  // case-insensitive volume the exact-match branch accepts "/TMP/W8T" as it
+  // stands, so without this the answer would be a path that happens to open the
+  // right file while looking nothing like where the user should go looking.
+  // Only the parent - the basename names a file that does not exist yet.
+  // realpath(p, NULL) rather than a fixed buffer: POSIX requires a caller-
+  // supplied buffer to be at least PATH_MAX, which is a compile-time constant
+  // that does not bound a real path on every filesystem, and the NULL form
+  // allocates exactly what is needed. Failure is not an error here - the
+  // directory may be unreadable while still being writable through - so keep
+  // the case-insensitive resolution as the answer.
+  char* real = realpath(resolved_dir.c_str(), nullptr);
+  if (real) {
+    resolved_dir = real;
+    free(real);
+  }
   return resolved_dir + "/" + base;
+}
+
+// Make a resolved path absolute, so what W8 prints back names a place rather
+// than a name. "w8.com" answers "where did it go" only for someone who also
+// knows which directory the emulator was started from, and the guest cannot
+// see that; "/home/me/build/w8.com" needs no such context. Purely a matter of
+// which string we keep - the two open the same file.
+static std::string absolutise(const std::string& path) {
+  if (!path.empty() && path[0] == '/') return path;
+  char cwd[4096];
+  if (!getcwd(cwd, sizeof(cwd))) return path;   // ENAMETOOLONG etc: say less
+  std::string dir(cwd);
+  if (dir.empty() || dir[dir.size() - 1] != '/') dir += "/";
+  return dir + path;
 }
 
 bool emu_host_file_open_write(const char* filename) {
@@ -813,12 +861,15 @@ bool emu_host_file_open_write(const char* filename) {
     cli_host_write_file = nullptr;
   }
   cli_host_write_filename = filename ? filename : "output.bin";
-  cli_host_write_filename = resolve_write_path(cli_host_write_filename);
+  cli_host_write_filename = absolutise(resolve_write_path(cli_host_write_filename));
   cli_host_write_file = fopen(cli_host_write_filename.c_str(), "wb");
   if (cli_host_write_file) {
     cli_host_state = HOST_FILE_WRITING;
     return true;
   }
+  // A failed open leaves no destination to report. Clearing it is what stops
+  // emu_host_file_get_write_name() naming a file that was never created.
+  cli_host_write_filename.clear();
   cli_host_state = HOST_FILE_IDLE;
   return false;
 }
@@ -867,6 +918,11 @@ size_t emu_host_file_get_write_size() {
   return 0;  // Not used in CLI
 }
 
+// Only meaningful while a write file is open - see emu_io.h. Without the state
+// test this served the previous transfer's path to anyone who asked between
+// two exports, which is exactly the wrong answer to give a guest that is about
+// to print it as "the file went here".
 const char* emu_host_file_get_write_name() {
+  if (cli_host_state != HOST_FILE_WRITING) return "";
   return cli_host_write_filename.c_str();
 }

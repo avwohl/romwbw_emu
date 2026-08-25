@@ -1,0 +1,123 @@
+name: Tests
+
+# Nothing but a person ran the test suite before this. .github/workflows held
+# only release.yml, which builds and packages and has no test step, so a change
+# that broke the console, the HBIOS dispatcher or the disk-resident utilities
+# was caught only if whoever made it thought to type `make -C src test`.
+#
+# `make -C src test` needs no ROM, no disk image and no network. It runs:
+#   tests/vda_keyboard.cc        HBIOS VDA keyboard behaviour
+#   tests/hbios_hostname.cc      HBF_HOST_GETNAME and its buffer bound
+#   tests/cli_console.cc         the console on a real pipe and a real pty
+#   tests/cli_hostfile.cc        where W8 writes, and what it reports back
+#   tests/web_reload_disks.js    page JS, driven headless by node
+#   tests/web_console_output.js  page JS, driven headless by node
+#   disks/verify_disk_utils.sh   the R8/W8 in the tracked images vs their source
+#
+# The last one is the reason cpmtools is installed below. It SKIPS silently
+# when um80, ul80 or cpmcp are missing - which is right on a developer's
+# machine and wrong here, where a skip would report a green disk check that
+# never opened an image. The step after the suite asserts it actually ran.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # setup-python rather than the runner's system interpreter: ubuntu-latest
+      # is 24.04+, whose Python carries a PEP 668 EXTERNALLY-MANAGED marker, and
+      # `pip install` into it fails outright with
+      # "error: externally-managed-environment".
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build and test dependencies
+        run: |
+          sudo apt-get update
+          # cpmtools: cpmls/cpmcp/cpmrm, for disks/verify_disk_utils.sh.
+          sudo apt-get install -y build-essential cpmtools
+          # um80/ul80: the MACRO-80 toolchain src/r8.asm and src/w8.asm are
+          # written for. Pinned for the reason CPMEMU_REF is pinned below - an
+          # unpinned toolchain assembles a different binary without anyone
+          # touching this repository, and the disk check compares bytes.
+          pip install "um80==${UM80_VERSION}"
+        env:
+          UM80_VERSION: 0.3.43
+
+      - name: Check the tools the disk check needs are really present
+        run: |
+          # verify_disk_utils.sh exits 0 when these are missing. That is
+          # deliberate - they are not build dependencies - but here it would
+          # turn a missing package into a passing job, so fail early instead.
+          for t in um80 ul80 cpmls cpmcp cpmrm; do
+            command -v "$t" >/dev/null || { echo "missing: $t"; exit 1; }
+          done
+          um80 --version || true
+
+      - name: Build qkz80 library
+        run: |
+          # Cloned and pinned exactly as release.yml does it, into the same
+          # place, so the tests and the released binary contain the same CPU
+          # core. qkz80 is compiled straight out of a sibling checkout by this
+          # repo and by three downstream ports with no version gate, so an
+          # unpinned clone would test whatever cpmemu looked like this morning.
+          git clone https://github.com/avwohl/cpmemu.git
+          cd cpmemu
+          git checkout --detach ${CPMEMU_REF}
+          cd src
+          make libqkz80.a
+        env:
+          CPMEMU_REF: 9fee3c2
+
+      - name: Build and test
+        run: |
+          # Point at the clone explicitly rather than relying on src/makefile's
+          # sister-directory fallback, which looks one level further up than
+          # this clone sits and would fall through to /usr/local silently.
+          make -C src \
+            QKZ80_CFLAGS="-I$PWD/cpmemu/src" \
+            QKZ80_LIBS="-L$PWD/cpmemu/src -lqkz80" \
+            test 2>&1 | tee /tmp/test.log
+          # GitHub runs `shell: bash` with -eo pipefail, so the pipeline above
+          # already fails the step when make does. This is the belt: it is the
+          # correct guard if `shell:` is ever dropped, when a bare `| tee` would
+          # otherwise report tee's status and hide a failing suite.
+          test "${PIPESTATUS[0]}" -eq 0
+        shell: bash
+
+      - name: Assert the disk check actually opened the images
+        run: |
+          # verify_disk_utils.sh exits 0 when its tools are missing, so a
+          # dropped package would silently stop comparing the R8/W8 inside
+          # disks/*.img against src/r8.asm and src/w8.asm - the exact drift it
+          # exists to catch. Insist on the line it prints only when it ran.
+          if grep -qE '^SKIP: (um80|ul80|cpmcp) is not on PATH' /tmp/test.log; then
+            echo "the disk check skipped for want of its tools:"
+            grep '^SKIP:' /tmp/test.log
+            exit 1
+          fi
+          if grep -q '^SKIP  web JS tests' /tmp/test.log; then
+            echo "the web JS tests skipped - node should be present on this runner"
+            exit 1
+          fi
+          # Insist on the COUNT, not just on a pass. Two tracked images times
+          # two utilities is four; anything less means a copy went missing from
+          # an image, which is the drift this whole check exists for and used to
+          # be reported as an info line. Bump this if disks/verify_disk_utils.sh
+          # gains an image.
+          grep -qE '^PASS: 4 disk-resident binaries' /tmp/test.log || {
+            echo "expected all 4 disk-resident binaries to be compared; got:"
+            grep -E '^(PASS|FAIL|SKIP)' /tmp/test.log || true
+            exit 1
+          }

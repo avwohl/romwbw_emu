@@ -3,9 +3,14 @@
 This document explains how to integrate the RomWBW emulator core into downstream projects (iOS, macOS, Windows, etc.).
 
 Dated migration notices for specific core releases live in docs/ - most
-recently [docs/DOWNSTREAM_2026-08-23.md](docs/DOWNSTREAM_2026-08-23.md), the
+recently [docs/DOWNSTREAM_2026-08-25.md](docs/DOWNSTREAM_2026-08-25.md), the
+W8 host-path sync: a new HBIOS function (`HBF_HOST_GETNAME`, 0xE8) that tells
+the guest where its export really landed, a shared `emu_host_path_basename()`
+for the front ends that cannot honour a directory, and a tightened contract on
+`emu_host_file_get_write_name()` that every port has to act on. Before it,
+[docs/DOWNSTREAM_2026-08-23.md](docs/DOWNSTREAM_2026-08-23.md) is the
 all-ports to-do list for the v1.35 -> v1.36 sync (control keys reach the guest,
-one dead platform function removed). Before it,
+one dead platform function removed), and
 [docs/DOWNSTREAM_2026-08-07.md](docs/DOWNSTREAM_2026-08-07.md) covers the
 v1.34 -> v1.35 RomWBW version pin, ROM validation and file-I/O hardening, and
 [docs/DOWNSTREAM_2026-07-21.md](docs/DOWNSTREAM_2026-07-21.md) the
@@ -864,3 +869,6 @@ Ctrl+Space, so binding it moves the theft rather than ending it.
 - [ ] v1.36: If you set POSIX raw mode, clear `IXON` (^S/^Q) and `IEXTEN` (^V/^O)
 - [ ] v1.36: Delete your `emu_console_check_ctrl_c_exit()` definition - the declaration is gone from `emu_io.h`. Keep `emu_console_check_escape()`
 - [ ] v1.36: `emu_console_read_char()` may return `EMU_CONSOLE_RETRY` (-2); if your backend never reserves a key it never returns it, but do not treat a negative return as a byte
+- [ ] v1.36: Make `emu_host_file_get_write_name()` return the *effective* destination, not an echo of the requested name - W8 prints it to the user now (`HBF_HOST_GETNAME`). Return `""`/`nullptr` outside an open write, and after a failed open
+- [ ] v1.36: If your backend cannot honour a directory (browser, sandboxed app), reduce the requested path with the shared `emu_host_path_basename()` rather than your own split - it takes both separators and refuses `.`/`..`
+- [ ] v1.36: Refresh any bundled `hd1k_*` images: `r8.com` and `w8.com` both changed (W8 no longer truncates binaries at the first `^Z`). `disks/rebuild_disk_utils.sh` builds and installs; `disks/verify_disk_utils.sh` checks

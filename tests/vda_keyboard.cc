@@ -90,6 +90,9 @@ int emu_host_file_read_byte() { return -1; }
 bool emu_host_file_write_byte(uint8_t) { return false; }
 void emu_host_file_close_read() {}
 bool emu_host_file_close_write() { return true; }
+// HBF_HOST_GETNAME reaches this from handleEXT; the dispatcher asks for the
+// state first, and this stub is never WRITING, so the name is never read.
+const char* emu_host_file_get_write_name() { return ""; }
 
 //=============================================================================
 // Scaffolding

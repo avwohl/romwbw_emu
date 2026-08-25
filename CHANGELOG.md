@@ -22,6 +22,48 @@ everything below is unreleased. It follows the `v1.35` tag.
 
 ### Added
 
+- **`W8` says where the file actually went** — new HBIOS extension function
+  `HBF_HOST_GETNAME` (0xE8): `C` = buffer size at `DE`, `A` = 0 and the buffer
+  holds the effective destination. It used to echo the path the user typed,
+  which is never the path that gets written. The CCP uppercases the whole
+  command line, so the emulator has to resolve the directory case-insensitively
+  and lowercase the file name; and on the browser and the sandboxed mobile
+  ports there is no outer-OS path to honour at all, so the file lands in a
+  download folder or the app's own Exports area under a name the guest never
+  sees. `To host: /HOME/ME/OUT.TXT` named nothing on three of the five front
+  ends. On the CLI the answer is now absolute and `realpath`-canonical, so it
+  names a place rather than a name. A failure is not an error: an emulator
+  built before 0xE8 existed answers "no such function" and `W8` falls back to
+  printing what was asked for, so a current `w8.com` still runs on an
+  already-released front end. `getTrapTypeFromFunc()` widened its extension
+  range from 0xE0-0xE7 to 0xE0-0xEF to route it.
+- **`emu_host_path_basename()`** in `emu_io_common.cc`, for the front ends with
+  no filesystem to honour a directory with. Takes **both** separators, because
+  the string comes off a guest command line that may have been typed on any
+  host, and never returns `""`, `"."`, `".."` or a bare drive letter. There
+  were three different answers before: the browser split on `/` only, and the
+  iOS backend did not split at all.
+- **`R8` and `W8` take the whole rest of the command line as the path.** Both
+  stopped at the first space, and `/Users/me/My Documents` and
+  `C:\Program Files` are ordinary paths on two of the five hosts. Trailing
+  spaces are trimmed.
+- **`emu_rename()`** in `emu_io.h`, beside the `emu_fseek`/`emu_ftell` pair.
+  ISO C leaves `rename()` undefined when the target exists and both the MSVC
+  CRT and mingw's msvcrt refuse it outright, so `emu_file_save()` — which
+  renames a temp file over the image precisely so a failed write cannot destroy
+  the previous one — had the safe path be the broken one on Windows. Asked for
+  by `z80cpmw`, which had already worked around it locally.
+- **CI runs the tests.** `.github/workflows/test.yml`: build, `make -C src
+  test`, and then an assertion that the disk check did not silently skip. There
+  was no test step anywhere before; `release.yml` builds and packages only.
+- `tests/hbios_hostname.cc` (29 checks: the `HBF_HOST_GETNAME` buffer bound,
+  the not-writing and empty-name answers, and both ends of the widened function
+  range) and 20 more checks in `tests/cli_hostfile.cc`.
+- `disks/rebuild_disk_utils.sh` — assembles both utilities and installs them
+  into every tracked image. The recipe existed only as prose, in three places
+  that had already drifted from each other, and it did not work as written:
+  `cpmcp` will not overwrite, so the old copy has to be removed first.
+
 - **`W8` takes a host path, the way `R8` already does** — `W8 <cpmname>
   [hostpath]`. It used to read only the default FCB, so it could write exactly
   one place: a lowercased 8.3 name in the emulator's working directory. With no
@@ -62,6 +104,93 @@ everything below is unreleased. It follows the `v1.35` tag.
 
 ### Fixed
 
+- **`W8` truncated every binary export, silently.** It stopped at the first
+  `1Ah` byte. `1Ah` is `LD A,(DE)` and appears in almost any `.COM` file:
+  exporting `W8.COM` itself produced **368 bytes of 1408**, reported as
+  `Done: 368 bytes`. It now copies the file whole and drops only the run of
+  `1Ah` at the very end — the padding CP/M writes into a file's last record,
+  and exactly what `R8` puts there on import. So a text file imported with `R8`
+  still comes back byte for byte, and a binary containing `1Ah` no longer
+  loses everything after the first one. A file whose real content ends in `1Ah`
+  loses that tail; CP/M stores no length, only whole 128-byte records, so
+  nothing can tell the two apart. That is the documented boundary.
+- **`R8` erased unrelated CP/M files.** It copied the host basename into the
+  FCB unfiltered, and `?` and `*` make an FCB *ambiguous* — then handed that
+  FCB to `F_DELETE` before `F_MAKE`. Importing a host file called `a?b.txt` did
+  not create one CP/M file, it deleted every file matching `A?B.TXT` first, and
+  said nothing. Verified live: two unrelated files went with it. Illegal
+  characters now become `-` and `R8` says when it substituted.
+- **A host name containing `_` imported as a file nothing could reach.**
+  Underscore is in the CP/M 2.2 CCP's delimiter set, which is not obvious —
+  `my_file.txt` imported as `MY_FILE.TXT`, and then `DIR MY_FILE.TXT` said
+  `NO FILE` while `DIR MY?FILE.TXT` listed it, `ERA` could not remove it,
+  `TYPE` printed `MY_FILE.TXT?`, and `W8` could not export it because the CCP
+  parsed the argument as `MY`. The data was on the disk and unreachable, and a
+  directory slot was consumed permanently. `_` is rejected along with the rest
+  of the delimiter set now, and the substitute is `-`, which is not one — the
+  first version of this fix substituted `_` and made the problem worse.
+- **`R8` destroyed a CP/M file when handed a host directory.** `fopen` on a
+  directory succeeds on Linux and macOS — only the first read fails — so the
+  open reported success, `F_DELETE` and `F_MAKE` ran, and the guest was left
+  with an empty file and `Done: 0 bytes`, which is what a legitimately empty
+  import also prints. The CLI backend refuses a directory now, before the open
+  can report success.
+- **`R8` announced a CP/M file it had not created**, printing `Creating: NAME`
+  before opening the host file.
+- **`R8` made CP/M files nothing could address.** Two ways. A path ending in a
+  separator reached `F_MAKE` with the FCB's eleven blanks intact and created a
+  nameless directory entry; and the extension copy stopped only at the NUL, so
+  `a.b.c` produced a file named `A` with type `B.C`, which the CCP's own parser
+  cannot name because it reads the first dot as the delimiter. The type now
+  comes from the last dot and the name stops at the first, so
+  `archive.tar.gz` is `ARCHIVE.GZ` and `notes.2024.txt` is `NOTES.TXT`; a
+  leading dot is part of the name, so `.profile` is `PROFILE`; and a path that
+  names no file is refused before anything is opened or deleted.
+- **`R8` reported success for a short import.** Every full record write was
+  checked and the final partial one was not, so a CP/M disk that filled on the
+  last record printed `Done`. `F_CLOSE`'s status was discarded too, and
+  `F_CLOSE` is where CP/M writes the directory entry back.
+- **The byte count `R8` and `W8` print was the low 16 bits**, so a
+  100000-byte transfer reported `34464`.
+- **The `ORG` came out of both utilities.** `org 0100h` was wrong for this
+  toolchain: M80 assembles each as one relocatable code segment and L80 bases a
+  `.COM` at 0100h *by itself*, so the ORG was applied on top of that base and
+  pushed the code to 0200h behind 256 zero bytes. It ran only because CP/M
+  loads the whole file at 0100h and the Z80 slides through the NOPs. `w8.com`
+  was built that way and `r8.com` was not, which is the only reason
+  `verify_disk_utils.sh` could not check both.
+- **`verify_disk_utils.sh` exited 0 after verifying nothing**, and `make test`
+  called that a pass. A wrong diskdef, a renamed image or a deleted source all
+  land there — and a wrong diskdef is not loud, cpmtools prints a garbage
+  directory rather than failing. An image *missing* a utility was an info line
+  and a pass too, which is precisely the shape the stale `w8.com` incident
+  took; it is a failure now, and CI asserts the count rather than the verdict.
+- **`HBF_HOST_GETNAME` could report a path that names something else.** `C` is
+  one byte, so a destination longer than 254 characters did not fit — and a
+  bare name gets the whole working directory prepended, so a deep checkout
+  reaches that. Clamping handed back a path chopped mid-component that `W8`
+  then printed as fact, which is the failure the call exists to remove. It
+  keeps the *end* of the path now, where the file name is, behind a leading
+  `...` that makes the answer read as a fragment.
+- **`HBF_HOST_GETARG` wrote its terminator outside the buffer** for an argument
+  longer than 255 characters: the copy was clamped and the NUL was not, so the
+  guest got an unterminated buffer and a zero byte dropped past the end of it.
+  Unreachable here (nothing calls `setHostCmdLine`), reachable from any port
+  that wires it up.
+- **The browser dropped a zero-byte export** and kept the CCP's uppercase in
+  the download name while the CLI lowercased it. An empty CP/M file is a real
+  file, and the same `W8` command should not produce differently-named files on
+  different front ends.
+- **The web page reported "Disk N loaded" for a disk the core refused.**
+  `loadDiskData()` discarded `_romwbw_load_disk`'s return value, so a stray
+  small file dropped into the slot looked like a successful load with the only
+  trace in the JS console — and `reloadDisks()` would push it back in on the
+  next ROM change.
+- **The shared core accepted a 0-byte disk image** and mounted it as an empty
+  disk. `z80cpmw` reported the same hole on its side and asked for it to be
+  closed in both.
+- **`emu_file_load_to_mem()` still used the bare 32-bit `fseek`/`ftell` pair**
+  the rest of that file was hardened away from in v1.35 — the last site.
 - **`^E` was stolen twice over.** It is the `sim>` escape, and the blocking read
   both latched it *and* returned it to the guest, so one keypress moved the
   WordStar cursor (CP/M 2.2 reads `^E` as physical end of line) *and* froze the
@@ -133,15 +262,11 @@ everything below is unreleased. It follows the `v1.35` tag.
   Windows toolchain, and that note is what made it look safe. The correction is
   in the notice rather than in `DOWNSTREAM.md`, because the notice is what a
   port re-reads when it takes the release.
-- `verify_disk_utils.sh` reports `r8.com` as **not comparable** rather than as
-  stale. Its first run produced a confident FAIL on r8 in both images, which was
-  wrong: the two utilities were not built the same way. `w8.com` is a `ul80`
-  memory image — 256 leading NOPs, code at file offset `0x100`, every address
-  constant 256 higher — while `r8.com` is a bare `.COM` with code at offset 0.
-  Both run, because CP/M loads either at `0100h` and the NOPs slide into the
-  code, but a byte compare across the two layouts reports a mismatch for what
-  may well be the same program. Whether `r8.asm` still corresponds to the
-  shipped `r8.com` is genuinely unknown and is filed in `todo.txt` as such.
+- `verify_disk_utils.sh` reported `r8.com` as **not comparable** rather than as
+  stale, because the two utilities were not built the same way. That is settled
+  now — see "The `ORG` came out of both utilities" below — and the question it
+  left open is answered: `r8.asm` **does** still correspond to the shipped
+  `r8.com`, byte for byte in both images. The check covers all four copies.
 
 ## [1.35] and earlier
 

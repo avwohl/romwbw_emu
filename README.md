@@ -116,11 +116,25 @@ See `docs/DISK_FORMATS.md` for details.
 
 ## File Transfer (R8/W8)
 
-The `R8` and `W8` CP/M utilities (sources: `src/r8.asm`, `src/w8.asm`) copy files between the host and CP/M. They talk to the emulator through HBIOS extension functions 0xE1-0xE7.
+The `R8` and `W8` CP/M utilities (sources: `src/r8.asm`, `src/w8.asm`) copy files between the host and CP/M. They talk to the emulator through HBIOS extension functions 0xE1-0xE8.
 
-**CLI:** `R8 <hostpath>` imports a host file into CP/M. The path is used as typed - relative paths resolve against the directory `romwbw_emu` was started from, and absolute paths work. CP/M's CCP uppercases the command line, so the emulator retries host paths case-insensitively (typing `R8 /home/me/file.txt` works even though CP/M delivers `/HOME/ME/FILE.TXT`). The CP/M-side name is the uppercased 8.3 basename. `W8 <cpmfile> [hostpath]` exports a CP/M file to the host. With no `hostpath` it lands in the emulator's working directory under the CP/M name, lowercased - what it always did. With one, it goes exactly there, the same way `R8` takes a path. Because the CCP uppercases the whole line, the emulator resolves the *directory* components case-insensitively and lowercases the final name: `W8 MYFILE.TXT /home/me/out.txt` writes `/home/me/out.txt`. The typed case cannot be recovered - CP/M destroys it before the emulator sees it - so lowercase is a convention, not a guess at what you meant. A `hostpath` containing a space is cut at the space, the same limitation `R8` has. Write errors at close (e.g. host disk full) are reported: `Host file close failed - file may be truncated`.
+**CLI:** `R8 <hostpath>` imports a host file into CP/M. The path is used as typed - relative paths resolve against the directory `romwbw_emu` was started from, and absolute paths work. CP/M's CCP uppercases the command line, so the emulator retries host paths case-insensitively (typing `R8 /home/me/file.txt` works even though CP/M delivers `/HOME/ME/FILE.TXT`). The CP/M-side name is the uppercased 8.3 basename.
 
-**Web:** `R8` opens a browser file picker (the emulator pauses until you pick a file or cancel); `W8` triggers a browser download.
+`W8 <cpmfile> [hostpath]` exports a CP/M file to the host. With no `hostpath` it lands in the emulator's working directory under the CP/M name, lowercased - what it always did. With one, it goes there instead. Both utilities take **the whole rest of the command line** as the path, so a directory whose name contains a space works: `W8 OUT.TXT /Users/me/My Documents/out.txt`. Trailing spaces are trimmed.
+
+Because the CCP uppercases the whole line, the emulator resolves the *directory* components case-insensitively and lowercases the final name. The typed case cannot be recovered - CP/M destroys it before the emulator sees it - so lowercase is a convention, not a guess at what you meant. That means **the path you type is not the path that gets written**, which is why `W8` does not echo it: it asks the emulator where the file actually went and prints that.
+
+```
+C>W8 MYFILE.TXT /home/me/out.txt
+W8 - Write to host filesystem
+Writing: MYFILE.TXT
+To host: /home/me/out.txt
+Done: 4096 bytes
+```
+
+`W8` copies the file whole. It drops only the run of `^Z` characters at the very end, which is the padding CP/M writes into the last record of a file - so a text file imported with `R8` comes back byte for byte, and a `.COM` containing `1Ah` bytes (`LD A,(DE)`, which is common) is no longer truncated at the first one. The one thing that cannot survive is a file whose real content *ends* in `1Ah`: CP/M stores no length, only whole 128-byte records, so nothing can tell those bytes from the padding and they are dropped with it. Write errors at close (e.g. host disk full) are reported: `Host file close failed - file may be truncated`.
+
+**Web:** `R8` opens a browser file picker (the emulator pauses until you pick a file or cancel); `W8` triggers a browser download. A browser has no filesystem to honour a directory with, so a `hostpath` given there is reduced to its last component and becomes the suggested download name - and `To host:` says so, rather than repeating a path that means nothing in a browser. The same is true of the sandboxed mobile ports, where the file goes to the app's own export location.
 
 ```
 C>R8 /home/me/getkey.com
@@ -129,7 +143,7 @@ C>W8 MYFILE.TXT
 
 The first command imports the host file `getkey.com` as `GETKEY.COM` on the current drive; the second exports `MYFILE.TXT` as `myfile.txt` in the directory the emulator was started from.
 
-**Availability:** `r8.com` and `w8.com` are on `disks/hd1k_combo.img` (slice 0), `disks/hd1k_infocom.img`, and the web-served `hd1k_combo.img`, `hd1k_cpm22.img`, `hd1k_games.img`, and `z80cpm_tools.img`. They are not on `disks/hd1k_cpm22.img` or the ZSDOS images.
+**Availability:** `r8.com` and `w8.com` are on `disks/hd1k_combo.img` (slice 0) and `disks/hd1k_infocom.img`. Images published elsewhere - a GitHub release asset, a downstream port's bundled copy - carry whatever `r8.com`/`w8.com` they were built with, and are not updated by a change here. `disks/verify_disk_utils.sh` checks the tracked images against the sources and `disks/rebuild_disk_utils.sh` refreshes them; `make -C src test` runs the first of those.
 
 ## WebAssembly Version
 

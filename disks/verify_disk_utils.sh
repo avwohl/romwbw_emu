@@ -3,23 +3,31 @@
 # Verify that the R8/W8 binaries inside the tracked disk images are what
 # src/r8.asm and src/w8.asm currently assemble to.
 #
-# Nothing builds these .COM files as part of any target: they were assembled by
-# hand once and copied into the images, so the source and the shipped binary can
-# drift with nothing to notice.  The last drift - a stale w8.com in
-# hd1k_infocom.img - was found by hand, and only after the source had already
-# changed underneath it.  This turns that into a check.
+# No build target assembles these .COM files - editing r8.asm or w8.asm does not
+# change what any image holds - so the source and the shipped binary can drift
+# with nothing to notice.  The last drift, a stale w8.com in hd1k_infocom.img,
+# was found by hand and only after the source had already changed underneath it.
+# This turns that into a check; disks/rebuild_disk_utils.sh is the fix.
 #
 # What it does, per image and per utility: assemble the source, link it, extract
 # the copy the image holds, and compare.
 #
-# What it found on its first run is worth knowing before reading its output: the
-# two utilities in these images were not built the same way.  w8.com is a ul80
-# memory image - 256 leading NOPs, code at file offset 0x100, every address
-# constant 256 higher to suit - while r8.com is a bare .COM with the code at
-# offset 0.  Both run; CP/M loads either at 0100h and the NOPs simply slide into
-# the code.  But only a same-layout pair can be compared byte for byte, so this
-# reports r8 as not comparable rather than pretending a 0x100 offset in every
-# address is evidence of drift.
+# On its first run this could only check half of what it was asked to: the two
+# utilities had been built in different layouts.  w8.com was a ul80 memory image
+# - 256 leading NOPs, code at file offset 0x100, every address constant 256
+# higher to suit - while r8.com was a bare .COM with the code at offset 0, and
+# only a same-layout pair can be compared byte for byte.
+#
+# That is settled now, and the layout is the bare .COM: `org 0100h` was removed
+# from both sources.  M80 assembles each as one relocatable code segment and L80
+# bases a .COM at 0100h by itself, so the ORG was applied on top of that base and
+# pushed the code to 0200h behind 256 zero bytes.  It ran - CP/M loads the file
+# at 0100h and the Z80 slides through the NOPs into the code - which is why it
+# went unnoticed, but it carried 256 bytes of file for nothing and it is what
+# made the two binaries incomparable.  Both build bare now and both are checked.
+#
+# disks/rebuild_disk_utils.sh is the other half of this: it assembles and
+# installs.  If this script fails, that one is what fixes it.
 #
 # Usage: disks/verify_disk_utils.sh [tree_root]
 # Exit:  0 all present copies match (or the tools to check are missing)
@@ -47,8 +55,11 @@ checked=0
 note()  { printf '  %s\n' "$*"; }
 
 # True when the first 256 bytes of $1 are all zero, i.e. the file is a ul80
-# memory image rather than a bare .COM.  od rather than tr: the input is binary
-# and macOS tr rejects it outright with "Illegal byte sequence".
+# memory image rather than a bare .COM - the layout both sources used to build
+# in.  Nothing should be in it now; a hit means someone put an ORG back, so this
+# says so rather than reporting the 0x100 shift in every address as drift.  od
+# rather than tr: the input is binary and macOS tr rejects it outright with
+# "Illegal byte sequence".
 is_zero_padded() {
     [ "$(wc -c < "$1" | tr -d ' ')" -gt 256 ] || return 1
     # No {512} repetition count: BSD grep caps repetition at 255.  "contains no
@@ -98,11 +109,18 @@ for util in $UTILS; do
         path="$ROOT/$img"
         [ -f "$path" ] || continue
 
-        # An image legitimately may not carry a given utility, so absence is
-        # not a failure - but it is worth saying, because it is also what a
-        # wrong diskdef looks like.
+        # Absence used to be an info line and an exit 0.  It is a failure:
+        # every image in the table above is one this repository ships with both
+        # utilities on it, and the two ways a copy goes missing are the two
+        # this check exists for - someone removed it, or the diskdef is wrong
+        # and cpmls is reading a garbage directory.  The stale w8.com in
+        # hd1k_infocom.img presented exactly this way, and with it as an info
+        # line CI would have gone green over it.
         if ! cpmls -f "$def" "$path" 2>/dev/null | grep -qi "^$util\.com$"; then
-            note "info  $(basename "$img") holds no $util.com (diskdef $def)"
+            bad "$(basename "$img") $util.com" "is not on the image at all"
+            note "      Either it was removed - disks/rebuild_disk_utils.sh puts"
+            note "      it back - or diskdef $def is wrong for this image, which"
+            note "      makes cpmls print a garbage directory rather than fail."
             continue
         fi
 
@@ -111,25 +129,22 @@ for util in $UTILS; do
             continue
         fi
 
-        # ul80 emits a memory image based at 0000h, so its output carries 256
-        # leading NOPs and the code sits at file offset 0x100 - CP/M loads the
-        # lot at 0100h and slides through the NOPs into the code at 0200h, and
-        # every address constant in that build is 256 higher to match.  Some of
-        # the binaries in these images were linked that way and some were not.
-        #
-        # Only the same-layout pair can be compared with cmp.  A build in the
-        # other layout is not evidence of drift: the two differ in every address
-        # constant by exactly 0x100 whatever the source says, so a byte compare
-        # would report a mismatch for a file that is otherwise the same program.
-        # Relocating to find out is more than this check is for.
+        # Both layouts must match before cmp can speak: a bare .COM and a
+        # padded memory image of the same program differ in every address
+        # constant by exactly 0x100, so a byte compare would call them
+        # different whatever the source says.  Since the ORG came out of both
+        # sources neither side should ever be padded again, so this is now a
+        # tripwire rather than a routine branch - if it fires, an ORG is back.
         if is_zero_padded "$TMP/$util.com"; then built_padded=yes; else built_padded=no; fi
         if is_zero_padded "$TMP/from_img.com"; then held_padded=yes; else held_padded=no; fi
 
         if [ "$built_padded" != "$held_padded" ]; then
-            note "info  $(basename "$img") $util.com was linked in the other layout" \
-                 "- not comparable"
-            note "      (ul80 pads to 0000h; this copy starts at the code.  Every"
-            note "       address constant differs by 0x100, so cmp cannot speak here.)"
+            bad "$(basename "$img") $util.com" "was linked in the other layout"
+            note "      One side has 256 leading zero bytes and the other does not,"
+            note "      so every address constant differs by 0x100 and cmp cannot"
+            note "      speak.  src/$util.asm must have no ORG: L80 bases a .COM at"
+            note "      0100h already, and an ORG on top of that puts the code at"
+            note "      0200h behind a NOP pad.  built=$built_padded held=$held_padded"
             continue
         fi
 
@@ -141,16 +156,25 @@ for util in $UTILS; do
             held=$(wc -c < "$TMP/from_img.com" | tr -d ' ')
             bad "$(basename "$img") $util.com" \
                 "differs from src/$util.asm (built $built bytes, image holds $held)"
-            note "      rebuild:  um80 -o $util.rel src/$util.asm && ul80 -o $util.com $util.rel"
-            note "                cpmcp -f $def $img $util.com 0:$util.com"
+            note "      rebuild:  disks/rebuild_disk_utils.sh"
+            note "      (by hand, cpmcp will not overwrite - the old copy has to"
+            note "       go first: cpmrm -f $def $img 0:$util.com)"
         fi
     done
 done
 
 echo
 if [ "$checked" -eq 0 ]; then
-    echo "SKIP: no disk-resident utilities were found to check"
-    exit 0
+    # Reaching here means the tools were all present - the loop above exits
+    # early otherwise - and every image still yielded nothing to compare. That
+    # is a broken check, not a clean run: a wrong diskdef, a renamed image or a
+    # deleted source all land here, and each one used to be reported as a pass
+    # by `make test`.
+    echo "FAIL: nothing was checked, though the tools to check with are present"
+    echo "      Expected r8.com and w8.com in: $IMAGES"
+    echo "      A wrong diskdef looks exactly like this - cpmls prints a garbage"
+    echo "      directory rather than failing, so no name matches."
+    exit 1
 fi
 if [ "$fail" -eq 0 ]; then
     echo "PASS: $checked disk-resident binar$( [ "$checked" -eq 1 ] && echo y || echo ies ) match the source"

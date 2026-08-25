@@ -32,6 +32,19 @@ When working on RomWBW integration:
     dd if=emu_hbios.bin of=emu_hbios_32k.bin conv=notrunc
     ./build_emu_rom.sh SBC_simh_std.rom
     ```
+  - **Never write `org 0100h` in a CP/M `.COM` source.** L80 bases a relocatable
+    code segment at 0100h by itself, so an ORG is applied *on top of* that base
+    and puts the code at 0200h behind 256 zero bytes. The result runs - CP/M
+    loads the whole file at 0100h and the Z80 slides through 256 NOPs into the
+    code - which is why `src/w8.asm` carried one unnoticed for a long time,
+    wasting 256 bytes of every copy and making the binary uncomparable with
+    `src/r8.asm`, which had none. Build a `.COM` with no ORG at all:
+    ```
+    um80 -o w8.rel ../src/w8.asm && ul80 -o w8.com w8.rel
+    ```
+    (The `-p` origin flag does not help: it names where the image is *loaded*,
+    not where the segment starts. The `-p 0000` above is for a ROM image, which
+    genuinely does start at address zero.)
 
 ## Emulator Architecture
 
@@ -56,14 +69,32 @@ Key points:
 - Single-slice hd1k images MUST be exactly 8,388,608 bytes for auto-detect
 - Combo disks need the 1MB MBR prefix with partition type 0x2E at offset 0x1C2
 - Use `--disk0` for disk images (e.g., `--disk0=disks/hd1k_combo.img`)
-- cpmtools needs DISKDEFS env var pointing to RomWBW diskdefs file
 
-**cpmtools setup:**
+**cpmtools: pick the right diskdef, and do not set DISKDEFS**
+
+cpmtools finds its own diskdefs (homebrew: `/opt/homebrew/share/diskdefs`), and
+that file already defines the whole `wbw_hd1k` family including the per-slice
+`wbw_hd1k_0..3`. There is nothing to export. Setting `DISKDEFS` to a path that
+does not exist is *silently ignored* - cpmls falls back to the compiled-in file
+and lists the directory correctly - so the wrong instruction looks like it
+works. `/etc/cpmtools/diskdefs`, which this file used to name, is not there.
+
 ```bash
-export DISKDEFS=/etc/cpmtools/diskdefs   # has wbw_hd1k (no wbw_hd1k_0 def)
-cpmls -f wbw_hd1k disk.img               # single slice
-# combo disks: no wbw_hd1k_0 def in /etc diskdefs - extract slice 0 instead:
-dd if=combo.img bs=1M skip=1 count=8 of=slice0.img
-cpmls -f wbw_hd1k slice0.img
-dd if=slice0.img of=combo.img bs=1M seek=1 conv=notrunc   # write back
+cpmls -f wbw_hd1k   disks/hd1k_infocom.img   # plain 8 MB image
+cpmls -f wbw_hd1k_0 disks/hd1k_combo.img     # combo: slice 0, past the 1 MB MBR
+cpmcp -f wbw_hd1k_0 disks/hd1k_combo.img 0:w8.com ./w8.com   # extract
+cpmrm -f wbw_hd1k_0 disks/hd1k_combo.img 0:w8.com            # cpmcp will NOT
+cpmcp -f wbw_hd1k_0 disks/hd1k_combo.img ./w8.com 0:w8.com   # overwrite
 ```
+
+The `wbw_hd1k_0` definition is what handles the combo image's 1 MB prefix, so
+the dd slice-extract-and-write-back dance this file used to prescribe is not
+needed. **The real hazard is the one worth keeping:** the wrong diskdef does not
+fail, it prints a garbage directory, which reads as "no such file". That is
+exactly how `hd1k_infocom.img` was once recorded as carrying no `w8.com` when it
+carries both.
+
+For `r8.com` / `w8.com` specifically, do not do any of this by hand:
+`disks/rebuild_disk_utils.sh` assembles both and installs them into every
+tracked image, and `disks/verify_disk_utils.sh` (run by `make -C src test`)
+checks that the images match the sources.

@@ -15,6 +15,12 @@ template and run it against a stub Module and document - but none of the above
 is reachable that way: it all needs a real DOM and a real browser default
 action.  only emcc is missing, so the wasm cannot be rebuilt here.
 
+  while there, check the two W8 changes that only the browser can show: a
+  download now happens for a zero-byte export (it used to be dropped, so W8
+  printed "Done: 0 bytes" with nothing arriving), and the download name is the
+  lowercased last component of whatever path was typed, which is also what W8
+  now prints as "To host:".
+
 - with --escape=none there is no way into sim> from a running guest at all
 (romwbw_emu.cc:203, :791).  that is the point of it, but it means the debugger
 is reachable only by restarting with a different flag.  a two-key sequence - the
@@ -31,16 +37,6 @@ vendor the three files into web/ and close the offline gap at the same time (an
 installed deb has no terminal without internet: release.yml stages
 romwbw.html/.js/.wasm and roms/, and no xterm).  regenerate a hash with: curl
 -sL <url> | openssl dgst -sha384 -binary | openssl base64 -A
-
-- nothing runs the tests but a person.  .github/workflows holds only release.yml
-and it has no test step, so a change that breaks the console is caught only if
-whoever made it thought to run make -C src test.  wiring the target into CI is a
-few lines: it runs tests/vda_keyboard.cc, tests/cli_console.cc,
-tests/cli_hostfile.cc, tests/web_reload_disks.js, tests/web_console_output.js
-and disks/verify_disk_utils.sh, and needs no ROM, no disk and no network.
-cli_console.cc needs -lutil on linux (src/makefile:70, PTY_LIBS); the two JS
-suites skip without node; verify_disk_utils.sh skips without um80, ul80 and
-cpmtools.
 
 - found while auditing the input path, none of it control-character work, all of
 it out of scope for the commit that found it:
@@ -73,41 +69,30 @@ it out of scope for the commit that found it:
   relative filename, and only hd1k_combo.img exists in the repo -
   z80cpm_tools.img exists nowhere at all, hd1k_games.img, hd1k_cpm22.img and
   hd1k_zsdos.img are not here either, and hd1k_infocom.img, which does exist, is
-  described in the help text (line 306) but never offered.  no deploy or package
-  target copies any .img - release.yml stages the page, the wasm and roms/ only -
-  so a stock deb/rpm install 404s on both default disks and starts anyway.
+  described in the help text but never offered.  no deploy or package target
+  copies any .img - release.yml stages the page, the wasm and roms/ only - so a
+  stock deb/rpm install 404s on both default disks and starts anyway.  (the help
+  text itself is corrected: it now names hd1k_combo.img and nothing else.)
   - release.yml installs emsdk latest (the "Install build dependencies" step),
   which already broke a release once (13d1c23).  pin it the way the cpmemu clone
   beside it is pinned - CPMEMU_REF - and bump it deliberately.
+  .github/workflows/test.yml, added since, pins both the qkz80 clone and um80
+  for exactly this reason; release.yml is the one still loose.
 
 - found by sweeping z80cpmw's FEATURE_PARITY.md against this repo's source, row
 by row and each frontend separately.  what is left of it:
 
-  - both images in this repo carry the new w8.com; the ones it does not carry
-  still ship the old one.  the web frontend's disk selects offer hd1k_cpm22.img,
-  hd1k_games.img, hd1k_zsdos.img and z80cpm_tools.img, none of which exist
-  anywhere on disk here, and the released hd1k_* assets live on a github
-  release, so a user coming through either still gets the CWD-only W8.  the
-  recipe, for whoever has those files:
-    um80 -o w8.rel src/w8.asm && ul80 -o w8.com w8.rel
-    cpmcp -f <diskdef> <image> w8.com 0:w8.com
-  mind the diskdef - hd1k_combo.img is wbw_hd1k_0 because of its 1 MB MBR
-  prefix, while the plain 8 MB hd1k_infocom.img is wbw_hd1k.  using the wrong
-  one lists garbage rather than failing.
-
-  - decide which layout r8.com and w8.com should be built in, and say so
-  somewhere; that is what would make disks/verify_disk_utils.sh total.  w8.com
-  is a ul80 memory image - 256 leading NOPs, code at file offset 0x100, every
-  address constant 256 higher to suit - while r8.com is a bare .COM with the
-  code at offset 0.  Both run, because CP/M loads either at 0100h and the NOPs
-  slide into the code, but the script can only compare a same-layout pair, so it
-  verifies w8 in both images and reports r8 as not comparable.  Whether r8.asm
-  still corresponds to the shipped r8.com is therefore unknown; answering it
-  needs either a relocating compare or a rebuild of r8.com in ul80's layout, and
-  the second changes a working binary for no user-visible gain.  Note the 256
-  NOPs are waste rather than design - ul80 emits from 0000h and nothing strips
-  the pad, so it is 1280 bytes of file to carry 1024 bytes of program - and the
-  rebuild kept them rather than silently changing the shape of a shipped binary.
+  - the disk images published outside this repo still carry old R8/W8.  both
+  tracked images here are current and checked, but the released hd1k_* assets on
+  github, the copies z80cpmw and cpmdroid bundle, and the 19 catalog entries in
+  disks/disks.xml that exist nowhere in this tree are all whatever they were
+  built with.  a user coming through any of those gets a W8 that truncates every
+  binary at the first 1Ah and an R8 that can erase files it did not create.
+  refreshing them means rebuilding the image and cutting a release the catalog
+  points at; the build half is disks/rebuild_disk_utils.sh now, not prose.
+  worth noting what would make this catchable rather than periodic: disks.xml
+  carries no per-disk version or checksum, so nothing here can look at a release
+  asset and tell whether its w8.com is current.
 
   - the web Boot field never reads NVRAM back.  romwbw.html-template pushes it
   to the core (_romwbw_set_boot_string, :1160-1170), clears it
@@ -117,13 +102,17 @@ by row and each frontend separately.  what is left of it:
   $XDG_CONFIG_HOME/romwbw_emu/nvram (romwbw_emu.cc:75-108) and the web build has
   no equivalent read path.
 
-  - the CLI has no way to clear a persisted boot target.  --boot=
-  (romwbw_emu.cc:1072) sets it and the file keeps it; a one-off --boot
-  overwrites the saved value at exit (romwbw_emu.cc:1613-1619), and there is no
-  --boot=none or --clear-nvram to get back to the menu.  the operation exists in
-  the web core already - romwbw_clear_nvram(), web/romwbw_web.cc:171 - so this
-  is a flag and a call, and --escape already has the "none" spelling to copy
-  (parse_escape_char, romwbw_emu.cc:166-199).
+  - the CLI has no way to clear a persisted boot target.  --boot= sets it and
+  the file keeps it; there is no --boot=none or --clear-nvram to get back to the
+  menu.  the operation exists in the web core already - romwbw_clear_nvram(),
+  web/romwbw_web.cc:171 - so this is a flag and a call, and --escape already has
+  the "none" spelling to copy (parse_escape_char, romwbw_emu.cc:166-199).
+    the consequence worth drawing out, hit repeatedly while testing W8: a
+    one-off --boot is saved at exit (romwbw_emu.cc:1613-1619), so ANY automated
+    run that boots the emulator rewrites the developer's persisted boot target
+    as a side effect.  a --boot given on the command line should be an override
+    for that run and skip the save; separately, anything scripted should point
+    XDG_CONFIG_HOME at a temp directory.
 
 - handed over from z80cpmw, which suppresses it on its side: hbios_dispatch.cc
 emits six C4267 warnings under MSVC at /W3.  All six are a size_t loop index
@@ -131,3 +120,59 @@ promoting a uint16_t guest address, where the truncation to sixteen bits IS the
 Z80 64K wrap HBIOS wants, so there is nothing to fix today - but a matching cast
 is worth adding if this repo ever turns C4267 or -Wshorten-64-to-32 on for
 itself.  cpmemu's 9fee3c2 sweep for this class did not reach this file.
+
+- left open by the W8 host-path work (docs/DOWNSTREAM_2026-08-25.md), each
+measured and deliberately not taken:
+
+  - R8's "Reading:" line still prints the path the CCP shouted rather than the
+  file that was opened.  W8 asks the emulator (HBF_HOST_GETNAME) because for a
+  write the two are never the same string; for a read they usually are, the file
+  has to exist for the open to succeed, and there is no getter for the read name
+  in the emu_io contract.  Adding one is a mirror of 0xE8 and about the same
+  size.  It is the same class of untruth, one consequence smaller: nothing is
+  created that the user then has to find.
+
+  - emu_host_file_open_write() returns true unconditionally on every buffering
+  backend (browser, iOS, Android, and z80cpmw's deferred write), so a path that
+  cannot be created is only discovered at close - and W8 then prints "Host file
+  close failed - file may be truncated" for a file that was never opened.  The
+  contract in emu_io.h now says this is allowed and that close is where the real
+  answer comes from; making W8's two messages tell the cases apart would need a
+  distinguishable status from close, which is a wider change than it looks.
+
+  - HBF_HOST_OPEN_R and HBF_HOST_OPEN_W read at most 256 bytes of guest memory
+  looking for a terminator and silently use what they have
+  (hbios_dispatch.cc:2391, :2413).  Both utilities NUL-terminate inside a
+  128-byte buffer so nothing can reach it today; it is a truncation rather than
+  an overrun, and it would matter to a guest program that is not R8 or W8.
+
+  - W8 treats any nonzero F_READ status as a clean end of file (w8.asm:145).
+  Under CP/M 2.2 the only nonzero code is 1, EOF, so this is exact there; under
+  ZSDOS and CP/M 3 a real read error would be reported as a successful export of
+  everything up to it.
+
+  - src/makefile's sister-directory qkz80 fallback (lines 15-21) is silent, so a
+  machine with neither pkg-config nor ../../cpmemu falls through to /usr/local
+  and compiles a different CPU core with no indication.  test.yml passes
+  QKZ80_CFLAGS/QKZ80_LIBS explicitly to sidestep it; a warning in the makefile
+  would be better than a workaround in one caller.
+
+  - W8's and R8's error messages still echo the path the CCP shouted:
+  "Error: Cannot create host file: /NODIR/X.COM".  That is the request rather
+  than a claim about what exists, so it is not the same defect the success line
+  had - but the two now differ in case for no reason a user can see.
+
+  - emu_host_path_basename puts no length cap on what it returns, so a 5000-
+  character last component becomes a 5000-character suggested download name.
+  Every caller is a filename hint and no filesystem will take it; harmless
+  today, and a cap would want to keep the extension rather than the head.
+
+  - cpmrm exits 0 on a read-only image without removing anything, so
+  disks/rebuild_disk_utils.sh attributes the resulting failure to cpmcp rather
+  than to the permissions.  The run does fail, it just says the wrong thing.
+
+- .github/workflows/test.yml now runs the suite on push and pull request, which
+closes the "nothing runs the tests but a person" item.  What it does NOT cover:
+there is no Windows or macOS job, so the MSVC build z80cpmw depends on is still
+proven only by that port's own CI, and cpmemu's own suite skips its two Windows
+cases for want of a machine.

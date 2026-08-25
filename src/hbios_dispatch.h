@@ -127,11 +127,11 @@ enum HBiosFunc {
   HBF_SNDDEVICE = 0x57,  // Sound device info request
   HBF_SNDBEEP   = 0x58,  // Play beep sound
 
-  // Extension Functions - 0xE0-0xE7
+  // Extension Functions - 0xE0-0xEF
   HBF_EXT       = 0xE0,
   HBF_EXTSLICE  = 0xE0,  // Slice calculation
 
-  // Host File Transfer - 0xE1-0xE7 (EMU custom extension)
+  // Host File Transfer - 0xE1-0xE8 (EMU custom extension)
   HBF_HOST_OPEN_R = 0xE1,  // Open host file for reading (DE=path addr)
   HBF_HOST_OPEN_W = 0xE2,  // Open host file for writing (DE=path addr)
   HBF_HOST_READ   = 0xE3,  // Read byte from host (returns E=byte, A=status)
@@ -139,6 +139,15 @@ enum HBiosFunc {
   HBF_HOST_CLOSE  = 0xE5,  // Close host file (C=0 for read, C=1 for write)
   HBF_HOST_MODE   = 0xE6,  // Get/set mode (C=0 get, C=1 set; E=mode)
   HBF_HOST_GETARG = 0xE7,  // Get cmd arg by index (C=index, DE=buf addr)
+  // Where the open write file will actually land, as text for the guest to
+  // print.  C = size of the buffer at DE including the terminator, DE = buffer
+  // address.  A = 0 and the buffer holds a NUL-terminated string; A = 0xFF and
+  // the buffer is untouched when no write file is open or the backend cannot
+  // say.  An emulator built before this existed answers 0xFF from the unknown-
+  // function path, which is why W8 treats a failure as "print what was typed"
+  // rather than as an error - a new W8.COM has to keep running on an already
+  // released front end.
+  HBF_HOST_GETNAME = 0xE8, // Get effective host write path (C=bufsize, DE=buf)
 
   // System Functions - 0xF0-0xFC
   HBF_SYS       = 0xF0,
