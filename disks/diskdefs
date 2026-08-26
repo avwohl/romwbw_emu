@@ -1,0 +1,56 @@
+# cpmtools disk format definitions for the images in this directory.
+#
+# Why this file exists.  cpmtools reads ./diskdefs if there is one and
+# /etc/cpmtools/diskdefs (or the homebrew equivalent) otherwise - one or the
+# other, never both - and the per-slice combo definitions are not in every
+# distribution's copy.  Debian and Ubuntu's cpmtools 2.23 ships wbw_hd1k and
+# NOT wbw_hd1k_0, which is the definition hd1k_combo.img needs, so on those
+# machines both scripts here reported "r8.com is not on the image at all" for a
+# file that is on it.  That is the same wrong-diskdef failure mode the two
+# scripts warn about: cpmtools does not fail on a bad format name in a way the
+# scripts could tell apart from a missing file.
+#
+# Because ./diskdefs REPLACES the system file rather than adding to it, this
+# has to carry every definition the scripts use, not just the missing ones.
+# Both scripts run cpmls/cpmcp/cpmrm with this directory as the working
+# directory so that they pick it up wherever they are invoked from.
+#
+# wbw_hd1k is copied from the stock cpmtools file.  The slice definitions are
+# the same geometry with an offset: a combo image is a 1 MB MBR prefix followed
+# by whole 8 MB slices (docs/DISK_FORMATS.md).
+
+# RomWBW 8 MB hard disk slice, 1024 directory entries.  A plain single-slice
+# image - hd1k_infocom.img - is exactly this and nothing else.
+diskdef wbw_hd1k
+  seclen 512
+  tracks 1024
+  sectrk 16
+  blocksize 4096
+  maxdir 1024
+  skew 0
+  boottrk 2
+  os 2.2
+end
+
+# Combo images: the same slice, past the 1 MB MBR prefix and then N whole
+# slices.  offset is in bytes: 1048576 + 8388608 * slice.
+diskdef wbw_hd1k_0
+  seclen 512
+  tracks 1024
+  sectrk 16
+  blocksize 4096
+  maxdir 1024
+  skew 0
+  boottrk 2
+  offset 1048576
+  os 2.2
+end
+
+# Slices 1 and up are deliberately NOT defined here.  The geometry is the same
+# with offset = 1048576 + 8388608 * slice, but on hd1k_combo.img every one of
+# them answers "cannot read superblock (Bad parameter)" - checked for slices 1,
+# 2 and 3, in all four of cpmtools' offset units - so whatever those slices
+# hold, it is not a directory these parameters describe.  Nothing in this
+# repository reads them.  Add one when there is an image to check it against;
+# an unverified definition here would be exactly the silently-wrong diskdef
+# both scripts exist to warn about.

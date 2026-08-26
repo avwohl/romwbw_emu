@@ -818,7 +818,12 @@ void print_usage(const char* prog) {
   fprintf(stderr, "\n");
   fprintf(stderr, "Boot options:\n");
   fprintf(stderr, "  --boot=CMD        Auto-boot with command (e.g., C, 2, 2.3)\n");
-  fprintf(stderr, "                    Overrides persisted NVRAM settings\n");
+  fprintf(stderr, "                    Overrides the persisted NVRAM setting for\n");
+  fprintf(stderr, "                    THIS RUN ONLY - it is not written back, so a\n");
+  fprintf(stderr, "                    script cannot change what you boot by default.\n");
+  fprintf(stderr, "  --boot=none       Forget the persisted boot target and come up at\n");
+  fprintf(stderr, "                    the menu ('off' is the same). This is the only\n");
+  fprintf(stderr, "                    way to undo an earlier --boot or SYSCONF.\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "  NVRAM is persisted to $XDG_CONFIG_HOME/romwbw_emu/nvram (default ~/.config/romwbw_emu/nvram)\n");
   fprintf(stderr, "  Use 'W' at boot menu to configure via SYSCONF utility.\n");
@@ -886,6 +891,11 @@ int main(int argc, char** argv) {
   std::string symbols_file;
   std::string romldr_path;  // RomWBW romldr boot menu
   std::string boot_string;  // Auto-boot command (e.g., "C", "2", "2.3")
+  // A --boot on the command line is a one-off override for this run, not a new
+  // persisted setting.  Without this, every scripted boot rewrote whatever the
+  // developer had configured, because the exit path saves whatever NVRAM holds.
+  bool boot_from_cli = false;
+  bool boot_clear = false;  // --boot=none: forget the persisted target too
 
   // ROM application definitions: key=name:path
   struct RomAppDef {
@@ -1076,7 +1086,19 @@ int main(int argc, char** argv) {
     } else if (strncmp(argv[i], "--romldr=", 9) == 0) {
       romldr_path = argv[i] + 9;
     } else if (strncmp(argv[i], "--boot=", 7) == 0) {
-      boot_string = argv[i] + 7;
+      const char* b = argv[i] + 7;
+      // "none"/"off" are spelled the way --escape spells them.  They are the
+      // only way back to the boot menu once a target is persisted: setting the
+      // in-core NVRAM to "uninitialized" is not enough, because the setting
+      // lives in a file that outlives the run.
+      if (emu_strcasecmp(b, "none") == 0 || emu_strcasecmp(b, "off") == 0) {
+        boot_clear = true;
+        boot_string.clear();
+      } else {
+        boot_clear = false;
+        boot_string = b;
+      }
+      boot_from_cli = true;
     } else if (strncmp(argv[i], "--trace=", 8) == 0) {
       trace_file = argv[i] + 8;
     } else if (strncmp(argv[i], "--symbols=", 10) == 0) {
@@ -1304,28 +1326,76 @@ int main(int argc, char** argv) {
 
   // Load persisted NVRAM from the config dir (XDG-aware; see get_config_dir)
   std::string nvram_path = get_nvram_path();
-  std::string nvram_loaded_from = nvram_path;
-  std::string loaded_setting = load_nvram_setting(nvram_path);
-  if (loaded_setting.empty()) {
-    // Migration: a setting saved before XDG_CONFIG_HOME support lives in
-    // ~/.config; read it here, saves go to the new path at exit
-    std::string legacy = get_legacy_nvram_path();
-    if (legacy != nvram_path) {
-      loaded_setting = load_nvram_setting(legacy);
-      if (!loaded_setting.empty()) nvram_loaded_from = legacy;
-    }
-  }
-  if (!loaded_setting.empty()) {
-    emu.getHBIOS()->setNvramSetting(loaded_setting);
-    fprintf(stderr, "Loaded NVRAM setting '%s' from %s%s\n", loaded_setting.c_str(),
-            nvram_loaded_from.c_str(),
-            nvram_loaded_from != nvram_path ? " (migrates to the new path on exit)" : "");
-  }
+  std::string legacy_nvram_path = get_legacy_nvram_path();
+  // The effective setting --boot asked for, as NVRAM spells it back.  Compared
+  // at exit against what NVRAM then holds: equal means nothing but --boot ever
+  // touched it, so there is nothing of the user's to save.
+  std::string cli_boot_effective;
 
-  // Configure NVRAM boot option if specified (overrides persisted settings)
-  if (!boot_string.empty()) {
-    emu.getHBIOS()->setNvramSetting(boot_string);
-    fprintf(stderr, "Auto-boot: configured NVRAM for '%s'\n", boot_string.c_str());
+  if (boot_clear) {
+    // --boot=none removes the file rather than writing an empty one.  An
+    // absent file and a file holding "" already mean the same thing to the
+    // loader below, and leaving a stub behind would make `ls` suggest a
+    // setting is still configured.
+    //
+    // Only the file under the CURRENT config dir is removed.  The pre-XDG file
+    // in ~/.config is named rather than unlinked - see below.
+    bool removed = (remove(nvram_path.c_str()) == 0);
+    emu.getHBIOS()->setNvramSetting("");
+    if (removed) {
+      fprintf(stderr, "--boot=none: cleared the persisted boot target (%s)\n",
+              nvram_path.c_str());
+    } else {
+      // Not "no persisted boot target to clear": one path was looked at, and
+      // the pre-XDG file tested below can still hold one.  Name the path that
+      // was empty and let the next line name the other.
+      fprintf(stderr, "--boot=none: nothing to clear at %s\n",
+              nvram_path.c_str());
+    }
+    // A pre-XDG setting in ~/.config is still READ as a migration fallback, so
+    // it would come back on the next run - but it sits outside the directory
+    // XDG_CONFIG_HOME selected, and nothing here can tell a user who has
+    // genuinely relocated their config from a scripted run pointing XDG at a
+    // temp directory.  Deleting it guessed, and guessed wrong: a second
+    // --boot=none under a temp XDG_CONFIG_HOME unlinked the developer's real
+    // ~/.config/romwbw_emu/nvram, because the first one left the current path
+    // empty and that was the whole of the guard.  Say the file is there
+    // instead of reaching outside the config dir to remove it.
+    if (legacy_nvram_path != nvram_path &&
+        !load_nvram_setting(legacy_nvram_path).empty()) {
+      fprintf(stderr,
+              "--boot=none: a pre-XDG setting remains at %s and will be read "
+              "again next run; remove that file by hand to clear it too\n",
+              legacy_nvram_path.c_str());
+    }
+  } else {
+    std::string nvram_loaded_from = nvram_path;
+    std::string loaded_setting = load_nvram_setting(nvram_path);
+    if (loaded_setting.empty()) {
+      // Migration: a setting saved before XDG_CONFIG_HOME support lives in
+      // ~/.config; read it here, saves go to the new path at exit
+      if (legacy_nvram_path != nvram_path) {
+        loaded_setting = load_nvram_setting(legacy_nvram_path);
+        if (!loaded_setting.empty()) nvram_loaded_from = legacy_nvram_path;
+      }
+    }
+    if (!loaded_setting.empty()) {
+      emu.getHBIOS()->setNvramSetting(loaded_setting);
+      fprintf(stderr, "Loaded NVRAM setting '%s' from %s%s\n", loaded_setting.c_str(),
+              nvram_loaded_from.c_str(),
+              nvram_loaded_from != nvram_path ? " (migrates to the new path on exit)" : "");
+    }
+
+    // Configure NVRAM boot option if specified (overrides persisted settings)
+    if (!boot_string.empty()) {
+      emu.getHBIOS()->setNvramSetting(boot_string);
+      // Read it straight back: NVRAM normalises - "c" comes back as "C" and
+      // "2.0" as "2" - so the string to compare at exit is this one, not the
+      // one that was typed.
+      cli_boot_effective = emu.getHBIOS()->getNvramSetting();
+      fprintf(stderr, "Auto-boot: configured NVRAM for '%s'%s\n", boot_string.c_str(),
+              boot_from_cli ? " (this run only)" : "");
+    }
   }
 
   // Set romldr path if specified
@@ -1616,10 +1686,22 @@ int main(int argc, char** argv) {
     memory.write_trace_script(trace_file.c_str(), load_addr);
   }
 
-  // Save NVRAM if it was initialized (either by --boot, SYSCONF, or loaded from file)
+  // Save NVRAM if it was initialized (either by --boot, SYSCONF, or loaded from
+  // file).  A --boot given on the command line is NOT saved: it is an override
+  // for this run.  It used to be written back, which made every automated run
+  // that boots the emulator - a test, a script, a CI job - silently replace the
+  // developer's persisted boot target with whatever that run happened to pass.
+  // A setting the GUEST changed during the run is a different thing and is
+  // still saved, which is why this compares rather than just testing the flag:
+  // SYSCONF leaves NVRAM holding something other than what --boot put there.
+  // A --boot from the config file is left alone; that file IS a persisted
+  // choice, so writing it through is at worst redundant.
   if (emu.getHBIOS()->isNvramInitialized()) {
     std::string setting = emu.getHBIOS()->getNvramSetting();
-    if (save_nvram_setting(nvram_path, setting)) {
+    if (boot_from_cli && !boot_clear && setting == cli_boot_effective) {
+      fprintf(stderr, "--boot=%s applied to this run only; %s is unchanged\n",
+              boot_string.c_str(), nvram_path.c_str());
+    } else if (save_nvram_setting(nvram_path, setting)) {
       fprintf(stderr, "Saved NVRAM setting '%s' to %s\n", setting.c_str(), nvram_path.c_str());
     }
   }

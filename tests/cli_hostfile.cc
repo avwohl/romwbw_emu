@@ -77,6 +77,16 @@ static bool export_to(const char* path) {
   return emu_host_file_close_write();
 }
 
+// Where R8 would say the file came from - the string HBF_HOST_GETRNAME hands
+// back, sampled while the file is open, for the same reason as below.
+static std::string source_of(const char* path) {
+  if (!emu_host_file_open_read(path)) return "";
+  const char* name = emu_host_file_get_read_name();
+  std::string reported = name ? name : "";
+  emu_host_file_close_read();
+  return reported;
+}
+
 // Where W8 would say the file went - the string HBF_HOST_GETNAME hands back,
 // sampled while the file is open, because that is the only window in which it
 // means anything.
@@ -209,6 +219,48 @@ int main() {
   // separators, because the string comes off a guest command line that may have
   // been typed on any host, and it must never hand back something that would
   // escape the directory it is joined to.
+  // --- the read side: which file R8 is really reading ---------------------
+  //
+  // R8 printed the path the CCP shouted. That path opened the right file, but
+  // only because this backend retried it case-insensitively - so the string R8
+  // showed the user was one that does not name anything on a case-sensitive
+  // filesystem, and was relative whenever the user typed a bare name.
+  printf("\nemu_host_file_get_read_name, which R8 now prints\n");
+  printf("%s\n", std::string(64, '-').c_str());
+  {
+    std::string real = sub + "/source.txt";
+    FILE* f = fopen(real.c_str(), "wb");
+    if (f) { fputs("hello", f); fclose(f); }
+    check(exists(real), "a source file to read");
+
+    check(source_of(real.c_str()) == real,
+          "a path in the correct case is reported as itself");
+
+    std::string typed = root + "/MIXEDCASE/SOURCE.TXT";
+    std::string got = source_of(typed.c_str());
+    check(!got.empty(), "an uppercased path opens - it is retried case-insensitively");
+    if (sensitive) {
+      check(got == real,
+            "and is reported as the file that was really opened, not as the "
+            "path the CCP shouted");
+      check(got != typed, "which is a different string");
+    }
+
+    check(!got.empty() && got[0] == '/',
+          "the answer is absolute - a bare name says 'which file' only to "
+          "someone who knows the emulator's working directory, and the guest "
+          "cannot see that");
+  }
+  {
+    // Nothing open: the answer must be empty rather than the previous
+    // transfer's file. R8 falls back to printing what it asked for.
+    const char* name = emu_host_file_get_read_name();
+    check(name && !*name, "after the close there is no source to report");
+    emu_host_file_open_read((root + "/nosuchfile").c_str());
+    name = emu_host_file_get_read_name();
+    check(name && !*name, "and a failed open reports no source either");
+  }
+
   printf("\nemu_host_path_basename, for the front ends with no filesystem\n");
   printf("%s\n", std::string(64, '-').c_str());
   check(emu_host_path_basename("/home/me/out.txt") == "out.txt",
@@ -235,6 +287,91 @@ int main() {
         "three dots is a legal filename and is kept");
   check(emu_host_path_basename(".config") == ".config",
         "so is a leading-dot name");
+
+  // --- the length cap ------------------------------------------------------
+  //
+  // The result is a file name a browser or a sandboxed app is asked to create,
+  // and 255 bytes is the limit every filesystem in this family puts on one
+  // component. There was no cap at all, so a 5000-character last component
+  // became a 5000-character suggested download name: refused everywhere, and
+  // refused without saying why.
+  {
+    const std::string huge(5000, 'a');
+    const std::string got = emu_host_path_basename("/tmp/" + huge + ".txt");
+    check(got.size() == EMU_HOST_NAME_MAX,
+          "a 5000-character component is capped at 255 bytes");
+    check(got.size() >= 4 && got.compare(got.size() - 4, 4, ".txt") == 0,
+          "and keeps the EXTENSION, not the head - the cut name still opens in "
+          "the right application");
+    check(got.compare(0, 10, std::string(10, 'a')) == 0,
+          "the front of the stem is what fills the rest");
+  }
+  {
+    // Exactly at the cap and exactly one over it, so the boundary is pinned.
+    const std::string at(EMU_HOST_NAME_MAX, 'b');
+    check(emu_host_path_basename(at) == at,
+          "a name of exactly 255 bytes is untouched");
+    const std::string over(EMU_HOST_NAME_MAX + 1, 'b');
+    check(emu_host_path_basename(over).size() == EMU_HOST_NAME_MAX,
+          "and 256 bytes is cut to 255");
+  }
+  {
+    // No extension at all: there is nothing to preserve, so the front of the
+    // name is what survives.
+    const std::string got = emu_host_path_basename(std::string(400, 'c'));
+    check(got == std::string(EMU_HOST_NAME_MAX, 'c'),
+          "a long name with no dot is simply cut to length");
+  }
+  {
+    // A dot near the FRONT of a very long name is not an extension in any
+    // useful sense - keeping it would throw the whole name away - so the end
+    // is kept instead, which is where a name like this actually differs.
+    const std::string got = emu_host_path_basename("x." + std::string(400, 'd'));
+    check(got.size() == EMU_HOST_NAME_MAX,
+          "a name that is nearly all suffix is still capped");
+    check(got == std::string(EMU_HOST_NAME_MAX, 'd'),
+          "and keeps its END rather than a 255-byte 'extension' with no stem");
+  }
+  {
+    // A cut must not land inside a UTF-8 sequence. 'e' with an acute accent is
+    // two bytes; 127 of them is 254 bytes, so the 255th byte would be the lead
+    // byte of the next one.
+    const std::string acute = "\xc3\xa9";
+    std::string many;
+    for (int i = 0; i < 200; i++) many += acute;
+    const std::string cut = emu_host_path_basename(many);
+    check(cut.size() == 254,
+          "a cut backs off a UTF-8 lead byte rather than splitting it");
+    check(cut.size() % 2 == 0, "leaving whole characters only");
+  }
+  {
+    // The two axes crossed: a name that is nearly all suffix (so the END is
+    // what survives) AND multi-byte, so the 255-byte boundary lands inside a
+    // sequence. This returned 256 bytes - one OVER the documented cap - because
+    // the tail cut backed up off the continuation byte, and backing up on a cut
+    // that keeps the tail adds a byte instead of removing one.
+    const std::string acute = "\xc3\xa9";
+    std::string many = "x.";
+    for (int i = 0; i < 5000; i++) many += acute;
+    const std::string cut = emu_host_path_basename(many);
+    check(cut.size() <= EMU_HOST_NAME_MAX,
+          "a mostly-suffix UTF-8 name still obeys the 255-byte cap");
+    check(cut.size() == 254,
+          "and gives up a whole character rather than half of one");
+    check((unsigned char)cut[0] == 0xc3,
+          "the kept tail starts on a UTF-8 lead byte, not a continuation byte");
+  }
+  {
+    // A guest command line is 8-bit and need not be UTF-8 at all. A tail made
+    // only of continuation bytes has no character boundary to cut on, and
+    // skipping forward to find one runs off the end - which returned the EMPTY
+    // string, a name from a function whose job is to supply one.
+    std::string many = "x.";
+    for (int i = 0; i < 300; i++) many += (char)0x80;
+    const std::string cut = emu_host_path_basename(many);
+    check(cut.size() == EMU_HOST_NAME_MAX,
+          "an all-continuation-byte tail is cut to 255 bytes, not to nothing");
+  }
 
   printf("%s\n", std::string(64, '-').c_str());
   printf("%d passed, %d failed\n", checks - failures, failures);

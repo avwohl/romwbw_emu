@@ -116,13 +116,17 @@ See `docs/DISK_FORMATS.md` for details.
 
 ## File Transfer (R8/W8)
 
-The `R8` and `W8` CP/M utilities (sources: `src/r8.asm`, `src/w8.asm`) copy files between the host and CP/M. They talk to the emulator through HBIOS extension functions 0xE1-0xE8.
+The `R8` and `W8` CP/M utilities (sources: `src/r8.asm`, `src/w8.asm`) copy files between the host and CP/M. They talk to the emulator through HBIOS extension functions 0xE1-0xEA.
 
 **CLI:** `R8 <hostpath>` imports a host file into CP/M. The path is used as typed - relative paths resolve against the directory `romwbw_emu` was started from, and absolute paths work. CP/M's CCP uppercases the command line, so the emulator retries host paths case-insensitively (typing `R8 /home/me/file.txt` works even though CP/M delivers `/HOME/ME/FILE.TXT`). The CP/M-side name is the uppercased 8.3 basename.
 
 `W8 <cpmfile> [hostpath]` exports a CP/M file to the host. With no `hostpath` it lands in the emulator's working directory under the CP/M name, lowercased - what it always did. With one, it goes there instead. Both utilities take **the whole rest of the command line** as the path, so a directory whose name contains a space works: `W8 OUT.TXT /Users/me/My Documents/out.txt`. Trailing spaces are trimmed.
 
 Because the CCP uppercases the whole line, the emulator resolves the *directory* components case-insensitively and lowercases the final name. The typed case cannot be recovered - CP/M destroys it before the emulator sees it - so lowercase is a convention, not a guess at what you meant. That means **the path you type is not the path that gets written**, which is why `W8` does not echo it: it asks the emulator where the file actually went and prints that.
+
+`R8` does the same with the file it read. The two are usually the same file - it has to exist for the open to succeed - but not the same string, so `Reading:` names the file that was really opened, in the case it really has, as an absolute path. On a front end whose read is a file picker there is no answer to give and `R8` prints what you typed, as before.
+
+When either utility cannot open the host file it prints the message and then `  Asked for: <path>` on the next line. The path is labelled because it is the request: nothing was created, and it is in the case the CCP shouted rather than the case the emulator would have used.
 
 ```
 C>W8 MYFILE.TXT /home/me/out.txt
@@ -242,6 +246,12 @@ Settings configured via SYSCONF are saved automatically when the emulator exits.
 | `--boot=2` | Boot first hard disk (unit 2), slice 0 |
 | `--boot=2.3` | Boot unit 2 (first hard disk), slice 3 |
 | `--boot=H` | Show boot menu |
+| `--boot=none` | Forget the persisted boot target and show the menu (`off` is the same) |
+
+A `--boot` given on the command line applies to **that run only** and is not
+written back, so a script cannot change what you boot by default. A boot target
+the guest sets with `SYSCONF` during the run still is. `--boot=none` is the way
+to undo one.
 
 Boot unit numbers: 0 = RAM disk, 1 = ROM disk, 2 and up = hard disks in `--disk0`, `--disk1`, ... order. Press `D` at the boot menu to list them.
 
@@ -252,7 +262,8 @@ Boot unit numbers: 0 = RAM disk, 1 = ROM disk, 2 and up = hard disks in `--disk0
 
 Options:
   --romwbw=FILE     Enable RomWBW mode with ROM file
-  --boot=CMD        Auto-boot command (C, Z, 2, 2.3, H, etc.)
+  --boot=CMD        Auto-boot command (C, Z, 2, 2.3, H, etc.), this run only
+  --boot=none       Forget the persisted boot target ('off' is the same)
   --debug           Enable debug output
   --strict-io       Halt on unexpected I/O ports
 

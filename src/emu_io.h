@@ -392,6 +392,29 @@ size_t emu_host_file_get_write_size();
 // nullptr; callers must tolerate both.
 const char* emu_host_file_get_write_name();
 
+// Which file emu_host_file_read_byte() is actually reading, as a string fit to
+// show the person who typed the R8 command. The read twin of
+// emu_host_file_get_write_name() above, and the same contract: not an echo of
+// what was passed to emu_host_file_open_read(), but the effective source after
+// the backend has done whatever it does with a requested path.
+//
+// The difference is smaller here than on the write side - the file has to
+// exist for the open to have succeeded, so it is usually the same file under a
+// different spelling - but it is not nothing: the CLI retries a path the CCP
+// uppercased case-insensitively and answers with the absolute path it settled
+// on, and a front end that opens a file picker returns whatever the user
+// chose, which need not resemble the guest's string at all.
+//
+// Valid between a successful emu_host_file_open_read() and the matching
+// emu_host_file_close_read(). Outside that window the return value is "" or
+// nullptr; callers must tolerate both.
+//
+// NEW REQUIRED BACKEND FUNCTION: a port that syncs this core must define it or
+// fail to link. Returning "" is a correct answer for a backend that genuinely
+// cannot say - HBF_HOST_GETRNAME then reports "no answer" and R8 falls back to
+// printing what was asked for.
+const char* emu_host_file_get_read_name();
+
 // What this front end's host-file backend guarantees about a guest-supplied
 // path, as a bitmask. The core's HBF_HOST_CAPS (0xE9) hands the low byte to the
 // guest, and W8.COM refuses to send a host path to a backend that does not set
@@ -439,6 +462,16 @@ uint8_t emu_host_path_caps();
 // Never returns something that would escape the directory it is joined to: a
 // result of "", ".", ".." or a bare drive letter is replaced by `fallback`.
 // Trailing separators are ignored, so "a/b/" gives "b" rather than "".
+//
+// The result is at most EMU_HOST_NAME_MAX bytes. Every caller uses it as a
+// file name - a browser download, an entry in a sandboxed app's Exports folder
+// - and no filesystem in this family takes a longer component, so a 5000-
+// character last component was a name that could only be refused. What is kept
+// is the EXTENSION and the front of the stem, not the front of the whole
+// string: a name cut to "aaaa...aaa" with the ".txt" thrown away opens in
+// nothing, while "aaa....txt" still opens in the right application. A cut
+// never lands in the middle of a UTF-8 sequence.
+static const size_t EMU_HOST_NAME_MAX = 255;  // one component, every FS here
 std::string emu_host_path_basename(const std::string& path,
                                    const char* fallback = "download.bin");
 

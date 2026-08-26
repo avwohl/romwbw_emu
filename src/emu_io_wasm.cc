@@ -554,6 +554,24 @@ const char* emu_host_file_get_write_name() {
   return host_write_filename.c_str();
 }
 
+// The browser genuinely cannot say, so it says nothing, which is the documented
+// "" answer in emu_io.h: HBF_HOST_GETRNAME reports no answer and R8 prints the
+// path that was typed, exactly as it does today.
+//
+// Echoing the request would be worse here than anywhere else. A read in this
+// front end opens a FILE PICKER (js_host_file_request_read above) and the
+// guest's string is only a hint the user is free to ignore, so the file that
+// arrives routinely has nothing to do with what was typed - the one case where
+// printing the request is not merely uninformative but wrong.
+//
+// Answering properly needs the picked file's name to come back with its bytes,
+// which is a change to emu_host_file_provide_data() and to the page's picker
+// callback. Left undone deliberately: emcc is not a build dependency of this
+// repository, so nothing here can compile or run the result. See todo.txt.
+const char* emu_host_file_get_read_name() {
+  return "";
+}
+
 // Exported function for JavaScript to provide file data after picker
 extern "C" EMSCRIPTEN_KEEPALIVE
 void emu_host_file_load(const uint8_t* data, int size) {

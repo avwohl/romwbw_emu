@@ -156,12 +156,26 @@ start:
 
 	; Read loop
 read_loop:
-	; Read record from CP/M file
+	; Read record from CP/M file.
+	;
+	; A=0 is a record; A=1 is end of file; anything else is a real error.
+	; This used to treat every nonzero code as end of file, which is exact
+	; under CP/M 2.2 - 1 is the only code it returns - and wrong under the
+	; systems on the disks this ships with.  ZSDOS and CP/M 3 report a read
+	; failure with codes of their own (9, 10, 0FFh), and taking those for
+	; end of file made a failed export look like a complete one: W8 closed
+	; the host file and printed "Done: <n> bytes" for a file that stops
+	; wherever the disk stopped answering.  Silent truncation reported as
+	; success is the same defect the 1Ah handling below exists to undo.
 	ld	de,cpm_fcb
 	ld	c,F_READ
 	call	BDOS
 	or	a
-	jr	nz,read_done
+	jr	z,got_record
+	cp	1
+	jr	z,read_done
+	jp	cpm_read_error
+got_record:
 
 	; Copy the record to the host, deferring EOF characters - see the note
 	; on zpend below for why they are not simply written or simply dropped.
@@ -645,6 +659,17 @@ cpm_open_error:
 
 ; The host file was never created, so there is nothing to close - but say which
 ; path failed, because with no hostpath given it is one this program invented.
+;
+; Labelled "Asked for:", not printed bare after the message.  A bare path in the
+; same shape as the "To host:" line reads as a claim about a destination, and it
+; is not one: nothing was created, and the case differs from what "To host:"
+; would have said - the emulator lowercases the name it creates and resolves the
+; directory through whatever case really exists, and none of that has happened
+; here.  The label is what gives the difference a reason the user can see.  With
+; no hostpath given the string is one this program built from the FCB and is
+; already lowercase, so without a label the same failure printed two different
+; cases depending on which form of the command was used.  R8's failed open says
+; the same thing in the same words.
 host_open_error:
 	ld	de,cpm_fcb
 	ld	c,F_CLOSE
@@ -652,9 +677,33 @@ host_open_error:
 	ld	de,msg_host_err
 	ld	c,C_PRINT
 	call	BDOS
+	call	print_asked_for
+	rst	0
+
+; "  Asked for: <hostpath>" - what this program requested, whether or not it
+; can exist.
+print_asked_for:
+	ld	de,msg_asked
+	ld	c,C_PRINT
+	call	BDOS
 	ld	de,hostpath
 	call	print_string
 	ld	de,msg_crlf
+	ld	c,C_PRINT
+	jp	BDOS
+
+; A CP/M read failed part way through.  The host file is open and holds a
+; prefix of the export, so close it - the bytes already written are on the host
+; either way - and say plainly that it is short.  Do NOT print "Done", which is
+; what this used to do.
+cpm_read_error:
+	ld	b,H_CLOSE
+	ld	c,1
+	rst	8
+	ld	de,cpm_fcb
+	ld	c,F_CLOSE
+	call	BDOS
+	ld	de,msg_cpm_read
 	ld	c,C_PRINT
 	call	BDOS
 	rst	0
@@ -699,7 +748,11 @@ msg_bytes:
 msg_cpm_err:
 	db	'Error: Cannot open CP/M file',0Dh,0Ah,'$'
 msg_host_err:
-	db	'Error: Cannot create host file: $'
+	db	'Error: Cannot create host file',0Dh,0Ah,'$'
+msg_asked:
+	db	'  Asked for: $'
+msg_cpm_read:
+	db	'Error: CP/M read failed - the host file is short',0Dh,0Ah,'$'
 msg_host_write:
 	db	'Error: Host write failed',0Dh,0Ah,'$'
 msg_host_close:

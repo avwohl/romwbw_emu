@@ -227,6 +227,32 @@ This shouldn't happen anymore. If it does, check that:
 This is intentional. Command line options take precedence over saved settings.
 To use saved settings, omit the `--boot` option.
 
+It overrides for **that run only** and is not written back to `nvram`. It used
+to be saved at exit like any other NVRAM state, which meant any automated run
+that booted the emulator silently replaced whatever the developer had
+configured. A target the guest sets with `SYSCONF` during the run is a different
+thing and is still saved.
+
+### Getting Back to the Menu
+
+```bash
+./romwbw_emu --romwbw=roms/emu_avw.rom --boot=none
+```
+
+`--boot=none` (or `off`) removes the persisted setting and comes up at the boot
+menu. `--boot=H` shows the menu for one run without forgetting anything;
+`--boot=none` is what forgets it. Clearing the in-emulator NVRAM is not enough
+on its own - the setting lives in a file that outlives the run.
+
+It removes one file: the `nvram` under the config directory that run selected
+(`$XDG_CONFIG_HOME/romwbw_emu/nvram`, or `~/.config/romwbw_emu/nvram` when
+`XDG_CONFIG_HOME` is unset). A setting saved before `XDG_CONFIG_HOME` support
+lives in `~/.config` whatever `XDG_CONFIG_HOME` says; that file is still read as
+a migration fallback and is **not** removed, because a run with
+`XDG_CONFIG_HOME` pointed at a temp directory would then delete a real setting
+outside it. `--boot=none` names that file when it finds one - delete it by hand
+to clear it too.
+
 ## References
 
 - RomWBW Source: `Source/HBIOS/sysconf.asm` - SYSCONF utility

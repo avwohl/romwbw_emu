@@ -132,6 +132,9 @@ enum HBiosFunc {
   HBF_EXTSLICE  = 0xE0,  // Slice calculation
 
   // Host File Transfer - 0xE1-0xE8 (EMU custom extension)
+  // DE points at a NUL-terminated path in guest memory.  There is no length in
+  // the call, so the dispatcher has to stop somewhere: HOST_PATH_MAX below.
+  // Running off the end is a FAILED open, not a shorter path - see there.
   HBF_HOST_OPEN_R = 0xE1,  // Open host file for reading (DE=path addr)
   HBF_HOST_OPEN_W = 0xE2,  // Open host file for writing (DE=path addr)
   HBF_HOST_READ   = 0xE3,  // Read byte from host (returns E=byte, A=status)
@@ -159,6 +162,16 @@ enum HBiosFunc {
   // answers A = 0xFF from the unknown-function path, which is the answer W8
   // acts on.
   HBF_HOST_CAPS = 0xE9,    // Get host-file capability bits (E = HOST_CAP_*)
+  // The read twin of HBF_HOST_GETNAME, with the same C/DE calling convention
+  // and the same "A = 0xFF and the buffer is untouched" answer.  R8 printed the
+  // path the CCP shouted, which is not the file that was opened: the CLI
+  // retries a failed open case-insensitively and reports the result as an
+  // absolute path, and a browser or sandboxed port opens whatever the user
+  // picked, which need not resemble the string the guest sent at all.
+  //
+  // One consequence smaller than the write side - a read creates nothing the
+  // user then has to go and find - which is why it came later.
+  HBF_HOST_GETRNAME = 0xEA, // Get effective host read path (C=bufsize, DE=buf)
 
   // System Functions - 0xF0-0xFC
   HBF_SYS       = 0xF0,
@@ -179,6 +192,22 @@ enum HBiosFunc {
   // EMU custom extension (avoid conflict with standard codes)
   HBF_SYSBOOT   = 0xFE,  // EMU: Boot from device
 };
+
+// How far HBF_HOST_OPEN_R and HBF_HOST_OPEN_W will scan guest memory for the
+// NUL that ends the path they were handed.  The guest passes an address and no
+// length, so some limit is forced; what matters is what happens at it.  It used
+// to be "use the first 256 bytes and say nothing", which is the one answer
+// nobody can want: on a read that opens some other file, and on a write it
+// CREATES one, at a path the guest never asked for and cannot see afterwards -
+// HBF_HOST_GETNAME would report the truncation as if it were the destination.
+// Reaching the limit is now a failed open (A = 0xFF), which every caller
+// already handles, because a guest that cannot pass a path it can terminate
+// has not asked for anything the emulator can honour.
+//
+// Nothing shipped can reach it: R8 and W8 both build the path in a 128-byte
+// buffer and NUL-terminate inside it.  This is for the guest program that is
+// not one of those two.
+static constexpr int HOST_PATH_MAX = 256;
 
 // HBF_HOST_CAPS bits are defined in emu_io.h (EMU_HOST_CAP_SAFE_PATHS), because
 // the value is supplied by the backend function emu_host_path_caps() declared
@@ -686,6 +715,17 @@ private:
 
   // Helper: find ROM app by key
   int findRomApp(char key) const;
+
+  // Helper: fetch a NUL-terminated guest string for the host-file calls.
+  // False when no terminator appears within HOST_PATH_MAX bytes - see the note
+  // on that constant.
+  bool fetchGuestString(uint16_t addr, std::string* out) const;
+
+  // Helper: deliver a host path into a guest buffer of `bufsize` bytes
+  // (terminator included), shared by HBF_HOST_GETNAME and HBF_HOST_GETRNAME.
+  // False - and the buffer untouched - when there is nothing to report or no
+  // room for a character and a NUL.
+  bool storeHostName(const char* name, uint8_t bufsize, uint16_t buf_addr);
 
   // Helper: boot from disk or ROM app
   bool bootFromDevice(const char* cmd_str);

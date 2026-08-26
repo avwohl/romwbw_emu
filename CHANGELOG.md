@@ -15,6 +15,215 @@ symlinks into `src/`, `z80cpmw`'s vcxproj compiles it in place, and `cpmdroid`'s
 CMakeLists pulls it from a sibling checkout — so a commit here reaches all three
 on their next build, tag or no tag.
 
+## [Unreleased]
+
+Not tagged. `VERSION` still says `1.36`.
+
+**One build-contract change, so read this before syncing.** `emu_io.h` declares
+`emu_host_file_get_read_name()` and the core does not define it, exactly as it
+does not define `emu_host_path_caps()` — a port that takes these sources without
+adding it fails to *link*. `return "";` is a correct answer and costs nothing:
+`HBF_HOST_GETRNAME` then reports "no answer" and `R8` prints what was typed,
+which is what it printed before. See
+[docs/DOWNSTREAM_2026-08-26.md](docs/DOWNSTREAM_2026-08-26.md).
+
+The disk images in `disks/` changed: they carry the new `r8.com` and `w8.com`
+and nothing else. Both were rebuilt with `disks/rebuild_disk_utils.sh` from the
+committed images, so `cpmls` of each one lists exactly what its committed
+version lists — an earlier working copy of `hd1k_combo.img` had picked up two
+files from guest-side testing (`rd.$$$`, `source.txt`) and that is not in this
+diff. Everything else here is the CLI, the build and the web page.
+
+### Added
+
+- **`R8` says which file it actually opened** — new HBIOS extension function
+  `HBF_HOST_GETRNAME` (0xEA), the read mirror of `HBF_HOST_GETNAME` (0xE8) down
+  to the calling convention: `C` = buffer size at `DE`, `A` = 0 and the buffer
+  holds the effective source, `A` = 0xFF and the buffer is untouched. The
+  "Reading:" line printed the path the CCP shouted, and it moved below the open
+  for the same reason `W8`'s "To host:" did — before the open there is nothing
+  to ask about. Run on Linux against a directory called `MixedCase`,
+  `R8 <dir>/MIXEDCASE/SOURCE.TXT` now prints
+  `Reading: <dir>/MixedCase/source.txt` — the file the emulator really opened,
+  in the case it really has, absolute. That path is what the CLI backend
+  resolved on its case-insensitive retry; the old line echoed the shouted string
+  and named nothing on a case-sensitive filesystem. One consequence smaller than
+  the write side, which is why it came later: a read creates nothing the user
+  then has to find.
+
+  The browser deliberately answers nothing. Its read is a file *picker*, so the
+  guest's string is a hint the user is free to ignore, and echoing it would be
+  wrong rather than merely unhelpful; the picked file's real name never reaches
+  the core. `emu_io_wasm.cc` returns `""` and says so.
+
+  Both getters now share one bounded copy (`HBIOSDispatch::storeHostName`), so
+  the ".../tail" cut rule cannot drift between them.
+- **`--boot=none`** (and `off`, the spelling `--escape` already uses) — the only
+  way back to the boot menu once a target is persisted. Setting the in-core
+  NVRAM to "uninitialized" is not enough: the setting lives in a file that
+  outlives the run, so this removes it.
+
+  It removes exactly one file — the `nvram` under the config directory *this
+  run* selected — and it does **not** remove the pre-XDG file in `~/.config`.
+  That one is still *read* as a migration fallback, so a setting there does come
+  back on the next run; `--boot=none` names the file and says to remove it by
+  hand. The first attempt did delete it, guarded on the condition the loader
+  reads it on — the current path yielding nothing — and that guard was worthless,
+  because the current path yielding nothing is exactly the state the *first*
+  `--boot=none` leaves behind. So a second `--boot=none` under
+  `XDG_CONFIG_HOME=<temp dir>` reached outside that directory and deleted the
+  developer's real `~/.config/romwbw_emu/nvram`. That was found by running it,
+  on the real file, twice. The current build leaves it alone — three
+  `--boot=none` runs under a temp config home and `~/.config/romwbw_emu/nvram`
+  still holds what it held — and the second of those runs says `nothing to clear
+  at <path>` rather than claiming to have cleared a target it never found, which
+  is what the deletion made it say. Nothing here can tell a user who has
+  genuinely relocated their config from a script pointing `XDG_CONFIG_HOME` at a
+  temp directory, which is why it reports rather than guesses.
+- **`disks/diskdefs`** and both disk scripts running `cpmtools` from that
+  directory. Debian and Ubuntu's `cpmtools` 2.23 ships `wbw_hd1k` and nothing
+  per-slice, so on those machines `verify_disk_utils.sh` reported
+  `hd1k_combo.img r8.com is not on the image at all` for a file that is on it,
+  and `make -C src test` failed — which is the exact package
+  `.github/workflows/test.yml` installs. `cpmtools` reads `./diskdefs` **or** the
+  system file and never both, so the local one has to be complete rather than a
+  supplement. It holds `wbw_hd1k` and `wbw_hd1k_0` and stops there: slices 1-3
+  answer "cannot read superblock" on `hd1k_combo.img` in all four of cpmtools'
+  offset units, and an unverified diskdef would be precisely the silently-wrong
+  one those scripts exist to warn about.
+- **`make -C src qkz80-source`** — prints which of the four possible `qkz80`
+  the build would use, without building anything.
+- 31 more checks in `tests/hbios_hostname.cc` — 34 to 65 — covering `0xEA` and
+  the `0xE1`/`0xE2` bound, and 22 more in `tests/cli_hostfile.cc` — 31 to 53 —
+  covering the read name, the basename cap and the cap's two cut directions.
+
+### Fixed
+
+- **A `--boot` on the command line no longer rewrites the persisted boot
+  target.** It was saved at exit like any other NVRAM state, so *any* automated
+  run that booted the emulator — a test, a script, a CI job — silently replaced
+  whatever the developer had configured with whatever that run happened to pass.
+  It is an override for the run now. A setting the *guest* changed during the run
+  is a different thing and is still saved, which is why the exit path compares
+  rather than just testing a flag: `SYSCONF` leaves NVRAM holding something other
+  than what `--boot` put there. A `boot` key in the config file is unchanged and
+  still written through; that file is itself a persisted choice.
+- **`HBF_HOST_OPEN_R` and `HBF_HOST_OPEN_W` refuse a path the guest never
+  terminated** instead of using the first 256 bytes. Silently truncating turns a
+  guest bug into an emulator action: on a read it opens some other file, and on a
+  write it *creates* one, at a path nobody asked for and which
+  `HBF_HOST_GETNAME` would then report as the destination. Nothing shipped can
+  reach it — `R8` and `W8` both terminate inside 128 bytes — so this is for the
+  guest program that is not one of those two. 255 characters and a terminator is
+  the longest path that can be delivered.
+- **`emu_host_path_basename()` caps its answer at 255 bytes, keeping the
+  extension.** There was no cap, so a 5000-character last component became a
+  5000-character suggested download name: refused by every filesystem in this
+  family, and refused without saying why. What survives is the extension and the
+  front of the stem, because `aaaa…aaa` with the `.txt` thrown away opens in
+  nothing. A name that is nearly all suffix keeps its end instead, the same
+  choice `HBF_HOST_GETNAME` makes, and a cut never lands inside a UTF-8
+  sequence.
+
+  The two cuts move in opposite directions, which the first version of this got
+  wrong: a head-keeping cut backs *off* a UTF-8 continuation byte, and a
+  tail-keeping one has to skip *forward* past it. Backing up on the tail adds a
+  byte rather than removing one, so `x.` followed by 5000 e-acutes came back 256
+  bytes long — one over the cap the same change documents in `emu_io.h`. It
+  gives up a whole character now and returns 254. A guest command line need not
+  be UTF-8 at all, so a tail of nothing but continuation bytes has no boundary
+  to skip to; that one takes the last 255 bytes rather than running off the end
+  and answering with the empty string. `tests/cli_hostfile.cc` covers both; the
+  two cases already there each exercised one axis and neither exercised both.
+- **`W8` tells a CP/M read error from end of file.** It treated every nonzero
+  `F_READ` status as a clean EOF, which is exact under CP/M 2.2 — 1 is the only
+  code it returns — and wrong under ZSDOS and CP/M 3, which report a read failure
+  with codes of their own. A failed export looked like a complete one: the host
+  file closed and `Done: <n> bytes` printed for a file that stops wherever the
+  disk stopped answering. Silent truncation reported as success is the same
+  defect the `1Ah` handling exists to undo.
+- **`W8`'s and `R8`'s failed opens name the path under a label.** `W8` printed
+  it bare, in the same shape as the `To host:` success line, which reads as a
+  claim about a destination when nothing was created — and in a different case,
+  because `W8` lowercases a name it builds from the FCB and does not touch a path
+  the CCP shouted, so the same failure printed two different cases depending on
+  which form of the command was used. Both now print `Error: Cannot ...` and then
+  `  Asked for: <path>`, which is what it is. `R8`'s failed open printed no path
+  at all and now prints the same two lines.
+- **`src/makefile` says which `qkz80` it picked** when it falls through to
+  `/usr/local`. That branch is reached by a machine with no `pkg-config` entry
+  and no sibling `cpmemu`, it always succeeds, and what it links is a different
+  Z80 core from the one this tree is developed against — silently, until
+  something behaves oddly at run time. The sister path also resolves against
+  this makefile rather than against the current directory now; the two agree for
+  `make -C src` and for a root-level `make -f src/makefile`, so nothing has gone
+  wrong yet, but it should not depend on where make was invoked from.
+- **`disks/rebuild_disk_utils.sh` blames the permissions, not `cpmcp`.** `cpmrm`
+  exits 0 on an image it cannot write, having removed nothing, so the next thing
+  to speak was `cpmcp` with "file already exists" — a run that failed for a
+  permission problem while pointing at the copy step and the diskdef. It checks
+  the image is writable before touching it, and checks the directory rather than
+  `cpmrm`'s exit code afterwards. Its "nothing was written - none of these is
+  present" ending no longer fires when the images *were* present and every one of
+  them failed; that was a second wrong diagnosis on top of the first.
+- **The web page says when a disk it offered could not be fetched.** The failure
+  was written into the loading overlay and then hidden two lines later by
+  `hideLoading()`, and the emulator started anyway — a machine with no disk in
+  it, stopping at `Boot [H=Help]`, which reads as a broken emulator rather than
+  as a file that was not there. It is named in the terminal, where it stays, and
+  in the status line. Starting is still right: the ROM boots to its own menu and
+  a local image can be attached with the file picker.
+
+  Read rather than run: neither `node` nor `emcc` is on the machine this was
+  written on, so `tests/web_*.js` could not execute and the page was never
+  loaded in a browser. The change is additive — a `diskFailures` array pushed
+  from the two `catch` blocks already there, and a reporting block after the
+  banner — so nothing that used to run is diverted, but *nobody has seen this
+  render*. `todo.txt` says the same.
+
+  **Not** fixed, and left in `todo.txt` because it is a policy question: nothing
+  in `web/makefile` or in `release.yml`'s staging step copies a single `.img`,
+  so a stock deb still 404s on both defaults.
+- **Aux/printer redirection survives the `sim>` escape.** `emu_io_cleanup()`
+  fclosed the three files, and it is not only the exit path — `read_console_line()`
+  calls cleanup and then init around every `sim>` prompt to get a cooked terminal
+  back, and init reopens nothing. One press of the escape key would have ended
+  `LST:`/`PUN:`/`RDR:` redirection for the rest of the run, silently, since every
+  write there is best-effort. They close through `atexit` now. Nothing can reach
+  this today — the whole family still has no caller, see `todo.txt` — which is
+  exactly why it would have gone unnoticed on the day something did.
+
+### Changed
+
+- **The three CDN tags carry subresource integrity**, with `crossorigin`. The
+  concern is not that the CDN moves — `xterm@5.3.0` is an exact npm pin — but
+  injection: a jsdelivr compromise or a TLS intercept putting arbitrary JS into a
+  page that holds the user's disk images.
+
+  Two of the three URLs had to change first, and the reason is worth keeping.
+  They pointed at `lib/xterm.min.js` and `lib/xterm-addon-fit.min.js`, and
+  **those files do not exist in the npm packages.** `xterm@5.3.0` ships
+  `lib/xterm.js` already minified and no `.min.js` at all; jsdelivr synthesises
+  the name and serves the real file with its own banner on top — a banner whose
+  text is *"Do NOT use SRI with dynamically generated files"*. An integrity
+  attribute over a CDN-generated file is a page that goes blank the day the
+  generator changes. The tags now name `lib/xterm.js` and
+  `lib/xterm-addon-fit.js`, which are byte-identical to the registry tarballs
+  (checked against `registry.npmjs.org`, not only against the CDN), and the
+  `.min.js` form was 266 bytes *larger* — the same bytes plus that banner — so
+  nothing was given up. The offline half of the item is still open: an installed
+  deb has no terminal without internet, and vendoring is what closes that.
+- **`release.yml` pins emscripten** (`EMSDK_VERSION: 6.0.8`) instead of
+  installing `latest`, for the reason `CPMEMU_REF` beside it is pinned and
+  `test.yml` pins `UM80_VERSION`. It has already broken one release: `13d1c23`,
+  where `emcc` stopped implying the C++ driver at link time and the web build
+  failed on a commit that had not touched it. Nothing in this repository builds
+  the wasm — `emcc` is not a build dependency here — so CI is the only place that
+  failure can appear, which makes the pin worth more here than anywhere else.
+  6.0.8 is what `latest` resolves to as this is written, so the pin changes
+  nothing about what the next release builds with; it only stops the answer
+  moving on its own.
+
 ## [1.36] - 2026-08-25
 
 `VERSION` was bumped in `48f8c19` and tagged here. It follows `v1.35`.

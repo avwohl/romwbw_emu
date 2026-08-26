@@ -41,9 +41,11 @@
 
 static emu_host_file_state g_state = HOST_FILE_IDLE;
 static std::string g_write_name;
+static std::string g_read_name;
 
 emu_host_file_state emu_host_file_get_state() { return g_state; }
 const char* emu_host_file_get_write_name() { return g_write_name.c_str(); }
+const char* emu_host_file_get_read_name() { return g_read_name.c_str(); }
 // HBF_HOST_CAPS forwards this. The test drives HBF_HOST_GETNAME, not CAPS, so
 // the value is irrelevant here; a real backend returns EMU_HOST_CAP_SAFE_PATHS
 // only if it confines guest paths.
@@ -80,8 +82,23 @@ int emu_strncasecmp(const char* a, const char* b, size_t n) {
 
 bool emu_file_exists(const std::string&) { return false; }
 
-bool emu_host_file_open_read(const char*) { return false; }
-bool emu_host_file_open_write(const char*) { return false; }
+// Recorded rather than stubbed away: the HBF_HOST_OPEN_R/W tests below turn on
+// being able to tell "the dispatcher refused before the backend was reached"
+// from "the backend said no", and both used to look like A = 0xFF.
+static int g_open_read_calls = 0;
+static int g_open_write_calls = 0;
+static std::string g_last_open_path;
+
+bool emu_host_file_open_read(const char* p) {
+  g_open_read_calls++;
+  g_last_open_path = p ? p : "";
+  return true;
+}
+bool emu_host_file_open_write(const char* p) {
+  g_open_write_calls++;
+  g_last_open_path = p ? p : "";
+  return true;
+}
 int emu_host_file_read_byte() { return -1; }
 bool emu_host_file_write_byte(uint8_t) { return false; }
 void emu_host_file_close_read() {}
@@ -322,6 +339,190 @@ int main() {
     Rig r;
     r.call(0xEE, 0, 0);
     check(r.A() != 0, "an unimplemented code in the range does not look like a capability");
+  }
+
+  // --- HBF_HOST_OPEN_R / _W: a path the guest never terminated ------------
+  //
+  // The call carries an address and no length, so the dispatcher stops after
+  // HOST_PATH_MAX bytes.  It used to stop and USE what it had, which turns a
+  // guest bug into an emulator action: the read opens some other file, and the
+  // write CREATES one, at a path nobody asked for.  Neither shipped utility can
+  // get here - R8 and W8 both terminate inside 128 bytes - so what these check
+  // is the behaviour at the edge, for the guest program that is not one of
+  // those two.
+  printf("\n");
+  printf("HBF_HOST_OPEN_R / _W: an unterminated path is refused, not trimmed\n");
+  printf("------------------------------------------------------------\n");
+
+  // Fill guest memory from `at` with `n` non-zero bytes and NO terminator.
+  auto fill = [](Rig& r, uint16_t at, int n) {
+    for (int i = 0; i < n; i++) r.mem.store_mem((uint16_t)(at + i), 'x');
+  };
+
+  {
+    Rig r;
+    g_open_read_calls = g_open_write_calls = 0;
+    g_last_open_path.clear();
+    const std::string path = "/tmp/" + std::string(200, 'a') + ".dat";
+    for (size_t i = 0; i < path.size(); i++) r.mem.store_mem(BUF + (uint16_t)i, path[i]);
+    r.mem.store_mem(BUF + (uint16_t)path.size(), 0);
+    r.call(HBF_HOST_OPEN_R, 0, BUF);
+    check(r.A() == 0, "a long but terminated path still opens");
+    check(g_open_read_calls == 1 && g_last_open_path == path,
+          "and reaches the backend whole, all 209 characters of it");
+  }
+  {
+    // The exact boundary: HOST_PATH_MAX bytes scanned, the last of them the
+    // terminator.  255 characters is the longest path that can be delivered.
+    Rig r;
+    g_open_read_calls = 0;
+    fill(r, BUF, 255);
+    r.mem.store_mem(BUF + 255, 0);
+    r.call(HBF_HOST_OPEN_R, 0, BUF);
+    check(r.A() == 0, "255 characters and a terminator is the longest that fits");
+    check(g_last_open_path.size() == 255, "and arrives at that length");
+  }
+  {
+    // One byte further and there is no terminator inside the bound.
+    Rig r;
+    g_open_read_calls = 0;
+    g_last_open_path = "sentinel";
+    fill(r, BUF, 256);
+    r.mem.store_mem(BUF + 256, 0);
+    r.call(HBF_HOST_OPEN_R, 0, BUF);
+    check(r.A() != 0, "256 characters with the terminator just past the bound fails");
+    check(g_open_read_calls == 0,
+          "and the backend is never asked - no file is opened under a name the "
+          "guest did not write");
+    check(g_last_open_path == "sentinel", "so nothing was handed to it");
+  }
+  {
+    // The write side is the one that matters: a truncated write path does not
+    // open the wrong file, it creates one.
+    Rig r;
+    g_open_write_calls = 0;
+    g_last_open_path = "sentinel";
+    fill(r, BUF, 300);
+    r.call(HBF_HOST_OPEN_W, 0, BUF);
+    check(r.A() != 0, "an unterminated write path fails");
+    check(g_open_write_calls == 0, "and creates nothing");
+    check(g_last_open_path == "sentinel", "having passed nothing to the backend");
+  }
+  {
+    // An empty path - the terminator is the first byte - is a path the guest
+    // really did write, so it goes through and the backend decides.  This is
+    // not the truncation case and must not be swept up with it.
+    Rig r;
+    g_open_read_calls = 0;
+    r.mem.store_mem(BUF, 0);
+    r.call(HBF_HOST_OPEN_R, 0, BUF);
+    check(g_open_read_calls == 1 && g_last_open_path.empty(),
+          "an empty path is passed on, not refused - the backend answers it");
+  }
+
+  // --- HBF_HOST_GETRNAME: the read twin ------------------------------------
+  //
+  // R8 printed the path the CCP shouted rather than the file that was opened.
+  // The two are usually the same file, since it has to exist for the open to
+  // succeed - but not the same string, and on a front end whose read is a file
+  // PICKER they need not even be the same file. This is 0xE8's mirror, so what
+  // is worth checking is that it mirrors: same buffer bound, same "no answer"
+  // rule, and that the two do not answer for each other's side of the transfer.
+  printf("\n");
+  printf("HBF_HOST_GETRNAME: which file R8 is really reading\n");
+  printf("------------------------------------------------------------\n");
+  {
+    Rig r;
+    g_state = HOST_FILE_READING;
+    g_read_name = "/home/me/Notes/report.txt";
+    r.poison(BUF, 64);
+    r.call(HBF_HOST_GETRNAME, 64, BUF);
+    check(r.A() == 0, "a read file open reports success");
+    check(r.str(BUF) == g_read_name, "and the buffer holds the effective source");
+    check(r.at(BUF + (uint16_t)g_read_name.size()) == 0, "terminated in place");
+    check(r.at(BUF + (uint16_t)g_read_name.size() + 1) == 0xEE,
+          "and nothing beyond the terminator was touched");
+  }
+  {
+    Rig r;
+    g_state = HOST_FILE_IDLE;
+    g_read_name = "/home/me/stale.txt";   // a name from a previous transfer
+    r.poison(BUF, 64);
+    r.call(HBF_HOST_GETRNAME, 64, BUF);
+    check(r.A() != 0, "nothing open reports failure");
+    check(r.at(BUF) == 0xEE,
+          "and leaves the guest's buffer alone - it still holds what R8 asked "
+          "for, which is what R8 falls back to printing");
+  }
+  {
+    // The browser answers "" here on purpose: its read is a file picker, so the
+    // guest's string is a hint the user is free to ignore and echoing it would
+    // be wrong rather than merely unhelpful.
+    Rig r;
+    g_state = HOST_FILE_READING;
+    g_read_name = "";
+    r.poison(BUF, 64);
+    r.call(HBF_HOST_GETRNAME, 64, BUF);
+    check(r.A() != 0, "a backend with no answer reports failure, not \"\"");
+    check(r.at(BUF) == 0xEE, "and writes nothing");
+  }
+  {
+    // Same cut rule as 0xE8, and for the same reason: a head-truncated path can
+    // name a real directory or a different real file, and R8 prints this as
+    // fact.
+    Rig r;
+    g_state = HOST_FILE_READING;
+    g_read_name = "/aaaa/bbbb/cccc/in.txt";
+    r.poison(BUF, 64);
+    r.call(HBF_HOST_GETRNAME, 11, BUF);    // room for 10 characters and a NUL
+    check(r.A() == 0, "a short buffer still succeeds");
+    check(r.str(BUF) == ".../in.txt",
+          "keeping the END and marking the cut, exactly as 0xE8 does");
+    check(r.at(BUF + 11) == 0xEE, "the byte after the buffer is untouched");
+    r.poison(BUF, 64);
+    r.call(HBF_HOST_GETRNAME, 1, BUF);
+    check(r.A() != 0, "a one-byte buffer fails rather than storing a bare NUL");
+    check(r.at(BUF) == 0xEE, "and writes nothing");
+  }
+  {
+    // The two calls describe opposite ends of the transfer and must not answer
+    // for each other: a read in progress has no destination and a write in
+    // progress has no source.
+    Rig r;
+    g_state = HOST_FILE_READING;
+    g_read_name = "/in.txt";
+    g_write_name = "/out.txt";
+    r.poison(BUF, 32);
+    r.call(HBF_HOST_GETNAME, 32, BUF);
+    check(r.A() != 0, "0xE8 has no answer while a READ is what is open");
+    check(r.at(BUF) == 0xEE, "and writes nothing");
+    r.poison(BUF, 32);
+    r.call(HBF_HOST_GETRNAME, 32, BUF);
+    check(r.A() == 0 && r.str(BUF) == "/in.txt", "0xEA does");
+  }
+  {
+    Rig r;
+    g_state = HOST_FILE_WRITING;
+    g_read_name = "/in.txt";
+    g_write_name = "/out.txt";
+    r.poison(BUF, 32);
+    r.call(HBF_HOST_GETRNAME, 32, BUF);
+    check(r.A() != 0, "0xEA has no answer while a WRITE is what is open");
+    check(r.at(BUF) == 0xEE, "and writes nothing");
+    r.poison(BUF, 32);
+    r.call(HBF_HOST_GETNAME, 32, BUF);
+    check(r.A() == 0 && r.str(BUF) == "/out.txt", "0xE8 does");
+  }
+  {
+    // 0xEA is inside the widened extension range and reaches the handler, the
+    // same thing that had to be checked when 0xE8 was added.
+    Rig r;
+    g_state = HOST_FILE_READING;
+    g_read_name = "/y";
+    r.poison(BUF, 16);
+    r.call(HBF_HOST_GETRNAME, 16, BUF);
+    check(r.str(BUF) == "/y",
+          "0xEA is routed to the extension handler, not to unknown-function");
   }
 
   printf("------------------------------------------------------------\n");

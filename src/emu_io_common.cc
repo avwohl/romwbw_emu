@@ -282,6 +282,64 @@ void emu_get_time(emu_time* t) {
 // Host File Path Helpers
 //=============================================================================
 
+// Back a cut position off any UTF-8 continuation byte, so a truncated name is
+// still a valid byte sequence. Guest command lines are 8-bit and pass through
+// the CCP untouched, so a name arriving here can genuinely be UTF-8 typed on a
+// modern host; cutting mid-sequence produces a name that displays as a
+// replacement character in every file manager that will accept it at all.
+static size_t back_off_utf8(const std::string& s, size_t cut) {
+  while (cut > 0 && (unsigned char)s[cut] >= 0x80 && (unsigned char)s[cut] < 0xC0) {
+    cut--;
+  }
+  return cut;
+}
+
+// The same boundary from the other side: move a cut position FORWARD off a
+// continuation byte, for a cut that keeps the TAIL. Backing up is right only
+// when the cut keeps the head, where it shortens the answer; on a tail-keeping
+// cut it LENGTHENS it, and a cap that can return more than the cap is not one.
+// That is what it did: a mostly-suffix name whose 255-byte boundary landed
+// inside a two-byte sequence came back 256 bytes long.
+static size_t advance_off_utf8(const std::string& s, size_t cut) {
+  while (cut < s.size() && (unsigned char)s[cut] >= 0x80 && (unsigned char)s[cut] < 0xC0) {
+    cut++;
+  }
+  return cut;
+}
+
+// Cap one path component at EMU_HOST_NAME_MAX bytes, keeping the extension.
+// See the note on EMU_HOST_NAME_MAX in emu_io.h for why the extension is the
+// half worth keeping.
+static std::string emu_host_path_cap_name(const std::string& base) {
+  if (base.size() <= EMU_HOST_NAME_MAX) return base;
+
+  // The extension is the last dot and what follows, and only if there is a
+  // stem in front of it: ".bashrc" is a name, not an extension, and keeping
+  // "" + ".bashrc" out of a 5000-character name would throw the whole name
+  // away.
+  size_t dot = base.rfind('.');
+  std::string ext;
+  if (dot != std::string::npos && dot > 0) ext = base.substr(dot);
+
+  // No room for a stem beside it - a name that is nearly all "extension" -
+  // so there is no extension worth preserving. Keep the END, which is where
+  // whatever structure the name has runs out, and is the same choice
+  // HBF_HOST_GETNAME makes when it has to cut a path.
+  if (ext.size() >= EMU_HOST_NAME_MAX) {
+    size_t start = advance_off_utf8(base, base.size() - EMU_HOST_NAME_MAX);
+    // The whole window was continuation bytes, so there is no character
+    // boundary to cut on: the tail is not valid UTF-8 whatever is done to it.
+    // Take the last EMU_HOST_NAME_MAX bytes rather than the empty string,
+    // which is what skipping to the end would produce - a name a caller then
+    // has to invent, from a function whose whole job is to supply one.
+    if (start >= base.size()) start = base.size() - EMU_HOST_NAME_MAX;
+    return base.substr(start);
+  }
+
+  size_t keep = back_off_utf8(base, EMU_HOST_NAME_MAX - ext.size());
+  return base.substr(0, keep) + ext;
+}
+
 // Reduce a guest-supplied path to its last component, for a backend with no
 // filesystem to honour the directory part with. See emu_io.h for the contract.
 //
@@ -320,5 +378,6 @@ std::string emu_host_path_basename(const std::string& path,
   // What is left has to be a name that cannot escape the directory it will be
   // joined to. "." and ".." are the two that can.
   if (base.empty() || base == "." || base == "..") return fb;
-  return base;
+
+  return emu_host_path_cap_name(base);
 }

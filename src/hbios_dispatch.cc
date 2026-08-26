@@ -727,6 +727,62 @@ void HBIOSDispatch::doRet() {
   }
 }
 
+// Fetch a NUL-terminated string out of guest memory, refusing to guess.
+// Returns false when no terminator appears within HOST_PATH_MAX bytes; `out` is
+// then left holding what was scanned, for the diagnostic only - callers must
+// not use it as a path.  Guest memory is 64K and wraps, so the address
+// arithmetic is done in uint16_t deliberately: a path starting near 0xFFFF
+// reads on round the bottom of memory, which is what a Z80 doing the same
+// pointer arithmetic would see.
+bool HBIOSDispatch::fetchGuestString(uint16_t addr, std::string* out) const {
+  out->clear();
+  for (int i = 0; i < HOST_PATH_MAX; i++) {
+    uint8_t ch = memory->fetch_mem((uint16_t)(addr + i));
+    if (ch == 0) return true;
+    *out += (char)ch;
+  }
+  return false;
+}
+
+// Deliver a host path into a guest buffer whose size the guest chose.
+//
+// bufsize is one byte - it arrives in C - so at most 254 characters and a
+// terminator fit.  A destination longer than that is not rare: the CLI
+// prepends the whole working directory to every bare name, and a deep checkout
+// is easily 250 characters.  Clamping would hand the guest a path chopped
+// mid-component, which the utility then prints as fact - the exact failure
+// these two calls exist to remove.  So keep the END of the path, where the file
+// name is, and mark the cut with a leading "...", which reads as a fragment
+// rather than as a wrong path.
+//
+// Returns false, having written nothing, when there is nothing to report or no
+// room for even one character and a NUL.  The guest's buffer still holds the
+// path it asked for, which is what R8 and W8 fall back to printing.
+bool HBIOSDispatch::storeHostName(const char* name, uint8_t bufsize,
+                                  uint16_t buf_addr) {
+  if (!name || !*name || bufsize < 2) return false;
+
+  const size_t room = (size_t)bufsize - 1;      // >= 1: bufsize >= 2
+  size_t len = strlen(name);
+  const char* src = name;
+  std::string shortened;
+  if (len > room) {
+    static const char kCut[] = "...";
+    const size_t cut = sizeof(kCut) - 1;
+    // With no room for the marker plus a character of path, the marker alone
+    // would say nothing; take the tail and let it be short.
+    shortened = (room > cut) ? (std::string(kCut) + (name + (len - (room - cut))))
+                             : std::string(name + (len - room));
+    src = shortened.c_str();
+    len = room;
+  }
+  for (size_t i = 0; i < len; i++) {
+    memory->store_mem(buf_addr + (uint16_t)i, (uint8_t)src[i]);
+  }
+  memory->store_mem(buf_addr + (uint16_t)len, 0);
+  return true;
+}
+
 void HBIOSDispatch::writeConsoleString(const char* str) {
   // Use direct console output (same path as CIOOUT) for consistent display
   while (*str) {
@@ -2411,10 +2467,11 @@ void HBIOSDispatch::handleEXT() {
       // Output: A = 0 success, 0xFF failure
       uint16_t path_addr = cpu->regs.DE.get_pair16();
       std::string path;
-      for (int i = 0; i < 256; i++) {
-        uint8_t ch = memory->fetch_mem(path_addr + i);
-        if (ch == 0) break;
-        path += (char)ch;
+      if (!fetchGuestString(path_addr, &path)) {
+        emu_error("[HOST] Open for read refused: no terminator in the first %d "
+                  "bytes at 0x%04X\n", HOST_PATH_MAX, path_addr);
+        result = HBR_FAILED;
+        break;
       }
 
       if (emu_host_file_open_read(path.c_str())) {
@@ -2433,10 +2490,13 @@ void HBIOSDispatch::handleEXT() {
       // Output: A = 0 success, 0xFF failure
       uint16_t path_addr = cpu->regs.DE.get_pair16();
       std::string path;
-      for (int i = 0; i < 256; i++) {
-        uint8_t ch = memory->fetch_mem(path_addr + i);
-        if (ch == 0) break;
-        path += (char)ch;
+      if (!fetchGuestString(path_addr, &path)) {
+        // Refusing here matters more than on the read: a truncated write path
+        // does not open the wrong file, it creates one.
+        emu_error("[HOST] Open for write refused: no terminator in the first %d "
+                  "bytes at 0x%04X\n", HOST_PATH_MAX, path_addr);
+        result = HBR_FAILED;
+        break;
       }
 
       if (emu_host_file_open_write(path.c_str())) {
@@ -2538,45 +2598,37 @@ void HBIOSDispatch::handleEXT() {
       // really has, the browser reduces the whole path to a download name, and
       // a sandboxed app writes into its own Exports folder wherever the guest
       // pointed. Printing the typed path names a file that does not exist.
-      uint8_t bufsize = cpu->regs.BC.get_low();
-      uint16_t buf_addr = cpu->regs.DE.get_pair16();
       const char* name = (emu_host_file_get_state() == HOST_FILE_WRITING)
                              ? emu_host_file_get_write_name()
                              : nullptr;
-      if (!name || !*name || bufsize < 2) {
-        // Nothing to report, or no room for even one character and a NUL.
-        // Leave the guest's buffer alone: it still holds the path it asked
-        // for, which is what W8 falls back to printing.
+      if (!storeHostName(name, cpu->regs.BC.get_low(), cpu->regs.DE.get_pair16())) {
         result = HBR_FAILED;
         break;
       }
-      // C is one byte, so at most 254 characters and a terminator fit. A
-      // destination longer than that is not rare - absolutise() prepends the
-      // whole working directory to every bare name, and a deep checkout is
-      // easily 250 characters - and simply clamping would hand the guest a
-      // path chopped mid-component that W8 would then print as fact. That is
-      // the exact failure this call exists to remove, so keep the END of the
-      // path, where the file name is, and mark the cut with a leading "...".
-      // The result is then visibly a fragment rather than a wrong path.
-      const size_t room = (size_t)bufsize - 1;      // >= 1: bufsize >= 2
-      size_t len = strlen(name);
-      const char* src = name;
-      std::string shortened;
-      if (len > room) {
-        static const char kCut[] = "...";
-        const size_t cut = sizeof(kCut) - 1;
-        // With no room for the marker plus a character of path, the marker
-        // alone would say nothing; take the tail and let it be short.
-        shortened = (room > cut) ? (std::string(kCut) + (name + (len - (room - cut))))
-                                 : std::string(name + (len - room));
-        src = shortened.c_str();
-        len = room;
-      }
-      for (size_t i = 0; i < len; i++) {
-        memory->store_mem(buf_addr + (uint16_t)i, (uint8_t)src[i]);
-      }
-      memory->store_mem(buf_addr + (uint16_t)len, 0);
       if (debug_log) debug_log("[HOST] Effective write path: %s\n", name);
+      result = HBR_SUCCESS;
+      break;
+    }
+
+    case HBF_HOST_GETRNAME: {
+      // Which file the open read is actually reading.  Same convention as
+      // HBF_HOST_GETNAME above; see hbios_dispatch.h for why the two differ
+      // only in which side of the transfer they describe.
+      //
+      // R8 prints this instead of the path the user typed.  Unlike the write
+      // side the file has to exist for the open to have succeeded, so the two
+      // strings are usually close - but "close" is not "the same": the CLI
+      // retries a shouted path case-insensitively and answers with the
+      // absolute path it settled on, and a front end with a file picker opens
+      // whatever the user chose there.
+      const char* name = (emu_host_file_get_state() == HOST_FILE_READING)
+                             ? emu_host_file_get_read_name()
+                             : nullptr;
+      if (!storeHostName(name, cpu->regs.BC.get_low(), cpu->regs.DE.get_pair16())) {
+        result = HBR_FAILED;
+        break;
+      }
+      if (debug_log) debug_log("[HOST] Effective read path: %s\n", name);
       result = HBR_SUCCESS;
       break;
     }

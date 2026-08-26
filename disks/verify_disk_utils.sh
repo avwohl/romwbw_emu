@@ -46,7 +46,14 @@
 set -u
 
 SELF_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ROOT="${1:-$SELF_ROOT}"
+ROOT="$(cd "${1:-$SELF_ROOT}" && pwd)" || exit 1
+
+# Every cpmtools command runs from disks/, which carries its own diskdefs.
+# cpmtools reads ./diskdefs if there is one and the system file otherwise, and
+# not every distribution's system file has the combo slice definitions - Debian
+# and Ubuntu's cpmtools 2.23 has wbw_hd1k but not wbw_hd1k_0, on which this
+# check reported hd1k_combo.img as holding neither utility.  See disks/diskdefs.
+cpmtool() { ( cd "$ROOT/disks" && "$@" ); }
 
 fail=0
 skip=0
@@ -116,7 +123,7 @@ for util in $UTILS; do
         # and cpmls is reading a garbage directory.  The stale w8.com in
         # hd1k_infocom.img presented exactly this way, and with it as an info
         # line CI would have gone green over it.
-        if ! cpmls -f "$def" "$path" 2>/dev/null | grep -qi "^$util\.com$"; then
+        if ! cpmtool cpmls -f "$def" "$path" 2>/dev/null | grep -qi "^$util\.com$"; then
             bad "$(basename "$img") $util.com" "is not on the image at all"
             note "      Either it was removed - disks/rebuild_disk_utils.sh puts"
             note "      it back - or diskdef $def is wrong for this image, which"
@@ -124,7 +131,7 @@ for util in $UTILS; do
             continue
         fi
 
-        if ! cpmcp -f "$def" "$path" "0:$util.com" "$TMP/from_img.com" 2>/dev/null; then
+        if ! cpmtool cpmcp -f "$def" "$path" "0:$util.com" "$TMP/from_img.com" 2>/dev/null; then
             bad "$(basename "$img") $util.com" "could not be extracted (diskdef $def?)"
             continue
         fi

@@ -12,12 +12,51 @@ VERSION := $(strip $(shell cat $(THIS_DIR)../VERSION 2>/dev/null))
 # Use pkg-config to find qkz80 library, unless overridden in local.mk
 # Set QKZ80_CFLAGS and QKZ80_LIBS in local.mk if qkz80 is not installed system-wide
 # Fallback order: pkg-config -> sister directory (../../cpmemu/src) -> /usr/local
-SISTER_QKZ80 = $(realpath $(dir $(lastword $(MAKEFILE_LIST)))/../../cpmemu/src)
+# THIS_DIR, not $(dir $(lastword $(MAKEFILE_LIST))): by this point local.mk has
+# been included, so the lastword is local.mk, and make resolved that name
+# against the CURRENT directory.  The two agree for `make -C src` and for a
+# root-level `make -f src/makefile` (where ./local.mk does not exist and so is
+# not included at all), which is why nothing has gone wrong yet - but the path
+# should not depend on where make was invoked from.  THIS_DIR is captured above
+# the -include for exactly this reason.
+SISTER_QKZ80_PATH = $(THIS_DIR)../../cpmemu/src
+# realpath is empty when the directory does not exist, which is most of the
+# time on a machine that needs the warning below, so the tests and the message
+# use the unresolved path and only the compiler flags use the resolved one.
+SISTER_QKZ80 = $(realpath $(SISTER_QKZ80_PATH))
+
+# Which of the three the build is about to take.  Decided here, above the ?=
+# below, because this is the last point at which "the caller chose" can still
+# be told apart from "nobody did" - after the ?= they look identical.
+#
+# The last branch is the one worth interrupting for.  A machine with no
+# pkg-config entry and no sibling cpmemu checkout falls through to /usr/local
+# and links whatever Z80 core happens to be installed there, which need not be
+# the one this tree is developed against.  Nothing failed, nothing was printed,
+# and the difference shows up as odd behaviour at run time.  `make qkz80-source`
+# prints the answer in all four cases without building anything.
+ifeq ($(origin QKZ80_CFLAGS),undefined)
+  ifneq ($(shell pkg-config --exists qkz80 2>/dev/null && echo yes),)
+    QKZ80_SOURCE = pkg-config ($(shell pkg-config --variable=prefix qkz80 2>/dev/null))
+  else ifneq ($(wildcard $(SISTER_QKZ80_PATH)/qkz80.h),)
+    QKZ80_SOURCE = the sister checkout, $(SISTER_QKZ80)
+  else
+    QKZ80_SOURCE = /usr/local - LAST RESORT, nothing else was found
+    $(warning qkz80: no pkg-config entry, and no $(SISTER_QKZ80_PATH)/qkz80.h.)
+    $(warning qkz80: falling back to -I/usr/local/include/qkz80 -L/usr/local/lib.)
+    $(warning qkz80: that is whatever Z80 core is installed there - not)
+    $(warning qkz80: necessarily the one this tree is developed against.)
+    $(warning qkz80: set QKZ80_CFLAGS and QKZ80_LIBS in src/local.mk to choose.)
+  endif
+else
+  QKZ80_SOURCE = QKZ80_CFLAGS, set by the caller ($(origin QKZ80_CFLAGS))
+endif
+
 QKZ80_CFLAGS ?= $(shell pkg-config --cflags qkz80 2>/dev/null || \
-    ([ -f "$(SISTER_QKZ80)/qkz80.h" ] && echo "-I$(SISTER_QKZ80)") || \
+    ([ -f "$(SISTER_QKZ80_PATH)/qkz80.h" ] && echo "-I$(SISTER_QKZ80)") || \
     echo "-I/usr/local/include/qkz80")
 QKZ80_LIBS ?= $(shell pkg-config --libs qkz80 2>/dev/null || \
-    ([ -f "$(SISTER_QKZ80)/libqkz80.a" ] && echo "-L$(SISTER_QKZ80) -lqkz80") || \
+    ([ -f "$(SISTER_QKZ80_PATH)/libqkz80.a" ] && echo "-L$(SISTER_QKZ80) -lqkz80") || \
     echo "-L/usr/local/lib -lqkz80")
 
 CXXFLAGS = -std=c++11 -Wall -O2 -I. $(QKZ80_CFLAGS)
@@ -105,7 +144,15 @@ test_cli_hostfile: $(THIS_DIR)../tests/cli_hostfile.cc emu_io_cli.o emu_io_commo
 clean:
 	@rm -f romwbw_emu $(addprefix test_,$(TESTS)) *.o *.lst *.ihx *.com *.cdb *.rel *.map *~
 
-.PHONY: all test clean install uninstall
+# Which qkz80 this tree would build against, without building anything.  The
+# fallback chain above is three deep and only its last step says anything on
+# its own, so this is how to ask the other three.
+qkz80-source:
+	@echo "qkz80 comes from: $(QKZ80_SOURCE)"
+	@echo "  QKZ80_CFLAGS = $(QKZ80_CFLAGS)"
+	@echo "  QKZ80_LIBS   = $(QKZ80_LIBS)"
+
+.PHONY: all test clean install uninstall qkz80-source
 
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin

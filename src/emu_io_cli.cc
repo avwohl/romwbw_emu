@@ -195,8 +195,19 @@ void emu_io_init() {
 static void close_aux_files();
 
 void emu_io_cleanup() {
+  // Terminal state only.  This is NOT just the exit path: read_console_line()
+  // in romwbw_emu.cc calls cleanup and then init around every sim> prompt, to
+  // get a cooked terminal back for one line of input.  Anything closed here
+  // that init does not reopen is closed for the rest of the run.
+  //
+  // close_aux_files() used to be called from here, so one press of the escape
+  // key ended LST:, PUN: and RDR: redirection - silently, because every write
+  // on those paths is best-effort and a closed file just stops appearing.
+  // They are closed by atexit now; see register_aux_atexit().  Nothing can
+  // reach that today - nothing calls emu_printer_set_file() or its two
+  // siblings, see todo.txt - which is exactly why it would have gone
+  // unnoticed on the day something did.
   restore_terminal();
-  close_aux_files();
 }
 
 bool emu_console_has_input() {
@@ -453,6 +464,18 @@ static FILE* printer_file = nullptr;
 static FILE* aux_in_file = nullptr;
 static FILE* aux_out_file = nullptr;
 
+// Close the aux files once, at the end of the process, rather than at every
+// emu_io_cleanup() - see the note there.  atexit is the right hook: it fires
+// once, and every write on these paths fflushes already, so the abort() in
+// emu_fatal() (which skips atexit handlers) loses nothing.  Registered lazily,
+// so a run that never redirects anything registers nothing.
+static bool aux_atexit_registered = false;
+static void register_aux_atexit() {
+  if (aux_atexit_registered) return;
+  atexit(close_aux_files);
+  aux_atexit_registered = true;
+}
+
 void emu_printer_set_file(const char* path) {
   if (printer_file) {
     fclose(printer_file);
@@ -462,6 +485,8 @@ void emu_printer_set_file(const char* path) {
     printer_file = fopen(path, "w");
     if (!printer_file) {
       emu_error("Warning: Cannot open printer file '%s'\n", path);
+    } else {
+      register_aux_atexit();
     }
   }
 }
@@ -490,6 +515,8 @@ void emu_aux_set_input_file(const char* path) {
     aux_in_file = fopen(path, "r");
     if (!aux_in_file) {
       emu_error("Warning: Cannot open aux input file '%s'\n", path);
+    } else {
+      register_aux_atexit();
     }
   }
 }
@@ -503,6 +530,8 @@ void emu_aux_set_output_file(const char* path) {
     aux_out_file = fopen(path, "w");
     if (!aux_out_file) {
       emu_error("Warning: Cannot open aux output file '%s'\n", path);
+    } else {
+      register_aux_atexit();
     }
   }
 }
@@ -685,7 +714,16 @@ int emu_dsky_get_key() {
 static FILE* cli_host_read_file = nullptr;
 static FILE* cli_host_write_file = nullptr;
 static std::string cli_host_write_filename;
+// The file the open read is really reading, for emu_host_file_get_read_name().
+// Not the string the guest passed: the CCP shouted it, so the open below may
+// have succeeded only on the case-insensitive retry, and R8 has no way to know
+// which of the two spellings it got.
+static std::string cli_host_read_filename;
 static emu_host_file_state cli_host_state = HOST_FILE_IDLE;
+
+// Defined below, beside the write path it was written for; the read open needs
+// it as a fallback when realpath() cannot answer.
+static std::string absolutise(const std::string& path);
 
 // Resolve a path by matching each component case-insensitively against the
 // directory entries on disk. The CP/M CCP uppercases the command tail before
@@ -780,10 +818,12 @@ bool emu_host_file_open_read(const char* filename) {
     fclose(cli_host_read_file);
     cli_host_read_file = nullptr;
   }
+  cli_host_read_filename.clear();
   if (is_directory(filename)) {
     cli_host_state = HOST_FILE_IDLE;
     return false;
   }
+  std::string opened = filename ? filename : "";
   cli_host_read_file = fopen(filename, "rb");
   if (!cli_host_read_file) {
     // The guest's CCP uppercased the path; retry case-insensitively
@@ -792,10 +832,24 @@ bool emu_host_file_open_read(const char* filename) {
       cli_host_read_file = fopen(alt.c_str(), "rb");
       if (cli_host_read_file) {
         emu_log("[HOST] Resolved '%s' as '%s'\n", filename, alt.c_str());
+        opened = alt;
       }
     }
   }
   if (cli_host_read_file) {
+    // Absolute, for the same reason the write side is: "notes.txt" answers
+    // "which file" only for someone who also knows the emulator's working
+    // directory, and the guest cannot see that. realpath() rather than
+    // absolutise(): this file exists, so the whole path can be canonicalised
+    // and not just the parent. A failure leaves the resolved-but-relative
+    // answer, which is still better than the shouted one.
+    char* real = realpath(opened.c_str(), nullptr);
+    if (real) {
+      cli_host_read_filename = real;
+      free(real);
+    } else {
+      cli_host_read_filename = absolutise(opened);
+    }
     cli_host_state = HOST_FILE_READING;
     return true;
   }
@@ -901,6 +955,9 @@ void emu_host_file_close_read() {
     fclose(cli_host_read_file);
     cli_host_read_file = nullptr;
   }
+  // Same reason the write side clears its name on close: nothing is open, so
+  // there is no source to report and a stale one would be worse than none.
+  cli_host_read_filename.clear();
   cli_host_state = HOST_FILE_IDLE;
 }
 
@@ -936,4 +993,9 @@ size_t emu_host_file_get_write_size() {
 const char* emu_host_file_get_write_name() {
   if (cli_host_state != HOST_FILE_WRITING) return "";
   return cli_host_write_filename.c_str();
+}
+
+const char* emu_host_file_get_read_name() {
+  if (cli_host_state != HOST_FILE_READING) return "";
+  return cli_host_read_filename.c_str();
 }

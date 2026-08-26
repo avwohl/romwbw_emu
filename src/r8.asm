@@ -6,6 +6,19 @@
 ;   in its name works - /Users/me/My Documents on a Mac, C:\Program Files on
 ;   Windows.  Trailing spaces are trimmed.
 ;
+;   The "Reading:" line names the file the emulator actually opened, not the
+;   path that was typed, and it is printed after the open for that reason.  The
+;   two are usually the same file - it has to exist for the open to succeed -
+;   but not the same string: the CCP uppercases the command line, so the
+;   emulator resolves it case-insensitively and answers with the absolute path
+;   it settled on, and a front end that opens a file picker returns whatever
+;   the user chose there.  W8 has asked the same question about its destination
+;   since H_GETNAME; H_GETRNAME is the read twin.
+;
+;   An emulator built before H_GETRNAME existed answers "no such function", and
+;   so does one whose front end cannot say; R8 then prints the requested path,
+;   which is what it always printed.
+;
 ; Uses HBIOS extension functions for host file access
 ;
 ; Build:  um80 -o r8.rel r8.asm && ul80 -o r8.com r8.rel
@@ -37,6 +50,15 @@ F_DMA	equ	26
 H_OPEN_R equ	0E1h	; Open host file for reading (DE=path)
 H_READ	equ	0E3h	; Read byte (returns E=byte, A=status)
 H_CLOSE	equ	0E5h	; Close file (C=0 read, C=1 write)
+H_GETRNAME equ	0EAh	; Which file the open read is really reading (C=bufsize,
+			; DE=buffer).  A=0 and the buffer holds a string; A<>0
+			; on an emulator that does not implement it.  The read
+			; twin of W8's H_GETNAME.
+HRSIZE	equ	255	; size of hostreal, the buffer H_GETRNAME fills.  One
+			; symbol for the ds and for the C the call is given: two
+			; separate literals could drift apart, and the emulator
+			; writes exactly as many bytes as C says - straight into
+			; cpm_fcb and the DMA buffer behind it if C were larger.
 
 start:
 	; Print banner
@@ -99,16 +121,6 @@ path_done:
 	or	a
 	jp	z,no_args
 
-	; Display host path
-	ld	de,msg_reading
-	ld	c,C_PRINT
-	call	BDOS
-	ld	de,hostpath
-	call	print_string
-	ld	de,msg_crlf
-	ld	c,C_PRINT
-	call	BDOS
-
 	; Extract filename from path and convert to FCB
 	call	path_to_fcb
 
@@ -120,14 +132,23 @@ path_done:
 	cp	' '
 	jp	z,no_name_error
 
-	; Open host file for reading.  This comes BEFORE the "Creating:" line:
-	; announcing a CP/M file and then failing to open the host one told the
-	; user about a file that was never made.
+	; Open host file for reading.  This comes BEFORE both the "Reading:" and
+	; the "Creating:" lines: announcing files and then failing to open the
+	; host one told the user about a transfer that never started.
 	ld	de,hostpath
 	ld	b,H_OPEN_R
 	rst	8
 	or	a
 	jp	nz,host_open_error
+
+	; Now that it is open, say which file it actually is.  Not the path that
+	; was typed: the CCP shouted it, so the emulator may have opened it only
+	; on a case-insensitive retry and will answer with the absolute path it
+	; settled on - and a front end with a file picker opens whatever the user
+	; chose there, which need not resemble the typed string at all.  W8 has
+	; asked this question about its destination since H_GETNAME; this is the
+	; same question about the source.
+	call	print_source
 
 	; Display CP/M filename
 	ld	de,msg_creating
@@ -290,6 +311,32 @@ close_files:
 	call	BDOS
 
 	rst	0
+
+; Print which host file is actually being read.
+;
+; H_GETRNAME answers with the source after the emulator has done whatever its
+; platform does to the requested path.  A failure is not an error: an emulator
+; that predates the call returns "no such function", and so does one whose front
+; end cannot say (the browser, where the file came from a picker) - the
+; requested path is then the best answer available, which is what this printed
+; unconditionally before.
+print_source:
+	ld	de,msg_reading
+	ld	c,C_PRINT
+	call	BDOS
+	ld	c,HRSIZE	; buffer size including the terminator
+	ld	de,hostreal
+	ld	b,H_GETRNAME
+	rst	8
+	or	a
+	ld	de,hostreal
+	jr	z,ps_show
+	ld	de,hostpath	; older emulator, or one with no answer
+ps_show:
+	call	print_string
+	ld	de,msg_crlf
+	ld	c,C_PRINT
+	jp	BDOS
 
 ; Extract filename from host path and convert to FCB format
 ; Finds text after last / or \, converts to uppercase 8.3
@@ -632,11 +679,30 @@ no_args:
 	call	BDOS
 	rst	0
 
+; Nothing was opened, so there is no source to name - but say which path was
+; asked for.  It is the request rather than a claim about what exists, and it is
+; labelled as such: "Asked for:" is deliberately not the "Reading:" the success
+; path prints, because the two are different kinds of statement and the emulator
+; puts the case back into one of them and not the other.  W8's failed open says
+; the same thing in the same words.
 host_open_error:
 	ld	de,msg_host_err
 	ld	c,C_PRINT
 	call	BDOS
+	call	print_asked_for
 	rst	0
+
+; "  Asked for: <hostpath>" - what this program requested, whether or not it
+; exists.  Shared by every failure that has a path to name.
+print_asked_for:
+	ld	de,msg_asked
+	ld	c,C_PRINT
+	call	BDOS
+	ld	de,hostpath
+	call	print_string
+	ld	de,msg_crlf
+	ld	c,C_PRINT
+	jp	BDOS
 
 cpm_create_error:
 	ld	b,H_CLOSE
@@ -676,6 +742,7 @@ no_name_error:
 	ld	de,msg_no_name
 	ld	c,C_PRINT
 	call	BDOS
+	call	print_asked_for
 	rst	0
 
 ; Messages
@@ -695,6 +762,8 @@ msg_bytes:
 	db	' bytes',0Dh,0Ah,'$'
 msg_host_err:
 	db	'Error: Cannot open host file',0Dh,0Ah,'$'
+msg_asked:
+	db	'  Asked for: $'
 msg_cpm_err:
 	db	'Error: Cannot create CP/M file',0Dh,0Ah,'$'
 msg_write_err:
@@ -709,6 +778,11 @@ msg_mangled:
 ; Data areas
 hostpath:
 	ds	128
+hostreal:
+	ds	HRSIZE		; what H_GETRNAME answers with.  Bigger than
+			; hostpath on purpose, exactly as in W8: the effective
+			; path is routinely longer than the request, because a
+			; bare name comes back absolute.
 cpm_fcb:
 	ds	36
 dma_buffer:

@@ -92,10 +92,16 @@ disabled is written back as `"escape": "none"` and stays disabled.
 
 ## boot vs NVRAM
 
-A config `boot` behaves exactly like `--boot`: it overrides the persisted
-NVRAM setting on every run. Omit `boot` from the file to let NVRAM (the `W`
-boot-menu option / SYSCONF) win. File booleans (`debug`, `strictIo`) can only
-be turned off by editing the file, since the CLI flags can only turn them on.
+A config `boot` overrides the persisted NVRAM setting on every run. Omit
+`boot` from the file to let NVRAM (the `W` boot-menu option / SYSCONF) win.
+
+It does **not** behave exactly like `--boot` in one respect: a `--boot` on the
+command line is not written back to the `nvram` file, and a config `boot` is.
+That is deliberate - this file is itself a persisted choice, so writing it
+through is at worst redundant, while a command line is by nature one-off.
+
+File booleans (`debug`, `strictIo`) can only be turned off by editing the file,
+since the CLI flags can only turn them on.
 
 ## Errors
 

@@ -3,7 +3,15 @@
 This document explains how to integrate the RomWBW emulator core into downstream projects (iOS, macOS, Windows, etc.).
 
 Dated migration notices for specific core releases live in docs/ - most
-recently [docs/DOWNSTREAM_2026-08-25.md](docs/DOWNSTREAM_2026-08-25.md), the
+recently [docs/DOWNSTREAM_2026-08-26.md](docs/DOWNSTREAM_2026-08-26.md), the
+R8 read-name sync. **It changes the build contract the same way the one before
+it did: the core declares `emu_host_file_get_read_name()` and does not define
+it, so every port that compiles this core must add it or fail to link** -
+`return "";` is a correct and complete answer, and that notice also covers
+`HBF_HOST_GETRNAME` (0xEA), a refused-rather-than-truncated host path, a length
+cap on `emu_host_path_basename()`, and new `r8.com`/`w8.com` in the disk images.
+Before it,
+[docs/DOWNSTREAM_2026-08-25.md](docs/DOWNSTREAM_2026-08-25.md) is the
 W8 host-path sync. **It changes the build contract: the core no longer defines
 `emu_host_path_caps()`, so every port that compiles this core must add it or
 fail to link** - that link error is the deliberate signal to read that notice,
@@ -876,3 +884,7 @@ Ctrl+Space, so binding it moves the theft rather than ending it.
 - [ ] v1.36: Make `emu_host_file_get_write_name()` return the *effective* destination, not an echo of the requested name - W8 prints it to the user now (`HBF_HOST_GETNAME`). Return `""`/`nullptr` outside an open write, and after a failed open
 - [ ] v1.36: If your backend cannot honour a directory (browser, sandboxed app), reduce the requested path with the shared `emu_host_path_basename()` rather than your own split - it takes both separators and refuses `.`/`..`
 - [ ] v1.36: Refresh any bundled `hd1k_*` images: `r8.com` and `w8.com` both changed (W8 no longer truncates binaries at the first `^Z`). `disks/rebuild_disk_utils.sh` builds and installs; `disks/verify_disk_utils.sh` checks
+- [ ] post-1.36: Define `emu_host_file_get_read_name()` or fail to link. `return "";` is a correct answer - R8 then prints what it was asked for, as before. Answer properly only if your backend resolves, redirects or sandboxes a read path; a backend whose read is a file picker should return `""`, as the browser does. See [docs/DOWNSTREAM_2026-08-26.md](docs/DOWNSTREAM_2026-08-26.md)
+- [ ] post-1.36: Refresh bundled images again - `r8.com` and `w8.com` changed once more (R8 names the file it opened; W8 tells a CP/M read error from end of file, which matters on ZSDOS and CP/M 3 and not on CP/M 2.2)
+- [ ] post-1.36: If you scrape R8/W8 output, a failed open is two lines now: the message, then `  Asked for: <path>`
+- [ ] post-1.36: If your `emu_io_cleanup()` closes state that has to survive a mode switch (the CLI's did - printer/aux redirection), move it to process exit

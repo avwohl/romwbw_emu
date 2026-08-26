@@ -3,7 +3,9 @@
 <head>
   <meta charset="utf-8">
   <title>RomWBW Emulator</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css"
+        integrity="sha384-LJcOxlx9IMbNXDqJ2axpfEQKkAYbFjJfhXexLfiRJhjDU81mzgkiQq8rkV0j6dVh"
+        crossorigin="anonymous">
   <style>
     body {
       background: #1a1a2e;
@@ -322,8 +324,12 @@
     <p>Use the slice dropdown to override (e.g., set disk 0 to 6 slices for boot 2.4).</p>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"
+          integrity="sha384-/nfmYPUzWMS6v2atn8hbljz7NE0EI1iGx34lJaNzyVjWGDzMv+ciUZUeJpKA3Glc"
+          crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"
+          integrity="sha384-AQLWHRKAgdTxkolJcLOELg4E9rE89CPE2xMy3tIRFn08NcGKPTsELdvKomqji+DL"
+          crossorigin="anonymous"></script>
   <script>
     // Must define Module.onLog BEFORE romwbw.js loads to suppress debug output
     var Module = Module || {};
@@ -1103,6 +1109,16 @@
         if (!needDisk1) updateLoadingProgress('load-disk1', 100, disk1WantNone ? 'none' : 'cached');
       }
 
+      // A disk the page offered and could not fetch has to be SAID, not just
+      // flashed past.  The selects below are a hardcoded list fetched by bare
+      // relative filename, and nothing in web/makefile or in release.yml's
+      // staging step copies a single .img - so an installed deb serves the
+      // page, the wasm and the ROMs, and 404s on both default disks.  The
+      // failure was already caught, written into the loading overlay, and then
+      // hidden two lines later by hideLoading(); the emulator started anyway
+      // and the user got a machine with no disk in it and no reason given.
+      const diskFailures = [];
+
       try {
         // Auto-load the selected ROM if none loaded (a selection restored
         // from localStorage has not been fetched yet - honor it rather than
@@ -1130,6 +1146,7 @@
             loadDiskData(0, data, disk0Selection, true);  // isManifest = true
           } catch (err) {
             updateLoadingProgress('load-disk0', 100, 'failed: ' + err.message);
+            diskFailures.push('Disk 0: ' + disk0Selection + ' - ' + err.message);
           }
         }
 
@@ -1140,6 +1157,7 @@
             loadDiskData(1, data, disk1Selection, true);  // isManifest = true
           } catch (err) {
             updateLoadingProgress('load-disk1', 100, 'failed: ' + err.message);
+            diskFailures.push('Disk 1: ' + disk1Selection + ' - ' + err.message);
           }
         }
       } catch (err) {
@@ -1153,6 +1171,25 @@
       term.clear();
       term.writeln('RomWBW Emulator v' + EMU_VERSION);
       term.writeln('');
+
+      // Say what is missing, in the terminal, where it stays.  Starting is
+      // still the right thing to do - the ROM boots to its own menu with no
+      // disk and a user with a local image can attach one with the file
+      // picker - but starting SILENTLY is not: a boot that stops at "Boot
+      // [H=Help]" looks like the emulator is broken rather than like a file
+      // that was not there to fetch.
+      if (diskFailures.length) {
+        term.writeln('A disk this page offered could not be fetched:');
+        for (let i = 0; i < diskFailures.length; i++) {
+          term.writeln('  ' + diskFailures[i]);
+        }
+        term.writeln('Starting without it.  Use the file picker beside the');
+        term.writeln('selection to attach an image from this computer.');
+        term.writeln('');
+        statusDiv.textContent = 'Started, but ' + diskFailures.length +
+            ' selected disk' + (diskFailures.length > 1 ? 's' : '') +
+            ' could not be fetched - see the terminal';
+      }
 
       // No slice-count push here any more.  The two <select>s that fed it were
       // read into Module._romwbw_set_disk_slices, which does not exist:

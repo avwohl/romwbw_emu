@@ -38,11 +38,28 @@ jobs:
           sudo gem install fpm
           # Install um80 assembler for 8080/Z80
           pip install um80
-          # Install emscripten for WebAssembly build
+          # Install emscripten for WebAssembly build.
+          #
+          # Pinned, for the reason CPMEMU_REF below is pinned and test.yml pins
+          # UM80_VERSION: `install latest` makes every release depend on
+          # whatever emscripten shipped that morning, and it has already broken
+          # one. 13d1c23: emcc stopped implying the C++ driver at link time, so
+          # web/makefile's link came out with operator new undefined and the
+          # web build failed on a commit that had not touched it. Nothing in
+          # this repository builds the wasm - emcc is not a build dependency
+          # here - so CI is the only place that failure can appear, which makes
+          # the pin worth more here than anywhere else.
+          #
+          # 6.0.8 is what `latest` resolves to as this is written, so the pin
+          # changes nothing about what the next release builds with; it only
+          # stops the answer moving on its own. Bump it deliberately, and
+          # expect to rebuild the web page when you do.
           git clone https://github.com/emscripten-core/emsdk.git
           cd emsdk
-          ./emsdk install latest
-          ./emsdk activate latest
+          ./emsdk install ${EMSDK_VERSION}
+          ./emsdk activate ${EMSDK_VERSION}
+        env:
+          EMSDK_VERSION: 6.0.8
 
       - name: Build qkz80 library
         run: |

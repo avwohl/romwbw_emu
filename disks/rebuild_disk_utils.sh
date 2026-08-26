@@ -25,7 +25,14 @@
 set -u
 
 SELF_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ROOT="${1:-$SELF_ROOT}"
+ROOT="$(cd "${1:-$SELF_ROOT}" && pwd)" || exit 1
+
+# cpmtools reads ./diskdefs if there is one and the system file otherwise - one
+# or the other - and not every distribution's system file carries the combo
+# slice definitions (Debian and Ubuntu's cpmtools 2.23 does not).  disks/
+# carries its own, so run every cpmtools command from there.  Image paths below
+# are absolute, so the working directory is free to be used for this.
+cpmtool() { ( cd "$ROOT/disks" && "$@" ); }
 
 # image:diskdef.  hd1k_combo.img has a 1 MB MBR prefix and its slice 0 is
 # wbw_hd1k_0; the plain 8 MB hd1k_infocom.img is wbw_hd1k.  A wrong diskdef does
@@ -96,6 +103,14 @@ for entry in $IMAGES; do
         echo "skip  $img (not present)"
         continue
     fi
+    if [ ! -w "$path" ]; then
+        echo "FAIL  $img is not writable by this user - nothing to do but say so." >&2
+        echo "      (cpmrm exits 0 without removing anything on a read-only image," >&2
+        echo "       so without this check the run fails later and blames cpmcp.)" >&2
+        ls -l "$path" >&2
+        fail=$((fail + 1))
+        continue
+    fi
     if ! size_matches_def "$path" "$def"; then
         echo "FAIL  $img is $(wc -c < "$path" | tr -d ' ') bytes, which is not the" >&2
         echo "      shape diskdef $def describes - refusing to write into it." >&2
@@ -109,14 +124,34 @@ for entry in $IMAGES; do
         # cpmcp refuses to overwrite, so an existing copy has to go first.  A
         # missing one is not an error: an image may simply not have carried this
         # utility before.
-        if cpmls -f "$def" "$path" 2>/dev/null | grep -qi "^$util\.com$"; then
-            if ! cpmrm -f "$def" "$path" "0:$util.com" 2>/dev/null; then
+        if cpmtool cpmls -f "$def" "$path" 2>/dev/null | grep -qi "^$util\.com$"; then
+            if ! cpmtool cpmrm -f "$def" "$path" "0:$util.com" 2>/dev/null; then
                 echo "FAIL  $img: could not remove the old $util.com" >&2
                 fail=$((fail + 1))
                 continue
             fi
+            # cpmrm's exit status is not enough.  On an image the process
+            # cannot write it removes nothing and still exits 0, and the next
+            # thing to speak is cpmcp with "file already exists" - so the run
+            # failed while blaming the copy step, or the diskdef, for a
+            # permission problem.  Ask the directory instead of the exit code.
+            if cpmtool cpmls -f "$def" "$path" 2>/dev/null | grep -qi "^$util\.com$"; then
+                echo "FAIL  $img: $util.com is still on the image after cpmrm" >&2
+                echo "      cpmrm exited 0 and removed nothing.  It does that when it" >&2
+                echo "      cannot write the image at all:" >&2
+                if [ ! -w "$path" ]; then
+                    echo "      $img is not writable by this user." >&2
+                    ls -l "$path" >&2
+                else
+                    echo "      the image IS writable, so this is something else -" >&2
+                    echo "      a full filesystem, or a diskdef that does not describe" >&2
+                    echo "      this image." >&2
+                fi
+                fail=$((fail + 1))
+                continue
+            fi
         fi
-        if cpmcp -f "$def" "$path" "$TMP/$util.com" "0:$util.com" 2>/dev/null; then
+        if cpmtool cpmcp -f "$def" "$path" "$TMP/$util.com" "0:$util.com" 2>/dev/null; then
             installed=$((installed + 1))
             printf 'ok    %-24s %s installed\n' "$(basename "$img")" "$util.com"
         else
@@ -131,6 +166,13 @@ if [ "$installed" -eq 0 ]; then
     # The final line is a claim about what the images hold. Do not make it
     # having opened none of them - which is what a missing image, or a wrong
     # tree root, used to produce alongside an exit 0.
+    if [ "$fail" -ne 0 ]; then
+        # Present, and every one of them refused. Saying "none of these is
+        # present" here would be a second wrong diagnosis on top of whatever
+        # the first one was.
+        echo "FAIL: nothing was written - $fail step(s) failed above."
+        exit 1
+    fi
     echo "FAIL: nothing was written - none of these is present under $ROOT:"
     for entry in $IMAGES; do echo "        ${entry%%:*}"; done
     exit 1
