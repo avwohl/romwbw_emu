@@ -233,8 +233,17 @@ int main() {
     if (f) { fputs("hello", f); fclose(f); }
     check(exists(real), "a source file to read");
 
-    check(source_of(real.c_str()) == real,
-          "a path in the correct case is reported as itself");
+    // Same symlink caveat as the write side above: realpath() resolves the
+    // temporary directory through /tmp -> /private/tmp on macOS, so the
+    // reported string is not the one that was passed in even when nothing
+    // about the case changed. Compare the file, not the spelling.
+    {
+      std::string got_same = source_of(real.c_str());
+      struct stat a, b;
+      check(!got_same.empty() && stat(got_same.c_str(), &a) == 0 &&
+                stat(real.c_str(), &b) == 0 && a.st_ino == b.st_ino,
+            "a path in the correct case is reported as the same file");
+    }
 
     std::string typed = root + "/MIXEDCASE/SOURCE.TXT";
     std::string got = source_of(typed.c_str());
