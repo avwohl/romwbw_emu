@@ -78,7 +78,7 @@ jobs:
           cd src
           make libqkz80.a
         env:
-          CPMEMU_REF: 9fee3c2
+          CPMEMU_REF: 9a94e8d
 
       - name: Build and test
         run: |

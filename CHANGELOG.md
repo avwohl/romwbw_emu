@@ -27,6 +27,20 @@ adding it fails to *link*. `return "";` is a correct answer and costs nothing:
 which is what it printed before. See
 [docs/DOWNSTREAM_2026-08-26.md](docs/DOWNSTREAM_2026-08-26.md).
 
+Both workflows now pin `CPMEMU_REF: 9a94e8d` instead of `9fee3c2`. That is a
+bug fix, not a routine bump: `9fee3c2` put the Clang-only
+`-Wshorten-64-to-32` into cpmemu's `src/makefile` unconditionally, and GCC
+fails rather than ignores an unknown `-W` flag, so `make libqkz80.a` in the
+"Build qkz80 library" step could not succeed on a GitHub runner. `test.yml`
+has been red at that step since the pin was set; cpmemu `9a94e8d` probes for
+the flag instead. Verified by replicating both steps here against a clean
+clone at `9a94e8d`: `make libqkz80.a` with no diagnostics, then the suite with
+the same explicit `QKZ80_CFLAGS`/`QKZ80_LIBS` the workflow passes, 65 and 53
+checks, `ALL TESTS PASSED`. The bump also takes cpmemu's 8080 `DAA`/`CMA`/
+`STC`/`CMC` flag fixes; all four are gated on `MODE_8080` and this emulator
+runs Z80, and cpmemu's zexdoc and zexall each still complete 67 groups with no
+CRC mismatches.
+
 The disk images in `disks/` changed: they carry the new `r8.com` and `w8.com`
 and nothing else. Both were rebuilt with `disks/rebuild_disk_utils.sh` from the
 committed images, so `cpmls` of each one lists exactly what its committed
