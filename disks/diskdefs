@@ -46,11 +46,106 @@ diskdef wbw_hd1k_0
   os 2.2
 end
 
-# Slices 1 and up are deliberately NOT defined here.  The geometry is the same
-# with offset = 1048576 + 8388608 * slice, but on hd1k_combo.img every one of
-# them answers "cannot read superblock (Bad parameter)" - checked for slices 1,
-# 2 and 3, in all four of cpmtools' offset units - so whatever those slices
-# hold, it is not a directory these parameters describe.  Nothing in this
-# repository reads them.  Add one when there is an image to check it against;
-# an unverified definition here would be exactly the silently-wrong diskdef
-# both scripts exist to warn about.
+# Slices 1 and up.  The geometry is the same slice at offset
+# 1048576 + 8388608 * n, and that arithmetic is right - an earlier note here
+# said it might not be, on the strength of "cannot read superblock (Bad
+# parameter)" from every one of them.  What that message actually means is
+# measured below.
+#
+# What the slices hold, checked rather than assumed.  The 32-byte directory
+# entry at 1048576 + 8388608*n + 16384 (offset + boottrk 2 * 8192) is an
+# ordinary CP/M entry for every n from 0 to 5, and hd1k_combo.img is
+# 51380224 bytes = 1 MB + six 8 MB slices exactly.  Cutting each slice out
+# with dd and listing it as a plain wbw_hd1k image gives, in order,
+# 167/200/301/187/245/66 files and 6144/6052/5112/5720/5592/7036 K free -
+# used plus free is 8144K in all six, which is the whole slice less its two
+# boot tracks.  Reading the same six through the definitions below gives
+# byte-identical files.
+#
+# So why does it fail here?  Not the definition - the cpmtools BUILD.
+# cpmtools 2.23 cannot be configured without libdsk (./configure aborts with
+# "No libdsk.h"), and its libdsk backend, device_libdsk.c, flattens
+# (track, sector, offset) into ONE linear sector number and hands it to
+# dsk_lread with a geometry it derives from `tracks` alone: 1024 tracks
+# becomes 512 cylinders x 2 heads x 16 sectors = 16384 sectors = 8 MB.  A
+# linear sector at or past that is DSK_ERR_BADPTR, which cpmls prints as
+# "Bad parameter".  Measured on this machine, tracks 1024: offset 7340032
+# reads the directory, offset 8388608 does not.  A device_posix build of the
+# same 2.23 sources reads all six slices correctly - that is what the counts
+# above were taken with.
+#
+# The ceiling is 8 MB FROM THE START OF THE IMAGE, not from the offset, so it
+# is not only slices 1 and up that are affected.  wbw_hd1k_0 sits 1 MB in, so
+# on a libdsk build the last 1 MB of slice 0 is out of reach.  Measured on a
+# COPY of hd1k_combo.img: writing a 5.5 MB file into slice 0 through
+# wbw_hd1k_0 fails with "can not write (null): Bad parameter" after 5242880
+# bytes and leaves a directory entry for a file that is not all there, and
+# reading it back fails at the same byte.  Slice 0 holds 2000K today, so
+# nothing has reached it; disks/verify_disk_utils.sh would go loudly red
+# rather than quietly wrong if r8.com or w8.com ever landed up there.
+#
+# What must NOT be done about it: raising `tracks` to cover the offset.  It
+# makes the read work and it is the silently-wrong diskdef both scripts exist
+# to warn about - tracks 6144 with the slice-1 offset lists slice 1's files
+# correctly and then reports 47012K free on an 8 MB slice, so the next write
+# would run off the end of the slice and into slice 2.
+
+diskdef wbw_hd1k_1
+  seclen 512
+  tracks 1024
+  sectrk 16
+  blocksize 4096
+  maxdir 1024
+  skew 0
+  boottrk 2
+  offset 9437184
+  os 2.2
+end
+
+diskdef wbw_hd1k_2
+  seclen 512
+  tracks 1024
+  sectrk 16
+  blocksize 4096
+  maxdir 1024
+  skew 0
+  boottrk 2
+  offset 17825792
+  os 2.2
+end
+
+diskdef wbw_hd1k_3
+  seclen 512
+  tracks 1024
+  sectrk 16
+  blocksize 4096
+  maxdir 1024
+  skew 0
+  boottrk 2
+  offset 26214400
+  os 2.2
+end
+
+diskdef wbw_hd1k_4
+  seclen 512
+  tracks 1024
+  sectrk 16
+  blocksize 4096
+  maxdir 1024
+  skew 0
+  boottrk 2
+  offset 34603008
+  os 2.2
+end
+
+diskdef wbw_hd1k_5
+  seclen 512
+  tracks 1024
+  sectrk 16
+  blocksize 4096
+  maxdir 1024
+  skew 0
+  boottrk 2
+  offset 42991616
+  os 2.2
+end

@@ -3,9 +3,14 @@
 <head>
   <meta charset="utf-8">
   <title>RomWBW Emulator</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css"
-        integrity="sha384-LJcOxlx9IMbNXDqJ2axpfEQKkAYbFjJfhXexLfiRJhjDU81mzgkiQq8rkV0j6dVh"
-        crossorigin="anonymous">
+  <!-- xterm is vendored in vendor/, not fetched from a CDN.  An installed
+       package has to bring up a terminal with no network at all, and
+       release.yml stages this directory, not jsdelivr.  There is deliberately
+       no integrity= here: SRI is a check on a file fetched from somewhere
+       else, and a same-origin file shipped inside the package IS the file the
+       hash would be over.  The three sha384 values these tags used to carry,
+       and where the bytes came from, are recorded in vendor/README.md. -->
+  <link rel="stylesheet" href="vendor/xterm.css">
   <style>
     body {
       background: #1a1a2e;
@@ -324,12 +329,8 @@
     <p>Use the slice dropdown to override (e.g., set disk 0 to 6 slices for boot 2.4).</p>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"
-          integrity="sha384-/nfmYPUzWMS6v2atn8hbljz7NE0EI1iGx34lJaNzyVjWGDzMv+ciUZUeJpKA3Glc"
-          crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"
-          integrity="sha384-AQLWHRKAgdTxkolJcLOELg4E9rE89CPE2xMy3tIRFn08NcGKPTsELdvKomqji+DL"
-          crossorigin="anonymous"></script>
+  <script src="vendor/xterm.js"></script>
+  <script src="vendor/xterm-addon-fit.js"></script>
   <script>
     // Must define Module.onLog BEFORE romwbw.js loads to suppress debug output
     var Module = Module || {};

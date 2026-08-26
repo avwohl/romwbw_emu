@@ -113,13 +113,28 @@ jobs:
           mkdir -p staging/usr/bin
           mkdir -p staging/usr/share/doc/romwbw_emu
           mkdir -p staging/usr/share/romwbw_emu/web
+          mkdir -p staging/usr/share/romwbw_emu/web/vendor
           mkdir -p staging/usr/share/romwbw_emu/roms
           cp src/romwbw_emu staging/usr/bin/
           # No 2>/dev/null || true here: every one of these is checked in or
           # built above, so a failure means the package would ship incomplete.
           # Discarding that error is what hid the missing page for this long.
           cp web/romwbw.html web/romwbw.js web/romwbw.wasm staging/usr/share/romwbw_emu/web/
+          # xterm is vendored under web/vendor/ rather than pulled from a
+          # CDN, so it has to be staged too. Without this an installed deb
+          # on a machine with no internet opens a page with no terminal in
+          # it: the emulator runs and nothing can be seen or typed.
+          cp web/vendor/xterm.css web/vendor/xterm.js web/vendor/xterm-addon-fit.js \
+             web/vendor/LICENSE.xterm web/vendor/LICENSE.xterm-addon-fit \
+             staging/usr/share/romwbw_emu/web/vendor/
           cp roms/*.rom staging/usr/share/romwbw_emu/roms/
+          # The page fetches its ROM by a bare relative name -
+          # fetchWithProgress('emu_avw.rom') in romwbw.html-template - so it
+          # resolves next to the page, not in roms/. Staging roms/ alone left
+          # the installed page 404ing on the only ROM its select offers.
+          # Measured by serving a copy of this staging layout and fetching
+          # every href/src in the rendered page.
+          cp roms/emu_avw.rom staging/usr/share/romwbw_emu/web/
           cp README.md staging/usr/share/doc/romwbw_emu/
           cp LICENSE staging/usr/share/doc/romwbw_emu/
 

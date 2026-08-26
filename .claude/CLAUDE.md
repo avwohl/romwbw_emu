@@ -72,12 +72,30 @@ Key points:
 
 **cpmtools: pick the right diskdef, and do not set DISKDEFS**
 
-cpmtools finds its own diskdefs (homebrew: `/opt/homebrew/share/diskdefs`), and
-that file already defines the whole `wbw_hd1k` family including the per-slice
-`wbw_hd1k_0..3`. There is nothing to export. Setting `DISKDEFS` to a path that
-does not exist is *silently ignored* - cpmls falls back to the compiled-in file
-and lists the directory correctly - so the wrong instruction looks like it
-works. `/etc/cpmtools/diskdefs`, which this file used to name, is not there.
+`disks/diskdefs` in this repository is the definitive one, and both disk
+scripts `cd` into `disks/` so that cpmtools picks it up. Do not rely on the
+system file: cpmtools reads `./diskdefs` OR the system copy, never both, and
+what the system copy holds depends on the distribution. This file used to say
+the stock file "already defines the whole `wbw_hd1k` family including the
+per-slice `wbw_hd1k_0..3`. There is nothing to export." That is true of
+homebrew and false of Debian and Ubuntu, whose cpmtools 2.23 has `wbw_hd1k`
+and no per-slice definition at all - and it is what once sent a reading of
+this astray and turned CI red for a file that was on the image. Nobody's
+copy is upstream's: the 2.23 tarball from moria.de ships 139 diskdefs and
+not one of them mentions RomWBW, so every `wbw_*` definition anywhere is a
+packager's addition and has to be checked rather than assumed. Setting
+`DISKDEFS` to a path that does not exist is *silently ignored*, so the wrong
+instruction looks like it works.
+
+`disks/diskdefs` now carries `wbw_hd1k` and `wbw_hd1k_0..5`, all six slice
+definitions checked against hd1k_combo.img. Its comment header records the
+one thing worth knowing before using the higher slices: cpmtools 2.23 cannot
+be built without libdsk, and its libdsk backend cannot address anything past
+8 MB from the start of the image, so on a Debian or Ubuntu cpmtools
+`wbw_hd1k_1` and up answer "cannot read superblock (Bad parameter)" and even
+`wbw_hd1k_0` cannot reach the last 1 MB of slice 0. That is a limit of the
+build, not of the definitions; a device_posix build of the same sources reads
+all six.
 
 ```bash
 cpmls -f wbw_hd1k   disks/hd1k_infocom.img   # plain 8 MB image

@@ -4,16 +4,21 @@ messages that made the changes, not kept here.
 - the web keyboard work needs one pass by hand in a real browser.  open the
 page, click the terminal, press Ctrl+R and confirm the page does not reload and
 the CCP retypes the line.  then Ctrl+Shift+R, which is the one the handler had
-to add (romwbw.html-template:680-701).  then check the exclusions still work:
+to add (romwbw.html-template:688-707).  then check the exclusions still work:
 Ctrl+Shift+V must paste, Ctrl+Insert must copy a selection, Ctrl+Minus must
 zoom.  then move focus to the ROM select and press ArrowDown twice - it must
 reach the second entry, not send ESC [ B to CP/M.  then write to a disk and
-close the tab to see the beforeunload guard (romwbw.html-template:1260).  node
-is here (v26.3.0) and the page's JS can be driven headless - tests/
+close the tab to see the beforeunload guard (romwbw.html-template:1309).  the
+page's JS can be driven headless where node is present - tests/
 web_reload_disks.js and tests/web_console_output.js lift a function out of the
 template and run it against a stub Module and document - but none of the above
 is reachable that way: it all needs a real DOM and a real browser default
-action.  only emcc is missing, so the wasm cannot be rebuilt here.
+action.  emcc is not here either, so the wasm cannot be rebuilt.
+  node is not on PATH on this machine any more - it was (v26.3.0) when the
+  paragraph above was written.  `make -C src test` therefore prints
+  "SKIP  web JS tests" and the only thing still running those two files is
+  .github/workflows/test.yml, which fails the job if they skip.  a green CI is
+  now the only evidence they pass.
 
   while there, check the two W8 changes that only the browser can show: a
   download now happens for a zero-byte export (it used to be dropped, so W8
@@ -21,54 +26,59 @@ action.  only emcc is missing, so the wasm cannot be rebuilt here.
   lowercased last component of whatever path was typed, which is also what W8
   now prints as "To host:".
 
+  and while there, check the vendored xterm.  the page loads vendor/xterm.css,
+  vendor/xterm.js and vendor/xterm-addon-fit.js instead of three jsdelivr tags,
+  so a terminal that comes up at all is the whole of that check.  the paths
+  were verified without a browser - a copy of release.yml's staging layout was
+  served over http and every href and src in the rendered page was fetched, and
+  the three vendor files answer 200 - but nothing here can load the wasm, so no
+  browser has drawn the page since the change.
+
 - with --escape=none there is no way into sim> from a running guest at all
 (romwbw_emu.cc:203, :791).  that is the point of it, but it means the debugger
-is reachable only by restarting with a different flag.  a two-key sequence - the
-escape char twice - would give both, and would let the default stop reserving ^E
-(romwbw_emu.cc:160), a WordStar key.  nobody has asked for it.
-
-- the three CDN tags now carry subresource integrity, which leaves the OFFLINE
-half of that item open: an installed deb still has no terminal without internet,
-because release.yml stages romwbw.html/.js/.wasm and roms/ and no xterm.
-vendoring the three files into web/ closes both at once and removes the CDN from
-the page entirely.  it was not done here for one reason only - emcc is not on
-this machine, so nothing could load the page and check that the relative paths
-resolve, and a wrong path is a page with no terminal at all.  what it needs:
-web/vendor/{xterm.css,xterm.js,xterm-addon-fit.js} plus their LICENSE, the six
-tags pointed at them, a copy step in release.yml's "Create staging directory"
-(:94-107) and in both deploy targets in web/makefile, and then one look at the
-page in a browser.
-  worth knowing before touching those tags again: the two .js URLs used to be
-  jsdelivr's .min.js forms, and those files DO NOT EXIST in the npm packages.
-  xterm@5.3.0 ships lib/xterm.js already minified and no .min.js at all;
-  jsdelivr synthesises the name and serves a file with its own banner on top,
-  which says, in the bytes themselves, "Do NOT use SRI with dynamically
-  generated files".  so the URLs were changed to the real package paths -
-  lib/xterm.js and lib/xterm-addon-fit.js - which are byte-identical to the
-  registry tarball (checked against registry.npmjs.org, not just against the
-  CDN) and are what the hashes are over.  the .min.js form is 266 bytes LARGER,
-  being the same file plus that banner, so nothing was given up.
+is reachable only by restarting with a different flag.  this is a product
+choice, not a defect, and it is left here so it is decided rather than drifted
+into.  what is on the table:
+  - today: one reserved key, ^E by default (romwbw_emu.cc:160).  ^E is a
+    WordStar cursor key, so the default costs a real keystroke in a real
+    program, and --escape=none buys the key back by giving up the debugger.
+  - the alternative: a two-key sequence, the escape char twice.  one press
+    reaches the guest, two in a row reach sim>.  that gets both - the guest
+    keeps every key that is not doubled, and --escape=none stops being the
+    only way to get ^E back to WordStar.
+  - what it would cost: the escape is one byte of state today
+    (emu_console_check_escape, emu_io_cli.cc), and a two-key sequence needs a
+    pending-escape state and a rule for what a lone escape followed by
+    something else does - it has to be delivered late, so a guest polling
+    CIOIN sees the first byte only after the second key arrives or a timeout
+    expires.  DOWNSTREAM.md's emu_console_check_escape(char) contract is
+    shared with three ports, so the shape of that state is theirs too.
+  - and the reason it is still here rather than done: nobody has asked for it.
+  the decision is whether a doubled escape replaces the single one, sits
+  beside it, or is not worth the state.  nothing else in this file is blocked
+  on it.
 
 - found while auditing the input path, none of it control-character work, all of
 it out of scope for the commit that found it:
   - the wasm video/DSKY/sound callbacks are wired to names nothing implements:
   emu_io_wasm.cc:81-113 emits Module.onVideo*/onDsky*, romwbw.html-template:
-  454-576 implements onVda*/onSnd*.  ~200 lines on both sides that have never
+  462-580 implements onVda*/onSnd*.  ~200 lines on both sides that have never
   executed, and Module.onPrinterOutput (emu_io_wasm.cc:76-79) has no
   implementation either.  Renaming one side would switch all of it on at once,
   so do it behind a browser.
   - the whole aux/printer family (emu_printer_set_file, emu_printer_out,
   emu_printer_ready, emu_aux_set_input_file, emu_aux_set_output_file, emu_aux_in,
-  emu_aux_out - emu_io.h, emu_io_cli.cc) still has no caller anywhere and no
-  --printer flag to reach it.  the cleanup half is fixed: emu_io_cleanup() no
-  longer fcloses them, so the sim> escape can no longer end redirection for the
-  run.  the rest is a decision, not work, and the measurement that makes it one:
+  emu_aux_out - emu_io.h:130-148, emu_io_cli.cc:479-554) still has no caller
+  anywhere and no --printer flag to reach it.  the cleanup half is fixed:
+  emu_io_cleanup() no longer fcloses them (emu_io_cli.cc:197-211), so the sim>
+  escape can no longer end redirection for the run.  the rest is a decision,
+  not work, and the measurement that makes it one:
     "LST:, PUN: and RDR: do nothing" was wrong.  they are ALIASED TO THE
     CONSOLE.  measured on hd1k_combo.img slice 0 under CP/M 2.2: `STAT DEV:`
     reports LST: is LPT: and PUN: is PTP:, `PIP LST:=SOURCE.TXT` prints the file
     on the terminal, `PIP PUN:=SOURCE.TXT` prints it on the terminal, and
     `PIP RD.TXT=RDR:` reads the console.  that is what happens because
-    SYSGET_CIOCNT answers 1 (hbios_dispatch.cc), so RomWBW's CBIOS has one
+    SYSGET_CIOCNT answers 1 (hbios_dispatch.cc:1671), so RomWBW's CBIOS has one
     character device to assign all four names to.
     so wiring emu_printer_out() up is not "add a flag".  it means answering 2
     to SYSGET_CIOCNT and routing CIO unit 1, which MOVES LST: and PUN: off the
@@ -93,13 +103,13 @@ it out of scope for the commit that found it:
       output.  OPOST/ONLCR only applies to a tty, so today a piped run yields
       bare LF and afterwards it would yield CR LF - every captured transcript
       and every script that greps the emulator's output changes.
-    - emu_io_wasm.cc has the identical two lines, and romwbw.html-template's
-      Module.onConsoleOutput (:407) rewrites LF to CR LF specifically to undo
-      the CR drop.  those two have to change in the same commit or xterm gets
-      CR CR LF.  romwbw-debug.html has its own console handler and would need
-      the same look.
+    - emu_io_wasm.cc:184-190 has the identical two lines, and
+      romwbw.html-template's Module.onConsoleOutput (:408) rewrites LF to CR LF
+      specifically to undo the CR drop.  those two have to change in the same
+      commit or xterm gets CR CR LF.  romwbw-debug.html has its own console
+      handler and would need the same look.
     - the 0x7F mask is a separate question from the CR, and the answer is not
-      mechanical: emu_io_cli.cc:139-145 records why it is there (WordStar sets
+      mechanical: emu_io_cli.cc:137-144 records why it is there (WordStar sets
       bit 7 on the last character of a word and expects a dumb terminal to strip
       it), and against that stands every guest that draws a box or writes a
       national character.  the input side already clears ISTRIP to keep that
@@ -109,21 +119,37 @@ it out of scope for the commit that found it:
       and false of the path as a whole, because emu_io_wasm.cc masks to 0x7F
       before the byte ever reaches JavaScript.  no high-bit byte can reach
       xterm today whatever the page does.
-  - the disk selects in romwbw.html-template no longer start SILENTLY when a
-  disk cannot be fetched: the failure is named in the terminal and in the status
-  line, and the page says to use the file picker instead.  it used to be written
-  into the loading overlay and then hidden two lines later by hideLoading(), so
-  the user got a machine with no disk in it and no reason given.
-    what is left is a policy question, deliberately not answered here: WHICH
-  images should a package ship.  nothing in web/makefile's deploy targets or in
-  release.yml's staging step (:94-107) copies a single .img, so a stock deb or
-  rpm 404s on both defaults, and the selects offer five names of which
-  z80cpm_tools.img exists nowhere in this tree at all.  note for whoever
-  measures this next: .gitignore line 2 is `**.img` and line 48 is
-  `web/*.img`, so `git ls-files` says almost nothing here - web/ really does
-  hold hd1k_cpm22.img, hd1k_games.img, hd1k_infocom.img and hd1k_zsdos.img in
-  the working tree, and does NOT hold hd1k_combo.img, which is disk 0's
-  default.
+  - the four ROM files in this tree are one file.  web/emu_avw.rom,
+  web/emu_romwbw.rom, roms/emu_avw.rom and roms/emu_romwbw.rom all md5 to
+  826c3bcf7db18a36f8eb73792873613d - four copies, one distinct hash, two of
+  them under two different names.  Found while checking what release.yml
+  stages and not acted on: deduplicating them means deciding which name is
+  canonical and what the web build should fetch, and the page's ROM select
+  offers emu_avw.rom by name.  Worth doing with the disk-image policy question
+  below rather than on its own, since it is the same question about what a
+  package ships.
+
+  - which disk images a package should ship is still a policy question,
+  deliberately not answered here.  the ROM half of it is closed: the page
+  fetches its ROM by a bare relative name, release.yml staged roms/ only, and
+  the installed page 404'd on the one ROM its select offers - roms/emu_avw.rom
+  is staged next to the page now.  the .img half is not, and the measurement
+  is: serving release.yml's staging layout and fetching every href and src in
+  the rendered page gives 200 for romwbw.js and the three vendor/ files and
+  for emu_avw.rom, and 404 for hd1k_combo.img, hd1k_cpm22.img, hd1k_games.img,
+  hd1k_zsdos.img, romwbw_disk0.img, romwbw_disk1.img and z80cpm_tools.img.
+  nothing in web/makefile's deploy targets or in release.yml's staging step
+  (:111-139) copies a single .img, so a stock deb or rpm has no disk at all and
+  the selects offer five names of which z80cpm_tools.img exists nowhere in this
+  tree.  a 49 MB combo image in a deb is a packaging decision, not a bug fix.
+    note for whoever measures this next: .gitignore line 2 is `**.img` and
+  line 48 is `web/*.img`, so `git ls-files` says almost nothing here - web/
+  really does hold hd1k_cpm22.img, hd1k_games.img, hd1k_infocom.img and
+  hd1k_zsdos.img in the working tree, and does NOT hold hd1k_combo.img, which
+  is disk 0's default.
+    the page no longer starts SILENTLY when a disk cannot be fetched: the
+  failure is named in the terminal and in the status line, and the page says to
+  use the file picker instead.
 
 - found by sweeping z80cpmw's FEATURE_PARITY.md against this repo's source, row
 by row and each frontend separately.  what is left of it:
@@ -136,17 +162,18 @@ by row and each frontend separately.  what is left of it:
   binary at the first 1Ah and an R8 that can erase files it did not create.
   refreshing them means rebuilding the image and cutting a release the catalog
   points at; the build half is disks/rebuild_disk_utils.sh now, not prose.
+  gated on docs/RELEASE_ORDER_2026-08-25.md.
   worth noting what would make this catchable rather than periodic: disks.xml
   carries no per-disk version or checksum, so nothing here can look at a release
   asset and tell whether its w8.com is current.
 
   - the web Boot field never reads NVRAM back.  romwbw.html-template pushes it
-  to the core (_romwbw_set_boot_string, :1160-1170), clears it
-  (_romwbw_clear_nvram, :1192-1200) and persists the text in localStorage only;
+  to the core (_romwbw_set_boot_string, :1211-1219), clears it
+  (_romwbw_clear_nvram, :1243-1244) and persists the text in localStorage only;
   there is no getter in EXPORTED_FUNCTIONS (web/makefile:21), so a boot target
   the guest itself writes with SYSCONF is lost on reload.  the CLI persists to
   $XDG_CONFIG_HOME/romwbw_emu/nvram (romwbw_emu.cc:75-108) and the web build has
-  no equivalent read path.
+  no equivalent read path.  needs emcc to build and a browser to check.
 
   - --boot=none and the one-off override are done, but a config-file `boot`
   key is still written back to the nvram file at exit.  that is deliberate for
@@ -168,66 +195,75 @@ by row and each frontend separately.  what is left of it:
 - handed over from z80cpmw, which suppresses it on its side: hbios_dispatch.cc
 emits six C4267 warnings under MSVC at /W3.  All six are a size_t loop index
 promoting a uint16_t guest address, where the truncation to sixteen bits IS the
-Z80 64K wrap HBIOS wants, so there is nothing to fix today - but a matching cast
-is worth adding if this repo ever turns C4267 or -Wshorten-64-to-32 on for
-itself.  cpmemu's 9fee3c2 sweep for this class did not reach this file.
+Z80 64K wrap HBIOS wants, so there is nothing to fix today.  what makes it
+actionable, exactly:
+  - somebody adds /WX to the msvc job in .github/workflows/test.yml.  that job
+    compiles these files at /W3 now, so the six are in this repo's own CI log
+    from today; /WX turns them into a red build and the casts have to be
+    written first.  the job deliberately does not use /WX for that reason.
+  - or src/makefile turns on -Wshorten-64-to-32, which is the same class of
+    warning from the other compiler.  cpmemu did that in its 9fee3c2 sweep and
+    the sweep did not reach this file.
+  either way the fix is a matching cast at each of the six, not a change of
+  behaviour - the wrap is what HBIOS wants.
 
 - left open by the W8 host-path work (docs/DOWNSTREAM_2026-08-25.md), each
 measured and deliberately not taken:
 
   - R8's "Reading:" line now names the file that was opened (HBF_HOST_GETRNAME,
-  0xEA), but only on the CLI.  emu_io_wasm.cc's emu_host_file_get_read_name()
-  returns "" on purpose: a browser read is a file PICKER, so the guest's string
-  is a hint the user is free to ignore and echoing it would be actively wrong,
-  and the picked file's real name never reaches the core - it would take a name
-  parameter on emu_host_file_provide_data() and a change to the page's picker
-  callback.  not done because emcc is not on this machine and nothing here could
-  compile or run the result.  until then the browser answers 0xFF and R8 falls
-  back to printing what was typed, which is what it always did.
+  0xEA), but only on the CLI.  emu_io_wasm.cc:571-573's
+  emu_host_file_get_read_name() returns "" on purpose: a browser read is a file
+  PICKER, so the guest's string is a hint the user is free to ignore and echoing
+  it would be actively wrong, and the picked file's real name never reaches the
+  core - it would take a name parameter on emu_host_file_provide_data() and a
+  change to the page's picker callback.  not done because emcc is not on this
+  machine and nothing here could compile or run the result.  until then the
+  browser answers 0xFF and R8 falls back to printing what was typed, which is
+  what it always did.
 
   - emu_host_file_open_write() returns true unconditionally on every buffering
   backend (browser, iOS, Android, and z80cpmw's deferred write), so a path that
   cannot be created is only discovered at close - and W8 then prints "Host file
   close failed - file may be truncated" for a file that was never opened.  The
-  contract in emu_io.h now says this is allowed and that close is where the real
-  answer comes from; making W8's two messages tell the cases apart would need a
-  distinguishable status from close, which is a wider change than it looks.
+  contract in emu_io.h:348-351 now says this is allowed and that close is where
+  the real answer comes from; making W8's two messages tell the cases apart
+  would need a distinguishable status from close.  that is a change to the
+  HBF_HOST_* return codes, which four ports implement, so it is a cross-port
+  ABI decision and not a local edit.
 
-- .github/workflows/test.yml now runs the suite on push and pull request, which
-closes the "nothing runs the tests but a person" item.  What it does NOT cover:
-there is no Windows or macOS job, so the MSVC build z80cpmw depends on is still
-proven only by that port's own CI, and cpmemu's own suite skips its two Windows
-cases for want of a machine.
+- .github/workflows/test.yml runs the suite on ubuntu, compiles the shared core
+with MSVC on windows, and builds and runs the deterministic tests with Apple
+clang on macos.  neither of the two new jobs has ever been executed - there is
+no Windows and no Mac here - so the first push is the first run and either may
+need a fix.  what they still do NOT cover:
+  - nothing on Windows is RUN, only compiled.  there is no MSVC build of the
+    emulator to link and no test program that would run there; z80cpmw's own CI
+    is still the only thing that runs Windows code.
+  - the macos job leaves out tests/cli_console.cc and the disk check.  the disk
+    check compares bytes inside images and says nothing about the compiler; the
+    console test was left out when it was still flaky and could be added back
+    now that the race in it is fixed, if a run on the runner shows it steady.
+  - cpmemu's own suite still skips its two Windows cases for want of a machine.
 
 - found on a linux machine while doing the above, none of it planned:
 
-  - cpmtools does not ship wbw_hd1k_0 everywhere.  debian and ubuntu's
-  cpmtools 2.23 has wbw_hd1k and NOTHING per-slice, so on that machine both
-  disk scripts reported "hd1k_combo.img r8.com is not on the image at all" for a
-  file that is on it, and `make -C src test` failed.  .github/workflows/test.yml
-  installs that exact package, so CI was red for this and not for anything in
-  the source.  fixed by carrying disks/diskdefs and running every cpmtools
-  command from that directory - cpmtools reads ./diskdefs OR the system file,
-  never both, so it has to be complete rather than a supplement.
-    still open: only wbw_hd1k and wbw_hd1k_0 are in it.  slices 1, 2 and 3 were
-    written out as the same geometry at offset 1048576 + 8388608*n and every one
-    of them answers "cannot read superblock (Bad parameter)" on hd1k_combo.img -
-    tried in all four of cpmtools' offset units.  either that arithmetic is
-    wrong or those slices hold something else; nothing here reads them, so they
-    were left out rather than guessed at.  an unverified diskdef would be
-    exactly the silently-wrong one both scripts exist to warn about.
-    and .claude/CLAUDE.md says cpmtools "already defines the whole wbw_hd1k
-    family including the per-slice wbw_hd1k_0..3.  There is nothing to export."
-    that is true of homebrew and false of debian, and it is what sent an earlier
-    reading of this astray.
+  - the wbw_hd1k_0 diskdef cannot reach past 8 MB from the START of the image
+  on any cpmtools built against libdsk, which is what debian and ubuntu ship
+  and what CI installs.  disks/diskdefs records the measurement; the short
+  version is that cpmtools' libdsk backend flattens (track, sector, offset)
+  into one linear sector and bounds it by a geometry derived from `tracks`
+  alone, so an 8 MB slice definition can only address the first 8 MB of the
+  file it sits in.  slice 0 starts 1 MB in and holds 2000K today, so nothing
+  has hit it; if r8.com or w8.com ever land in the last 1 MB of slice 0,
+  disks/verify_disk_utils.sh will fail loudly rather than pass wrongly, which
+  is the right way round but is still a surprise waiting to happen.  there is
+  nothing to fix in this repository: cpmtools 2.23 cannot be configured
+  without libdsk at all (./configure aborts with "No libdsk.h").  what would
+  fix it upstream is a device_libdsk.c that seeks by offset instead of folding
+  it into the linear sector number.
 
-  - tests/cli_console.cc has one case that fails for the machine rather than
-  for the code.  "The reserved key is consumed once, on a tty" -
-  "timed out waiting for a byte that never arrived" - passed 12 times out of 12
-  in one hour and failed 6 times out of 6 in the next, on the same binary.
-  A/B'd against a reverted emu_io_cli.cc in the same minute: 0 of 6 both ways,
-  and earlier 6 of 8 vs 5 of 8 both ways.  so it is the pty round trip in
-  run_on_pty (:204-244) and not the code under test.  the other eleven cases in
-  that file, which use the same harness, never failed once.  a github runner is
-  a worse machine than this one, and a test that goes red for the weather is
-  worse than no test.
+  - .claude/CLAUDE.md's cpmtools section has been corrected once for saying
+  something that was true of homebrew and false of debian.  if it is edited
+  again, check the claim on a debian machine before writing it: the upstream
+  2.23 tarball ships 139 diskdefs and not one of them mentions RomWBW, so every
+  wbw_* definition anywhere is a packager's addition.

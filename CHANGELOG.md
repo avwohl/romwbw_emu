@@ -101,10 +101,64 @@ diff. Everything else here is the CLI, the build and the web page.
   and `make -C src test` failed — which is the exact package
   `.github/workflows/test.yml` installs. `cpmtools` reads `./diskdefs` **or** the
   system file and never both, so the local one has to be complete rather than a
-  supplement. It holds `wbw_hd1k` and `wbw_hd1k_0` and stops there: slices 1-3
-  answer "cannot read superblock" on `hd1k_combo.img` in all four of cpmtools'
-  offset units, and an unverified diskdef would be precisely the silently-wrong
-  one those scripts exist to warn about.
+  supplement. It holds `wbw_hd1k` and `wbw_hd1k_0` through `wbw_hd1k_5` — see
+  the slice entry below, which supersedes the note this bullet first carried
+  about slices 1-3 being undefinable.
+- **`wbw_hd1k_1` through `wbw_hd1k_5` in `disks/diskdefs`**, and the measurement
+  that shows why they used to look impossible. The arithmetic was never wrong:
+  the directory at `1048576 + 8388608*n + 16384` is an ordinary CP/M directory
+  for every `n` from 0 to 5, `hd1k_combo.img` is `1 MB + six 8 MB slices`
+  exactly, and cutting each slice out with `dd` and listing it as a plain
+  `wbw_hd1k` image gives 167/200/301/187/245/66 files and
+  6144/6052/5112/5720/5592/7036 K free — used plus free is 8144K in all six.
+  Reading the same six through the new definitions gives byte-identical files.
+
+  What was wrong is the *build* of `cpmtools`, not the definitions. 2.23 cannot
+  be configured without libdsk (`./configure` aborts with `No libdsk.h`), and
+  `device_libdsk.c` flattens `(track, sector, offset)` into one linear sector
+  number and hands it to `dsk_lread` with a geometry derived from `tracks`
+  alone — 1024 tracks becomes 512×2×16 = 16384 sectors = 8 MB — so a linear
+  sector at or past that is `DSK_ERR_BADPTR`, printed as `Bad parameter`.
+  Measured, `tracks 1024`: offset `7340032` reads the directory, offset
+  `8388608` does not. A `device_posix` build of the same 2.23 sources reads all
+  six slices, which is what the counts above were taken with.
+
+  Two consequences worth knowing. The ceiling is 8 MB **from the start of the
+  image**, not from the offset, so `wbw_hd1k_0` cannot reach the last 1 MB of
+  slice 0 on a libdsk build either — measured on a *copy*: writing a 5.5 MB
+  file into slice 0 through `wbw_hd1k_0` fails with `can not write (null): Bad
+  parameter` after 5242880 bytes and leaves a directory entry for a file that
+  is not all there. Slice 0 holds 2000K today. And raising `tracks` to cover
+  the offset is exactly the silently-wrong diskdef both disk scripts exist to
+  warn about: `tracks 6144` with the slice-1 offset lists slice 1 correctly and
+  then reports 47012K free on an 8 MB slice, so the next write would run off
+  the end of the slice and into slice 2. The comment header in `disks/diskdefs`
+  carries all of this; `todo.txt` carries what is left.
+- **A `windows-latest` and a `macos-latest` job in `.github/workflows/test.yml`.**
+  The core in `src/` is compiled in place by three downstream ports — `z80cpmw`
+  with MSVC, `ioscpm` with Apple clang, `cpmdroid` with the NDK — and a change
+  here that broke any of those compilers was found by that port's own CI, days
+  later and in somebody else's tree.
+
+  The `msvc` job compiles exactly what `z80cpmw.vcxproj` pulls out of this
+  repository — `emu_init.cc`, `hbios_cpu.cc`, `hbios_dispatch.cc` — with the
+  same `/W3 /std:c++17` and the same defines that project sets, against the
+  pinned `cpmemu` clone for `qkz80`'s headers. Compile only: there is no MSVC
+  build of the emulator to link and no test program that would run there. No
+  `/WX`, deliberately — `hbios_dispatch.cc` emits six C4267 warnings that are
+  the Z80 64K wrap working as intended, and `z80cpmw` suppresses them on its
+  side.
+
+  The `macos` job builds the CLI with Apple clang and runs
+  `test_vda_keyboard`, `test_hbios_hostname` and `test_cli_hostfile` through
+  the makefile's own targets. Not `make test`: `tests/cli_console.cc` was still
+  flaky when the job was written, and the disk check compares bytes inside disk
+  images and says nothing about the compiler, so running it twice would only
+  add a second way to go red.
+
+  **Neither job has ever been executed** — there is no Windows and no Mac on
+  the machine that wrote them — so the first push is the first run. They are
+  written to be as small as they can be for that reason, and `todo.txt` says so.
 - **`make -C src qkz80-source`** — prints which of the four possible `qkz80`
   the build would use, without building anything.
 - 31 more checks in `tests/hbios_hostname.cc` — 34 to 65 — covering `0xEA` and
@@ -198,6 +252,42 @@ diff. Everything else here is the CLI, the build and the web page.
   **Not** fixed, and left in `todo.txt` because it is a policy question: nothing
   in `web/makefile` or in `release.yml`'s staging step copies a single `.img`,
   so a stock deb still 404s on both defaults.
+- **The flaky console test was a race in the test, not the pty.** "The reserved
+  key is consumed once, on a tty" in `tests/cli_console.cc` failed for the
+  machine rather than for the code — 2 failures in 40 runs here, always with
+  `timed out waiting for a byte that never arrived` and never with anything to
+  show for it, and A/B'd against a reverted `emu_io_cli.cc` it was flaky both
+  ways. It was diagnosed as the pty round trip in `run_on_pty()` and left alone.
+  It is not the pty.
+
+  `run_on_pty()` tells the parent it may type as soon as the child has raw
+  mode on, and this case's first assertion — arming `^E` reports nothing
+  pending yet — runs *after* that. When the parent's write wins,
+  `emu_console_check_escape()` finds the `^E` already in the terminal, consumes
+  it and answers true; the assertion fails, every later step reads one byte out
+  of step, and the closing `expect('z')` blocks until the alarm. Reproduced
+  deterministically by sleeping 50 ms in the child after the handshake: four of
+  the case's five checks fail and the fifth times out, exactly the observed
+  shape.
+
+  Fixed by giving `run_on_pty()` a `before_input` callback that runs in the
+  child *before* the parent is told to type, and moving that one assertion into
+  it. The same 50 ms probe now passes; 150 runs clean, and 60 more under a
+  six-way CPU load, against 2 failures in 40 before. Two smaller things came
+  with it: the child sets `stdout` unbuffered, because the alarm kills it
+  outright and every `PASS`/`FAIL` printed before a timeout used to die in the
+  buffer — which is why this looked like a line-discipline problem for so long —
+  and the comment in `run_on_pty()` now says which assertions belong in which
+  half.
+- **The installed page had no ROM either.** The page fetches its ROM by a bare
+  relative name, `release.yml` staged `roms/` into a sibling directory, and the
+  rendered page 404'd on `emu_avw.rom` — the only ROM its select offers.
+  `roms/emu_avw.rom` is staged next to the page now. Measured the way the
+  `vendor/` paths were: a copy of the staging layout served over http, with
+  every `href` and `src` in the rendered page fetched. `romwbw.js`, the three
+  `vendor/` files and `emu_avw.rom` answer 200; the seven `.img` names still
+  answer 404, and which images a package should ship is still the policy
+  question in `todo.txt`.
 - **Aux/printer redirection survives the `sim>` escape.** `emu_io_cleanup()`
   fclosed the three files, and it is not only the exit path — `read_console_line()`
   calls cleanup and then init around every `sim>` prompt to get a cooked terminal
@@ -225,8 +315,37 @@ diff. Everything else here is the CLI, the build and the web page.
   `lib/xterm-addon-fit.js`, which are byte-identical to the registry tarballs
   (checked against `registry.npmjs.org`, not only against the CDN), and the
   `.min.js` form was 266 bytes *larger* — the same bytes plus that banner — so
-  nothing was given up. The offline half of the item is still open: an installed
-  deb has no terminal without internet, and vendoring is what closes that.
+  nothing was given up. The offline half of that item is closed by the vendoring
+  entry below, which removed these tags again; the paragraph is kept because the
+  `.min.js` trap is still there for whoever updates `web/vendor/` next.
+- **xterm is vendored into `web/vendor/`, and the page no longer talks to a
+  CDN.** An installed deb had no terminal without internet: `release.yml` staged
+  the page, the wasm and `roms/` and no xterm at all, so the emulator ran and
+  nothing could be seen or typed. `web/vendor/` now holds `xterm.css`,
+  `xterm.js`, `xterm-addon-fit.js` and both packages' `LICENSE`, taken from the
+  npm registry tarballs rather than from a CDN, and the six tags across
+  `romwbw.html-template` and `romwbw-debug.html` point at them. `release.yml`'s
+  staging step and both `web/makefile` deploy targets copy them.
+
+  The bytes are provably the ones that used to be fetched: the sha384 of each
+  vendored file equals the `integrity` value its tag carried. Those three
+  hashes, the tarball URLs and the `.min.js` trap are recorded in
+  `web/vendor/README.md`.
+
+  There is no `integrity` attribute on the new tags and that is not a step
+  backwards — SRI is a check on a file fetched from a host you do not control,
+  and a same-origin file shipped inside the package *is* what the hash would
+  have been taken over. The page and `web/vendor/README.md` both say so, so the
+  next reader does not "restore" them.
+
+  What could not be checked here: `emcc` is not on this machine, so the wasm
+  could not be rebuilt and no browser has loaded the page since the change. The
+  relative paths *were* checked without one — a copy of `release.yml`'s staging
+  layout served over http, every `href` and `src` in the rendered page fetched,
+  and `vendor/xterm.css`, `vendor/xterm.js` and `vendor/xterm-addon-fit.js`
+  answer 200 with the right sizes. That was the stated reason the vendoring had
+  not been done; it is now measured rather than assumed, but a look at the page
+  is still on the browser list in `todo.txt`.
 - **`release.yml` pins emscripten** (`EMSDK_VERSION: 6.0.8`) instead of
   installing `latest`, for the reason `CPMEMU_REF` beside it is pinned and
   `test.yml` pins `UM80_VERSION`. It has already broken one release: `13d1c23`,

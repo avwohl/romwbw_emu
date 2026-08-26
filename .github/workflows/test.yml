@@ -18,6 +18,21 @@ name: Tests
 # when um80, ul80 or cpmcp are missing - which is right on a developer's
 # machine and wrong here, where a skip would report a green disk check that
 # never opened an image. The step after the suite asserts it actually ran.
+#
+# Three jobs, and only the first one runs the suite:
+#
+#   test    ubuntu-latest, the whole of `make -C src test`.
+#   macos   macos-latest, builds the CLI with Apple clang and runs the three
+#           deterministic test programs. Not `make test`: see the job.
+#   msvc    windows-latest, compiles the three core .cc files z80cpmw pulls
+#           straight out of src/ with cl. Compile only, nothing is run.
+#
+# What the last two are for: the core in src/ is compiled in place by three
+# downstream ports - z80cpmw with MSVC, ioscpm with Apple clang, cpmdroid with
+# the NDK - and until now a change here that broke any of those compilers was
+# found by that port's own CI, days later and in somebody else's tree. Neither
+# job was executed from the machine that wrote it; there is no Windows and no
+# Mac here. They are written to be as small as they can be for that reason.
 
 on:
   push:
@@ -121,3 +136,112 @@ jobs:
             grep -E '^(PASS|FAIL|SKIP)' /tmp/test.log || true
             exit 1
           }
+
+  # Apple clang, which is what ioscpm compiles this same core with. Deliberately
+  # NOT `make -C src test`, for one measured reason: tests/cli_console.cc's
+  # "The reserved key is consumed once, on a tty" case fails for the machine
+  # rather than for the code - 12 passes out of 12 in one hour and 6 failures
+  # out of 6 in the next on the same binary, A/B'd against a reverted
+  # emu_io_cli.cc in the same minute and flaky both ways, so it is the pty round
+  # trip in run_on_pty and not the code under test. It is in todo.txt for that.
+  # Every other test in the suite is deterministic, so this runs them by name
+  # through the makefile's own targets rather than reimplementing the recipe.
+  #
+  # The disk check is left to the ubuntu job on purpose: it compares bytes
+  # inside disk images and says nothing about the compiler, so running it twice
+  # would only add a second way to go red.
+  macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Build qkz80 library
+        run: |
+          # Same clone and the same pin as the ubuntu job above and as
+          # release.yml. Four copies of one SHA now - three here and one in
+          # release.yml - which is not ideal; bump all four together.
+          git clone https://github.com/avwohl/cpmemu.git
+          cd cpmemu
+          git checkout --detach ${CPMEMU_REF}
+          cd src
+          make libqkz80.a
+        env:
+          CPMEMU_REF: 9a94e8d
+
+      - name: Build the CLI
+        run: |
+          make -C src \
+            QKZ80_CFLAGS="-I$PWD/cpmemu/src" \
+            QKZ80_LIBS="-L$PWD/cpmemu/src -lqkz80"
+
+      - name: Run the deterministic tests
+        run: |
+          # src/makefile already knows how to build each of these, including
+          # that openpty is in libc here and in libutil on Linux.
+          make -C src \
+            QKZ80_CFLAGS="-I$PWD/cpmemu/src" \
+            QKZ80_LIBS="-L$PWD/cpmemu/src -lqkz80" \
+            test_vda_keyboard test_hbios_hostname test_cli_hostfile
+          status=0
+          for t in test_vda_keyboard test_hbios_hostname test_cli_hostfile; do
+            ./src/$t || status=1
+            echo
+          done
+          exit $status
+        shell: bash
+
+  # The MSVC half. z80cpmw's z80cpmw.vcxproj compiles this repo's core straight
+  # out of ..\romwbw_emu\src - emu_init.cc, hbios_cpu.cc and hbios_dispatch.cc,
+  # plus the headers - so a change here that MSVC will not accept breaks that
+  # build and nothing in this repository notices. src/emu_io.h already carries
+  # an _MSC_VER branch (fseeko/ftello do not exist there) precisely because that
+  # has happened.
+  #
+  # Compile only. There is no MSVC build of the emulator to link and no test
+  # program that would run on Windows; the question this answers is "does the
+  # shared core still compile with cl", which is the whole of what the port
+  # depends on.
+  #
+  # No /WX. hbios_dispatch.cc emits six C4267 warnings at /W3 - a size_t loop
+  # index promoting a uint16_t guest address, where truncating to sixteen bits
+  # IS the Z80 64K wrap HBIOS wants - and z80cpmw suppresses them on its side.
+  # Turning warnings into errors here would make this job red for something
+  # deliberate. Flags and defines are copied from that .vcxproj so the two see
+  # the same source.
+  msvc:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Check out the pinned cpmemu for qkz80's headers
+        run: |
+          # Headers only - nothing of cpmemu is compiled here. Same pin as the
+          # other two jobs.
+          git clone https://github.com/avwohl/cpmemu.git
+          cd cpmemu
+          git checkout --detach ${env:CPMEMU_REF}
+        env:
+          CPMEMU_REF: 9a94e8d
+
+      - name: Compile the shared core with cl
+        shell: cmd
+        run: |
+          rem vswhere sits at a fixed path on every GitHub Windows image, which
+          rem the Visual Studio install directory does not - it moves with the
+          rem image's VS edition and year, so it must not be hardcoded.
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSDIR=%%i"
+          rem A parenthesised block, not `if ... & exit /b 1`: cmd binds the
+          rem `&` outside the if, so the one-liner form exits 1 every time.
+          if not defined VSDIR (
+            echo could not locate a Visual Studio with the C++ tools
+            exit /b 1
+          )
+          call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          cl /nologo /c /EHsc /W3 /std:c++17 ^
+             /D_CRT_SECURE_NO_WARNINGS /DQKZ80_NO_TRACE /DNDEBUG /D_WINDOWS ^
+             /I cpmemu\src /I src ^
+             src\emu_init.cc src\hbios_cpu.cc src\hbios_dispatch.cc || exit /b 1

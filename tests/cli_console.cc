@@ -201,9 +201,22 @@ static void run_on_pipe(const char* title, body_fn body, const char* data,
 // the child a terminal that arrives in a particular state. That matters for
 // any flag a fresh pty leaves off: emu_io_init() only ever *clears* bits, so
 // clearing one the pty never set proves nothing unless the test sets it first.
+//
+// `before_input`, if given, runs in the child after raw mode is on and BEFORE
+// the parent is told it may type. Anything that asserts what the console does
+// with NO input waiting has to go there, not in `body`: `body` runs after the
+// handshake, and the parent's write can land first. That is not theoretical -
+// it is what made "The reserved key is consumed once, on a tty" fail roughly
+// once in twenty runs here, always with the timeout below and never with
+// anything to show for it. Reproduced deterministically by sleeping 50 ms in
+// the child after the handshake: emu_console_check_escape() then finds the ^E
+// already sitting in the pty, consumes it and answers true, so the case's
+// first assertion fails, every later step reads one byte out of step, and the
+// closing expect('z') blocks until the alarm. The pty round trip was never
+// the problem.
 static void run_on_pty(const char* title, body_fn body,
                        const unsigned char* data, size_t len,
-                       prepare_fn prepare = NULL) {
+                       prepare_fn prepare = NULL, body_fn before_input = NULL) {
   heading(title);
   int master = -1, slave = -1;
   if (openpty(&master, &slave, NULL, NULL, NULL) != 0) {
@@ -225,12 +238,19 @@ static void run_on_pty(const char* title, body_fn body,
   pid_t pid = fork();
   if (pid == 0) {
     alarm(15);
+    // Unbuffered, because stdout here is usually a file or a pipe and the
+    // alarm below kills the child outright. Every PASS and FAIL printed
+    // before a timeout used to die in the buffer, so a timed-out case showed
+    // only the timeout line and gave no hint which step went wrong.
+    setvbuf(stdout, NULL, _IONBF, 0);
     close(master);
     close(ready[0]);
     dup2(slave, STDIN_FILENO);
     close(slave);
     emu_io_init();
-    // Raw mode is on: it is safe for the parent to type now.
+    if (before_input) before_input();
+    // Raw mode is on and anything that had to be checked with an empty
+    // terminal has been: it is safe for the parent to type now.
     ssize_t ignored = write(ready[1], "r", 1);
     (void)ignored;
     close(ready[1]);
@@ -354,9 +374,16 @@ static void body_tty_diamond() {
 }
 
 // 4. The reserved key is the emulator's, and only on a tty.
-static void body_tty_escape_is_consumed() {
+// Runs before the parent types: with an empty terminal, arming the escape must
+// report nothing. Checked here rather than at the top of the body because the
+// body runs after the handshake, and by then the ^E may already have arrived -
+// see run_on_pty().
+static void body_tty_escape_before_input() {
   check(!emu_console_check_escape(0x05),
         "arming ^E reports nothing pending yet");
+}
+
+static void body_tty_escape_is_consumed() {
   expect(EMU_CONSOLE_RETRY,
          "a typed ^E is withheld from the guest rather than delivered twice");
   check(emu_console_check_escape(0x05),
@@ -436,7 +463,8 @@ int main() {
   {
     const unsigned char data[] = {0x05, 'z'};
     run_on_pty("The reserved key is consumed once, on a tty",
-               body_tty_escape_is_consumed, data, sizeof(data));
+               body_tty_escape_is_consumed, data, sizeof(data), NULL,
+               body_tty_escape_before_input);
   }
 
   {

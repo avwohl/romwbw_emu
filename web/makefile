@@ -59,16 +59,23 @@ clean:
 serve: romwbw.js
 	python3 -m http.server 8080
 
+# vendor/ carries xterm - the page loads it from vendor/, not from a CDN,
+# so a deploy that leaves it out is a page with no terminal in it.
+VENDOR = vendor/xterm.css vendor/xterm.js vendor/xterm-addon-fit.js \
+         vendor/LICENSE.xterm vendor/LICENSE.xterm-addon-fit
+
 deploy-romwbw-PRODUCTION-ASK-HUMAN-FIRST: romwbw.js
-	mkdir -p ~/www/romwbw
+	mkdir -p ~/www/romwbw/vendor
 	sed "s/@VERSION@/$$(cat ../VERSION)/" romwbw.html-template > ~/www/romwbw/index.html
 	cp romwbw.js romwbw.wasm ~/www/romwbw/
+	cp $(VENDOR) ~/www/romwbw/vendor/
 
 # Dev deploy to romwbw1 - safe for Claude to use
 deploy-dev: romwbw.js
-	mkdir -p ~/www/romwbw1
+	mkdir -p ~/www/romwbw1/vendor
 	sed "s/@VERSION@/$$(cat ../VERSION)-dev $$(date '+%Y-%m-%d %H:%M:%S')/" romwbw.html-template > ~/www/romwbw1/index.html
 	cp romwbw.js romwbw.wasm ~/www/romwbw1/
+	cp $(VENDOR) ~/www/romwbw1/vendor/
 	@echo "Deployed to ~/www/romwbw1/ - NOT production"
 
 .PHONY: all clean serve deploy-romwbw-PRODUCTION-ASK-HUMAN-FIRST deploy-dev
