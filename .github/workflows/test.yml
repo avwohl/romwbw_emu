@@ -22,17 +22,18 @@ name: Tests
 # Three jobs, and only the first one runs the suite:
 #
 #   test    ubuntu-latest, the whole of `make -C src test`.
-#   macos   macos-latest, builds the CLI with Apple clang and runs the three
-#           deterministic test programs. Not `make test`: see the job.
+#   macos   macos-latest, builds the CLI with Apple clang and runs the four
+#           compiled test programs. Not `make test`: see the job.
 #   msvc    windows-latest, compiles the three core .cc files z80cpmw pulls
 #           straight out of src/ with cl. Compile only, nothing is run.
 #
 # What the last two are for: the core in src/ is compiled in place by three
 # downstream ports - z80cpmw with MSVC, ioscpm with Apple clang, cpmdroid with
 # the NDK - and until now a change here that broke any of those compilers was
-# found by that port's own CI, days later and in somebody else's tree. Neither
-# job was executed from the machine that wrote it; there is no Windows and no
-# Mac here. They are written to be as small as they can be for that reason.
+# found by that port's own CI, days later and in somebody else's tree. Both are
+# written to be as small as they can be, and both have run: the macos job went
+# red on its first push, on a real portability defect in tests/cli_hostfile.cc,
+# and all three jobs are green since.
 
 on:
   push:
@@ -136,16 +137,29 @@ jobs:
             grep -E '^(PASS|FAIL|SKIP)' /tmp/test.log || true
             exit 1
           }
+          # Same reasoning for the interlock assertion: a w8.com that could
+          # not be extracted is already a FAIL, but the count is what says
+          # both images were asked. Bump it alongside the four above.
+          grep -qE '^PASS: 2 shipped w8.com carry' /tmp/test.log || {
+            echo "expected both shipped w8.com to be probed for the interlock; got:"
+            grep -E '^(PASS|FAIL|SKIP)' /tmp/test.log || true
+            exit 1
+          }
 
-  # Apple clang, which is what ioscpm compiles this same core with. Deliberately
-  # NOT `make -C src test`, for one measured reason: tests/cli_console.cc's
-  # "The reserved key is consumed once, on a tty" case fails for the machine
-  # rather than for the code - 12 passes out of 12 in one hour and 6 failures
-  # out of 6 in the next on the same binary, A/B'd against a reverted
-  # emu_io_cli.cc in the same minute and flaky both ways, so it is the pty round
-  # trip in run_on_pty and not the code under test. It is in todo.txt for that.
-  # Every other test in the suite is deterministic, so this runs them by name
-  # through the makefile's own targets rather than reimplementing the recipe.
+  # Apple clang, which is what ioscpm compiles this same core with. This runs the
+  # four compiled test programs by name through the makefile's own targets rather
+  # than reimplementing the recipe; it is not `make -C src test`, which would
+  # also run the node and disk checks the ubuntu job already runs.
+  #
+  # tests/cli_console.cc was left out of that list once, as flaky on a Mac. It is
+  # not, and the pty round trip was never the reason - the file's own comment on
+  # run_on_pty() said so in the same tree. "The reserved key is consumed once, on
+  # a tty" asserted what the console does with an EMPTY terminal from inside the
+  # case body, which runs AFTER the handshake that tells the parent it may type,
+  # so the parent's ^E could already be sitting in the pty: about one run in
+  # twenty. run_on_pty()'s `before_input` hook moves that assertion in front of
+  # the handshake and the case is deterministic again. Re-measured after the fix
+  # on macOS 27 arm64 with Apple clang 21: 400 consecutive runs, 0 failures.
   #
   # The disk check is left to the ubuntu job on purpose: it compares bytes
   # inside disk images and says nothing about the compiler, so running it twice
@@ -183,9 +197,11 @@ jobs:
           make -C src \
             QKZ80_CFLAGS="-I$PWD/cpmemu/src" \
             QKZ80_LIBS="-L$PWD/cpmemu/src -lqkz80" \
-            test_vda_keyboard test_hbios_hostname test_cli_hostfile
+            test_vda_keyboard test_hbios_hostname test_cli_console \
+            test_cli_hostfile
           status=0
-          for t in test_vda_keyboard test_hbios_hostname test_cli_hostfile; do
+          for t in test_vda_keyboard test_hbios_hostname test_cli_console \
+                   test_cli_hostfile; do
             ./src/$t || status=1
             echo
           done
@@ -204,12 +220,19 @@ jobs:
   # shared core still compile with cl", which is the whole of what the port
   # depends on.
   #
-  # No /WX. hbios_dispatch.cc emits six C4267 warnings at /W3 - a size_t loop
+  # hbios_dispatch.cc used to emit six C4267 warnings at /W3 - a size_t loop
   # index promoting a uint16_t guest address, where truncating to sixteen bits
-  # IS the Z80 64K wrap HBIOS wants - and z80cpmw suppresses them on its side.
-  # Turning warnings into errors here would make this job red for something
-  # deliberate. Flags and defines are copied from that .vcxproj so the two see
-  # the same source.
+  # IS the Z80 64K wrap HBIOS wants. Each of the six now carries an explicit
+  # (uint16_t) cast that says so, and src/makefile turns on Clang's name for
+  # the same diagnostic (-Wimplicit-int-conversion) so they cannot come back
+  # unnoticed; z80cpmw's own /wd4267 on this file is now removable. Not
+  # re-measured with cl - there is still no Windows here - so the count above
+  # is what the Clang equivalent reported, not what this job will print.
+  #
+  # No /WX all the same. cl at /W3 compiles the qkz80 headers along with these
+  # files, and this job exists to answer "does the shared core still compile
+  # with cl", not to make a dependency's warnings red. Flags and defines are
+  # copied from that .vcxproj so the two see the same source.
   msvc:
     runs-on: windows-latest
 

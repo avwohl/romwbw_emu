@@ -27,9 +27,12 @@ ordering, and why it is that order.
 >   nothing from a crafted `.COM`.
 > - **The armed `W8` is already public and the interlock cannot reach it.** The
 >   protection ships in the `.COM`, so it only helps images built *after* the
->   interlock. The images on `origin/main` (commits `98eb6a1`..`fc68ca0`) carry
->   a host-path-capable `W8` with no probe, public since 2026-08-24. Upgrading
+>   interlock. The images at commits `98eb6a1`..`fc68ca0` carry a
+>   host-path-capable `W8` with no probe, public since 2026-08-24. Upgrading
 >   the emulator does nothing for a user who already has one of those images.
+>   *(2026-08-27: those
+>   commits are still ancestors of `main`, so the blobs remain published — but
+>   `HEAD` no longer serves one. See step 0.)*
 >
 > So the interlock narrows one cell of the matrix below — an honest `W8 <f>
 > <path>` on a *refreshed* image meeting an old front end — and leaves the rest.
@@ -56,6 +59,36 @@ ordering, and why it is that order.
 > - **The `v1.4.5` rule is unchanged**, though its worst case for the `W8` half
 >   softened from data-loss to a broken feature. See that section.
 
+> ### Update 2026-08-27: four of the six steps have moved, and step 5 has a second data-loss path
+>
+> Everything below was re-checked against the working trees on this machine and
+> against `origin`. The steps themselves are corrected in place; this block is
+> the summary of what changed, because three other repositories point at this
+> file and were being told the old state.
+>
+> - **Step 0 is done.** `main` and the `v1.36` tag are both on `origin` —
+>   `git ls-remote` gives `refs/heads/main` = `a95db9f` and `refs/tags/v1.36^{}`
+>   = `04ad2b6`, with `main` five commits past the tag. The old step 0's central
+>   claim — that the public repository serves the armed host-path `W8` with none
+>   of the protection — is no longer true of `HEAD`. Both tracked images carry
+>   the interlocked `W8`, and `disks/verify_disk_utils.sh` now asserts the
+>   `06 e9 cf` probe on each rather than leaving it to whoever remembers.
+> - **Steps 1 and 2 are done in code.** `ioscpm` committed the build-52 fix as
+>   `bb5543f` and has moved on to `15f48e9`. `cpmdroid` *is* checked out here,
+>   at `c6756af`, and its code half is complete.
+> - **Step 3 is half done and will not link.** The `z80cpmw` change this file
+>   names landed in `2f10d4c`, but that port does not define
+>   `emu_host_file_get_read_name()`, which the post-`v1.36` core calls
+>   unconditionally.
+> - **Step 5 has a second data-loss path this document never mentioned**, and it
+>   is fired by step 4's own instruction to bump the catalog `version`. It has
+>   its own section below.
+> - **What has not changed:** the armed `W8` blobs are still in git history —
+>   and now *published*, because pushing `main` published them — and the usage
+>   string still does not tell an armed `W8` from an interlocked one. There is
+>   also still no `v1.36` GitHub release: `gh release list` shows `v1.35` as
+>   Latest, published 2026-08-07.
+
 ---
 
 ## The hazard in one paragraph
@@ -81,7 +114,7 @@ Measured, not argued — this is what makes the ordering work.
 |---|---|---|
 | Can the **old** W8 emit `..`? | **No.** | The CCP treats `.` as a filename delimiter, so a `.` never reaches the FCB name field. Built `98eb6a1^`, ran it: `w8 ..` prints the usage message. `cpmtools` will not create a CP/M file named `..` either ("illegal CP/M filename"). |
 | Can the old W8 emit a separator? | **Yes**, `/` is not a CCP delimiter. | A CP/M file named `A/B` (cpmtools makes one) gives `To host: a/b`. On iOS that is `Exports/a/b`: `removeItem` no-ops on the absent nested path and the write fails. A failed export, not a loss — but the same string reaching the same two calls. |
-| Do shipped images carry the old W8? | **Believed yes, not verified here.** | The `v1.4.5` catalog's `hd1k_combo.img` sha256 (`be19984e…`) matches no version in this repo — a separate lineage. The evidence is `z80cpmw`'s measurement of its bundled copy, which came down from that release, holding `Usage: W8 <cpmname>`. **Verify before relying on it** (see step 1). |
+| Do shipped images carry the old W8? | **Yes — verified 2026-08-26, in `ioscpm`.** | The `v1.4.5` catalog's `hd1k_combo.img` sha256 (`be19984e…`) matches no version in this repo — a separate lineage — and that used to be the whole of the evidence. `ioscpm`'s `release_assets/` copy has since been hashed against the published asset: they are byte-identical, and that image carries the OLD, non-host-path `W8`. So the exposure build 52 closes is via images a user *imports through Files*, not via anything the pinned release serves. |
 | Is anyone exposed **today**? | **Yes, by user-imported images — and it is already public.** | The host-path `W8` (1408 bytes, no probe) is in `disks/hd1k_combo.img` from `98eb6a1` and `disks/hd1k_infocom.img` from `de85946`, both on **`origin/main`** since 2026-08-24 — not a local commit. `ContentView.swift`'s `fileImporter` accepts `.data`/`.item`, so a user copies one in through Files and `W8 ANYFILE.TXT ..` is live against `ioscpm` ≤ 51. Discriminator between the armed and the interlocked `W8`: `xxd -p w8.com \| tr -d '\n' \| grep -c 06e9cf` (the `ld b,0E9h` / `rst 8` probe) — 1 = interlocked, 0 = armed. The `[hostpath]` usage string does **not** distinguish them. |
 
 ## The thing that must never happen
@@ -105,8 +138,21 @@ be done by accident.
 publish — to *any* tag — a disk image whose `w8.com` lacks the probe. The most
 dangerous artifact in this repo's history is a host-path-capable `W8` with no
 interlock, and three of them exist as git blobs (`98eb6a1`..`fc68ca0`, plus the
-local `6e1f134` rebuild). `disks/verify_disk_utils.sh` should assert the shipped
-`w8.com` contains `06 e9 cf` so a stale one cannot be attached by mistake.
+`6e1f134` rebuild, which is no longer local — see step 0).
+`disks/verify_disk_utils.sh` should assert the shipped `w8.com` contains
+`06 e9 cf` so a stale one cannot be attached by mistake.
+
+**Done 2026-08-27.** That assertion is in the script. It searches the copy
+*inside each image* for the three bytes `06 e9 cf` — `ld b,H_CAPS` then `rst 8`,
+which is the whole of `w8.asm`'s `check_host_path_safe` — and it is asked before
+the staleness comparison rather than after, because the layout and byte checks
+both bail on a mismatch and "is it stale" and "does it hand over a host path
+unguarded" are different questions. Verified both ways: the two tracked images
+pass, and the armed `w8.com` recovered from `de85946` fails with
+`hands over a host path with no interlock`. The check runs under `make -C src
+test`, so CI covers it. Nothing in the file's *text* discriminates — the armed
+1408-byte build prints the same `Usage: W8 <cpmname> [hostpath]` as the
+1792-byte interlocked one — which is why the assertion is on instruction bytes.
 
 Everything below depends on both rules holding.
 
@@ -114,37 +160,57 @@ Everything below depends on both rules holding.
 
 ## The order
 
-### Step 0 — this repository. **Committed locally, NOT pushed.**
+### Step 0 — this repository. **Pushed. `main` and `v1.36` are public.**
 
-`main` is at `a4d3db8`, tagged `v1.36`: core fixes, the shared
-`emu_host_path_basename()`, `HBF_HOST_GETNAME`, the `HBF_HOST_CAPS` interlock,
-and both tracked images rebuilt with the interlocked `W8`.
+**Corrected 2026-08-27.** This section used to read "Committed locally, NOT
+pushed", with `main` at `a4d3db8`, `origin/main` at `fc68ca0` and `v1.35` the
+newest pushed tag. All of that is now false, and it was the premise the rest of
+the file was written on, so it is the first thing to fix:
 
-**None of it is on `origin` yet.** `origin/main` is `fc68ca0` and the newest
-pushed tag is `v1.35`. So today the public repository is in the worst state on
-offer: it serves the armed host-path `W8` (from `98eb6a1`, above) with none of
-the protection, and has since 2026-08-24. Every later step's reasoning assumes
-step 0 is public; until it is pushed, it is not.
+```
+$ git ls-remote --tags --heads origin
+a95db9f…  refs/heads/main
+c5f98ba…  refs/tags/v1.36
+04ad2b6…  refs/tags/v1.36^{}
+```
 
-Consequences to act on:
+`main` is at `a95db9f`, five commits past the tag (`17cd380`, `322ca8e`,
+`657d61a`, `5920681`, `a95db9f`). The tagged commit `04ad2b6` carries the core
+fixes, the shared `emu_host_path_basename()`, `HBF_HOST_GETNAME` and the
+`HBF_HOST_CAPS` interlock; `322ca8e` rebuilt both tracked images again after it.
 
-- **Push `main` through `a4d3db8` and the `v1.36` tag.** This does nothing for
-  existing clones (git keeps the armed blobs forever) but it stops *new* clones
-  arming, and it makes the rest of this plan true. Before pushing or rebuilding
-  an image, gate on the probe: `xxd -p w8.com | tr -d '\n' | grep -q 06e9cf`.
-  **Do not push a partial series** — `6e1f134` rebuilt the images *before* the
-  interlock existed, so publishing up to there would ship a third armed-but-
-  unprobed image rather than closing anything.
-- Add the `README.md` line the plan has always suggested and this repo still
-  lacks: next to the disk-image table, that these images hand a host path to the
-  emulator and an `ioscpm` build before 52 must not be given one. That is the
+**So the claim that the public repository serves the armed host-path `W8` with
+none of the protection is no longer true of `HEAD`.** Both tracked images carry
+the interlocked `W8` — measured, not assumed: `disks/verify_disk_utils.sh` now
+asserts the `06 e9 cf` probe on the copy inside each image and both pass. The
+gate this section used to ask you to run by hand
+(`xxd -p w8.com | tr -d '\n' | grep -q 06e9cf`) is that assertion; `make -C src
+test` runs it.
+
+What pushing did **not** do is remove the armed blobs. `98eb6a1`, `de85946` and
+`6e1f134` are all ancestors of `main`, so all three armed images went from local
+to *published* with the push, and a user who already has one of those images is
+exactly where they were.
+
+Remaining here:
+
+- **There is no `v1.36` GitHub release.** The tag is pushed; the release is not
+  cut. `gh release list` shows `v1.35` as Latest, published 2026-08-07. Until
+  the release exists, `release.yml` has not run for `v1.36` and there is no
+  binary, no web page and no `roms/` asset under that tag. The tag still carries
+  no disk images either way, so cutting it is independent of everything below.
+- The `README.md` line this plan asked for **is now written**, in the
+  **Recommended Disk Images** section directly under the table. It is still the
   only measure that reaches someone who already has the file, since they read
   the repo rather than re-clone.
-- The `v1.36` **tag carries no disk images** — `release.yml` stages the binary,
-  the web page and `roms/` only. Cutting the GitHub release builds the wasm and
-  is independent of everything below.
 
-### Step 1 — `ioscpm` code fix. **Done, uncommitted, build 52.**
+### Step 1 — `ioscpm` code fix. **Done and committed as `bb5543f`.**
+
+**Corrected 2026-08-27.** This section used to say "Done, uncommitted". It is
+committed: `bb5543f`, "Build 52: W8 could delete the user's disk library". That
+port has since moved on to `15f48e9` and has picked up the two core-sync
+obligations as well — `49851aa` defines `emu_host_path_caps()` and `15f48e9`
+defines `emu_host_file_get_read_name()`.
 
 All three changes are made and verified in `/Users/wohl/src/ioscpm`: 48
 host-side checks pass, the app builds, and `W8 ANYFILE.TXT ..` now leaves
@@ -175,12 +241,27 @@ will really write, so `W8` can tell the user where the file went.
 **Remaining: ship it as a build users have.** Do not bump `releaseTag` in this
 build unless the new assets already exist.
 
-### Step 2 — `cpmdroid` code fix. Blocks step 5 for that port only.
+### Step 2 — `cpmdroid` code fix. **Code half done.** Blocks step 5 for that port only.
 
-Not checked out on this machine, so the first task is to confirm it has the
-same shape: Kotlin's `File(dir, name)` has the same traversal property as
-`appendingPathComponent`. If it does, it needs the same three changes. Check
-whether it builds `emu_io_common.cc` — if not, see the `z80cpmw` note below.
+**Corrected 2026-08-27.** This section used to say "Not checked out on this
+machine". It is: `/Users/wohl/src/cpmdroid`, at `c6756af`. The task it set —
+confirm the port has the same shape and make the same three changes — is done,
+in `a523d40` ("Sync to the romwbw_emu v1.36 core, and close four keyboard and
+file gaps"). In `app/src/main/cpp/emu_io_android.cpp` today:
+
+- `emu_host_path_basename()` is there as its own copy (CMakeLists does not
+  build `emu_io_common.cc`, the same constraint `z80cpmw` has),
+- `android_host_leaf()` reduces a guest-supplied name to a leaf, and **both**
+  `emu_host_file_open_read()` and `emu_host_file_open_write()` go through it,
+- `emu_host_path_caps()` is defined, which is what lets the port link the
+  `v1.36` core at all,
+- and `emu_host_file_get_read_name()` is defined too, so the post-`v1.36` core
+  links there as well.
+
+What is left for this port is step 5's half, not the code: it must not bump its
+catalog pin before a build carrying the above is what users have — and see the
+catalog-`version` hazard below, which applies to it as much as to `ioscpm` if it
+implements the same invalidation.
 
 ### Step 3 — `z80cpmw` code fix. Not a safety blocker.
 
@@ -195,6 +276,18 @@ Note it **cannot** just compile the shared helper: its vcxproj takes only
 and adding `emu_io_common.cc` would collide on ten symbols
 `emu_io_windows.cpp` already defines. Copy the ~25-line function.
 
+**2026-08-27: the half named above is done, and the port no longer links.** The
+reporting change landed in `z80cpmw` `2f10d4c` ("Sync to the romwbw_emu v1.36
+core, and tell W8 where the file really went"), and
+`emu_host_file_get_write_name()` and `emu_host_path_caps()` are both defined in
+`z80cpmw/emu_io_windows.cpp`. `emu_host_file_get_read_name()` is **not** —
+checked against that repo's committed `HEAD`, `f197dde`. The core calls it
+unconditionally as of `322ca8e` (`hbios_dispatch.cc`, `HBF_HOST_GETRNAME`), so
+syncing anything past `v1.36` into that vcxproj fails to link, exactly the way
+`emu_host_path_caps()` did before it. `return "";` is a correct answer and costs
+nothing — see this repo's `docs/DOWNSTREAM_2026-08-26.md`. Add it with the sync,
+not after it.
+
 Can happen before or after step 4; it is independent.
 
 ### Step 4 — publish refreshed disk images under a **new** `ioscpm` tag.
@@ -205,6 +298,17 @@ emergency. Publishing before step 1 lands is no longer unsafe; it is just bad. `
 installs; `disks/verify_disk_utils.sh` checks. New tag, new assets, `v1.4.5`
 untouched.
 
+**2026-08-27: "refreshed images" now means `HEAD`'s generation, not `v1.36`'s.**
+The images moved again after the tag — `322ca8e` rebuilt both — and `5920681`
+rewrote `disks/diskdefs`, which is what the rebuild and verify scripts read to
+find anything inside them. Publish from `main`, not from the tag, and run
+`disks/verify_disk_utils.sh` on exactly the files being uploaded: it now asserts
+both that each `r8.com`/`w8.com` matches its source and that the `w8.com` on the
+image carries the `HBF_HOST_CAPS` probe.
+
+**And this step is what fires the second data-loss path.** Read the next section
+before bumping the catalog's `version` attribute.
+
 ### Step 5 — bump each port's catalog pin, per port, in a build that already has that port's fix.
 
 `ioscpm` `releaseTag`, `z80cpmw` `RELEASE_TAG`, `cpmdroid` `RELEASE_TAG`. This
@@ -213,6 +317,57 @@ one line:
 
 > **Never ship a build that bumps the catalog pin without that port's
 > sanitiser in the same binary.**
+
+### Step 5, second hazard — bumping the catalog `version` deletes the user's disks
+
+**Added 2026-08-27.** This document reasoned only about `W8` and `R8`. There is
+a second, unrelated data-loss path on the *same* release step, and step 4's own
+instructions are what arm it. The full write-up is `ioscpm`'s `todo.txt` entry
+"THE SECOND DATA-LOSS PATH ON THAT SAME RELEASE STEP" (written 2026-08-26);
+this is the part that belongs in the ordering.
+
+`disks.xml` carries a `version` attribute. On every successful catalog fetch,
+`checkCatalogVersionAndInvalidate()` (`EmulatorViewModel.swift`) compares it
+against the stored `catalogVersion` default and, on **any** difference, calls
+`deleteAllDownloadedDisks()` and then tells the user it has happened. That
+function loops over `contents where url.pathExtension == "img"` in
+`Documents/Disks` and removes every one — so it also deletes:
+
+- disks the user imported through Files, and
+- disks the app itself created with `createNewDisk`.
+
+Neither is in the catalog, so neither can be re-downloaded. Those are gone.
+A downloaded disk is writable and is exactly where a user's CP/M work lives, so
+even the catalog-restorable ones lose everything written since the download.
+
+Three things make this an ordering problem rather than a footnote:
+
+- **Step 4 tells you to bump the attribute.** It is at `13` today, both in
+  `ioscpm`'s `release_assets/` and on the pinned `v1.4.5` release (checked
+  2026-08-26 — they agree byte for byte). It has moved on essentially every
+  catalog change. Publishing refreshed images without touching it is the only
+  way to avoid firing this, and that is not what the runbooks say to do.
+- **It needs no download and no tap.** The wipe happens on the next launch that
+  fetches a catalog, on every installed device at once.
+- **It has already fired once, in the field.** The `12` → `13` bump reached
+  users on 2026-07-22, when `disks.xml` was uploaded to `v1.4.11` (asset
+  timestamp `2026-07-22T10:41:09Z`). The app still floated on `releases/latest`
+  then — the pin landed three days later — so every installed client holding
+  `12` fetched `13` and wiped its `Disks` folder. Nothing recorded it at the
+  time; the alert is all the user got.
+
+There is no patch to apply here, because the fix is a product decision:
+copy-on-write on first guest write, or confirm before wiping, or spare anything
+the catalog does not name, or keep the wipe and give the user an export path
+first. Whichever it is, **it has to be in the same binary as the catalog bump**,
+for exactly the reason build 52 has to be. Add it to the step-5 rule:
+
+> **Never ship a build that bumps the catalog pin — or publish a catalog whose
+> `version` attribute moved — without both that port's sanitiser and its answer
+> to the invalidation wipe in the same binary.**
+
+`cpmdroid` and `z80cpmw` should each be checked for the same invalidation
+behaviour before their own step 5; this was measured in `ioscpm` only.
 
 ---
 
@@ -243,8 +398,13 @@ refresh.
 
 1. Does the build being shipped contain that port's sanitiser? If no, stop.
 2. Are the new images under a **new** tag, with `v1.4.5` untouched? If no, stop.
-3. Does `disks/verify_disk_utils.sh` pass on the images being published?
-4. In the shipped build, does `W8 ANYFILE.TXT ..` leave `Documents` intact?
+3. Does `disks/verify_disk_utils.sh` pass on the images being published? It
+   answers two questions now, not one: that each `r8.com`/`w8.com` matches its
+   source, and that the `w8.com` on the image carries the `HBF_HOST_CAPS` probe.
+4. Did the catalog's `version` attribute move? If it did, does the build being
+   shipped answer the invalidation wipe? If no, stop — see "Step 5, second
+   hazard" above.
+5. In the shipped build, does `W8 ANYFILE.TXT ..` leave `Documents` intact?
    Necessary but not sufficient: the interlock passes this test on an
    unsanitised port too, because the emulator refuses the path. The test that
    actually exercises the backend is a crafted `.COM` that calls HBIOS `0xE2`
@@ -271,6 +431,10 @@ the core without supplying it fails to *link* rather than silently asserting a
 guarantee its code does not make. The guarantee and the code that makes it true
 now arrive together by construction. The CLI and browser backends here define it
 (both set the bit); `z80cpmw` and `cpmdroid` must add it before they can build
-against the core, which is the point. The bit's meaning was also corrected: it
+against the core, which is the point. *(2026-08-27: all three ports have added
+it — `ioscpm` in `49851aa`, `cpmdroid` in `a523d40`, `z80cpmw` in `2f10d4c`. The
+same construction has since caught a second one:
+`emu_host_file_get_read_name()` is declared and not defined, and `z80cpmw` has
+not added it yet. See step 3.)* The bit's meaning was also corrected: it
 is "the path is never used destructively", not "confined to one directory", so a
 backend that honours absolute paths sets it honestly.

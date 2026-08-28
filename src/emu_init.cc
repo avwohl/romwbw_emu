@@ -258,7 +258,7 @@ void emu_copy_hcb_to_shadow_ram(banked_mem* memory) {
   memory->select_bank(0x00);  // ROM bank 0 mode
 
   for (int i = 0; i < 512; i++) {
-    memory->store_mem(i, rom[i]);  // Writes to shadow RAM and sets shadow bit
+    memory->store_mem((uint16_t)i, rom[i]);  // Writes to shadow RAM and sets shadow bit
   }
 
   memory->select_bank(saved_bank);  // Restore previous bank
@@ -383,7 +383,7 @@ int emu_populate_drive_map(banked_mem* memory, HBIOSDispatch* hbios,
   // First, mark all drive map entries as unused (0xFF) in both ROM and RAM
   for (int i = 0; i < 16; i++) {
     rom[DRVMAP_BASE + i] = 0xFF;
-    memory->write_bank(0x80, DRVMAP_BASE + i, 0xFF);
+    memory->write_bank(0x80, (uint16_t)(DRVMAP_BASE + i), 0xFF);
   }
 
   // IMPORTANT: Hard disks are assigned FIRST so boot disk is A:
@@ -403,9 +403,9 @@ int emu_populate_drive_map(banked_mem* memory, HBIOSDispatch* hbios,
 
         // Assign each slice to a drive letter
         for (int slice = 0; slice < num_slices && drive_letter < 16; slice++) {
-          uint8_t map_value = ((slice & 0x0F) << 4) | (unit & 0x0F);
+          uint8_t map_value = (uint8_t)(((slice & 0x0F) << 4) | (unit & 0x0F));
           rom[DRVMAP_BASE + drive_letter] = map_value;
-          memory->write_bank(0x80, DRVMAP_BASE + drive_letter, map_value);
+          memory->write_bank(0x80, (uint16_t)(DRVMAP_BASE + drive_letter), map_value);
           emu_log("[EMU_INIT] Drive %c: = HDSK%d:%d (unit=%d, map=0x%02X)\n",
                   'A' + drive_letter, hd, slice, unit, map_value);
           drive_letter++;
@@ -418,7 +418,7 @@ int emu_populate_drive_map(banked_mem* memory, HBIOSDispatch* hbios,
   // MD0 (RAM disk) if enabled
   if (ramd_banks > 0 && drive_letter < 16) {
     rom[DRVMAP_BASE + drive_letter] = 0x00;  // Unit 0, slice 0
-    memory->write_bank(0x80, DRVMAP_BASE + drive_letter, 0x00);
+    memory->write_bank(0x80, (uint16_t)(DRVMAP_BASE + drive_letter), 0x00);
     emu_log("[EMU_INIT] Drive %c: = MD0 (RAM disk)\n", 'A' + drive_letter);
     drive_letter++;
   }
@@ -426,7 +426,7 @@ int emu_populate_drive_map(banked_mem* memory, HBIOSDispatch* hbios,
   // MD1 (ROM disk) if enabled
   if (romd_banks > 0 && drive_letter < 16) {
     rom[DRVMAP_BASE + drive_letter] = 0x01;  // Unit 1, slice 0
-    memory->write_bank(0x80, DRVMAP_BASE + drive_letter, 0x01);
+    memory->write_bank(0x80, (uint16_t)(DRVMAP_BASE + drive_letter), 0x01);
     emu_log("[EMU_INIT] Drive %c: = MD1 (ROM disk)\n", 'A' + drive_letter);
     drive_letter++;
   }
@@ -596,8 +596,8 @@ void emu_copy_rom_apps_to_ram(banked_mem* memory) {
           app_count, ROM_APP_START_BANK, app_ram_start);
 
   for (int i = 0; i < app_count; i++) {
-    uint8_t rom_bank = ROM_APP_START_BANK + i;
-    uint8_t ram_bank = app_ram_start + i;
+    uint8_t rom_bank = (uint8_t)(ROM_APP_START_BANK + i);
+    uint8_t ram_bank = (uint8_t)(app_ram_start + i);
 
     // Copy entire 32KB bank from ROM to RAM
     for (uint16_t addr = 0; addr < 0x8000; addr++) {

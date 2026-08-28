@@ -145,20 +145,22 @@ diff. Everything else here is the CLI, the build and the web page.
   same `/W3 /std:c++17` and the same defines that project sets, against the
   pinned `cpmemu` clone for `qkz80`'s headers. Compile only: there is no MSVC
   build of the emulator to link and no test program that would run there. No
-  `/WX`, deliberately — `hbios_dispatch.cc` emits six C4267 warnings that are
-  the Z80 64K wrap working as intended, and `z80cpmw` suppresses them on its
-  side.
+  `/WX`, deliberately — at `/W3` `cl` compiles the `qkz80` headers along with
+  these files, and this job exists to answer "does the shared core still compile
+  with `cl`", not to make a dependency's warnings red. (The six C4267 warnings
+  `hbios_dispatch.cc` used to emit on its own now carry explicit casts; see the
+  narrowing-warnings entry under **Changed**.)
 
-  The `macos` job builds the CLI with Apple clang and runs
-  `test_vda_keyboard`, `test_hbios_hostname` and `test_cli_hostfile` through
-  the makefile's own targets. Not `make test`: `tests/cli_console.cc` was still
-  flaky when the job was written, and the disk check compares bytes inside disk
-  images and says nothing about the compiler, so running it twice would only
-  add a second way to go red.
+  The `macos` job builds the CLI with Apple clang and runs the compiled test
+  programs through the makefile's own targets. Not `make test`: the disk check
+  compares bytes inside disk images and says nothing about the compiler, so
+  running it twice would only add a second way to go red.
 
-  **Neither job has ever been executed** — there is no Windows and no Mac on
-  the machine that wrote them — so the first push is the first run. They are
-  written to be as small as they can be for that reason, and `todo.txt` says so.
+  Both jobs have since run. The first push, run `33011944119` on `5920681`, went
+  red in the `macos` job at "Run the deterministic tests" — a real portability
+  defect in `tests/cli_hostfile.cc`, which compared strings across a macOS
+  symlink — and the fix is the commit after it. Run `33012239667` is green on
+  all three jobs.
 - **`make -C src qkz80-source`** — prints which of the four possible `qkz80`
   the build would use, without building anything.
 - 31 more checks in `tests/hbios_hostname.cc` — 34 to 65 — covering `0xEA` and
@@ -296,6 +298,42 @@ diff. Everything else here is the CLI, the build and the web page.
   write there is best-effort. They close through `atexit` now. Nothing can reach
   this today — the whole family still has no caller, see `todo.txt` — which is
   exactly why it would have gone unnoticed on the day something did.
+- **A built sibling `cpmemu` made every test binary die at start-up on macOS.**
+  `src/makefile`'s sister-checkout fallback tested for
+  `../../cpmemu/src/libqkz80.a` and then emitted `-L<that dir> -lqkz80`, and
+  `-lqkz80` does not have to resolve to the file that was tested for: `make
+  libs` in cpmemu leaves a `libqkz80.dylib` in the same directory and the
+  linker prefers it. Measured on macOS 27 with both present — `otool -L` on
+  `test_vda_keyboard` showed `/usr/local/lib/libqkz80.4.dylib`, which is the
+  `install_name` an uninstalled dylib carries, and every test aborted with
+  `dyld: Library not loaded` (exit 134) while `make -C src test` reported
+  `TESTS FAILED` with every individual check printing `PASS`. `DYLD_LIBRARY_PATH`
+  does not rescue it either: SIP strips `DYLD_*` when make spawns `/bin/sh`, so
+  the binary run by hand works and the same binary run by `make` does not. That
+  branch now names the archive, so the link uses the file the test found; anyone
+  who wants the shared library still sets `QKZ80_LIBS`. CI is unaffected — it
+  builds only `make libqkz80.a` and passes `QKZ80_LIBS` explicitly.
+- **`roms/verify_romwbw_pin.sh` went red in any tree that followed the
+  documented CI recipe.** Its two `find` calls pruned `.git` and `archive` and
+  nothing else, and every job in `test.yml` and `release.yml` does
+  `git clone https://github.com/avwohl/cpmemu.git` *in the workspace root* —
+  which is the tree root the script is pointed at. `cpmemu/tests` holds
+  seventeen hand-written Z80 `.bin` fixtures of a few hundred bytes each, so the
+  script reported seventeen "too small to contain an HCB" mismatches against
+  RomWBW v3.5.1 and exited 1 in a tree where nothing was wrong. Reproduced
+  exactly that way here — a real `git clone` of cpmemu beside a copy of `roms/`,
+  `FAIL: 17 mismatch(es)` — and clean afterwards.
+
+  The prune now also covers a sibling checkout sitting in the tree root, and
+  matches on two conditions rather than one. The path, not the name, because a
+  name prune reaches any depth and `z80cpmw` keeps its own sources in a
+  `z80cpmw/` subdirectory — which is exactly the tree the script is meant to
+  read when it is pointed at that port. And the directory has to have a `.git`
+  of its own, which is what makes it somebody else's tree rather than part of
+  this one, so a tree root that happens to be *named* `cpmemu` is still checked
+  in full.
+  Both behaviours are measured: a cloned `cpmemu` beside `roms/` is skipped, a
+  plain `z80cpmw/` directory holding a ROM is not.
 
 ### Changed
 
@@ -356,6 +394,102 @@ diff. Everything else here is the CLI, the build and the web page.
   6.0.8 is what `latest` resolves to as this is written, so the pin changes
   nothing about what the next release builds with; it only stops the answer
   moving on its own.
+- **The build turns on `-Wimplicit-int-conversion` and `-Wshorten-64-to-32`,**
+  and the 89 diagnostics they raised in this tree carry an explicit cast
+  instead. Both flags are Clang-only and both are probed with `$(shell ...)`
+  before being added, the way `cpmemu/src/makefile` guards its own: GCC does not
+  ignore an unknown `-W` flag, it fails the compile, and a hardcoded one has
+  stopped every GCC build in this family before.
+
+  `-Wimplicit-int-conversion` is Clang's name for what MSVC reports as C4267,
+  and the six warnings `z80cpmw` suppresses on its side turned out to be six of
+  89, on 86 lines across six files. Every one is a deliberate narrowing — a
+  `size_t` or `int` index truncated into a 16-bit guest address, which is the
+  Z80 64K wrap HBIOS wants, or an `int` expression stored into an 8-bit
+  register — so each site got a cast that says so, in the file's existing
+  `(uint16_t)(...)` idiom, and no behaviour changed. `-Wconversion` is still
+  deliberately out: it adds the core's intended mod-256 wraps on top, which is
+  the call cpmemu made too.
+
+  Two warnings per object file remain and they are not this repository's:
+  `qkz80_MK_INT16` in `cpmemu/src/qkz80_types.h` builds an `int` and hands it to
+  a `qkz80_uint16` parameter, so `qkz80_reg_pair.h:32` and `:35` are reported by
+  every file that calls `set_low()`/`set_high()`. `src/makefile`'s comment says
+  where the fix is; `todo.txt` carries it as an open item. `z80cpmw`'s
+  `/wd4267` on `hbios_dispatch.cc` is now removable.
+- **The macos CI job runs `tests/cli_console.cc` too.** It was left out with a
+  justification that was already stale in the commit that wrote it: the job said
+  the failure was "the pty round trip in `run_on_pty`", and that same tree's
+  `cli_console.cc` said in as many words that the pty round trip was never the
+  problem. The race was an assertion about an *empty* terminal running after the
+  handshake that lets the parent type, and the `before_input` hook fixed it —
+  see the Fixed entry above. Re-measured before adding it: 400 consecutive runs
+  on macOS 27 arm64 with Apple clang 21, 0 failures. The job's comment now says
+  that instead. The disk check stays out of the macos job on purpose: it
+  compares bytes inside images and says nothing about the compiler.
+- **`disks/verify_disk_utils.sh` asserts the `HBF_HOST_CAPS` interlock**, which
+  `docs/RELEASE_ORDER_2026-08-25.md` asked for and nothing implemented. Matching
+  the source was not enough on its own: an image is edited in place, so a
+  rebuild that restores an older `w8.com`, or an image recovered from before
+  v1.36, is a `W8` that hands a guest-supplied host path to a front end that has
+  promised nothing. The check searches the copy *inside each image* for the
+  three bytes `06 e9 cf` — `ld b,H_CAPS` then `rst 8`, the whole of
+  `check_host_path_safe` — and asks before the staleness comparison rather than
+  after, because the layout and byte checks both bail on a mismatch and the two
+  questions are different. Nothing in the file's text discriminates: the armed
+  1408-byte `w8.com` still in this repository's history prints the same
+  `Usage: W8 <cpmname> [hostpath]` as the 1792-byte interlocked one. Verified
+  both ways — the two tracked images pass, and the `w8.com` recovered from
+  `de85946` fails.
+
+  Done with `od` rather than `xxd -p | grep`: `xxd` is not on a stock Ubuntu
+  runner, and a flat hex string also matches across a byte boundary
+  (`b0 6e 9c f3` reads as `b06e9cf3`).
+- **`README.md` warns beside the disk-image table** that these images hand a
+  host path to whichever emulator opens them, and that an `ioscpm` build before
+  52 must not be given one. `docs/RELEASE_ORDER_2026-08-25.md` step 0 has asked
+  for this since it was written: it is the only measure that reaches someone who
+  already has the file, because they read the repo rather than re-clone.
+- **`docs/RELEASE_ORDER_2026-08-25.md` is corrected against the four working
+  trees**, since three other repositories point at it and were being told the
+  old state. Step 0 said "committed locally, NOT pushed" with `origin/main` at
+  `fc68ca0`; `main` and `v1.36` are both on `origin` (`refs/tags/v1.36` peels to
+  `04ad2b6`, `main` is five commits past it) and `HEAD` no longer serves an
+  armed `W8`. Step 1 said `ioscpm`'s fix was uncommitted; it is `bb5543f`. Step
+  2 said `cpmdroid` was not checked out; it is, at `c6756af`, with its code half
+  done. Step 3's named change landed in `z80cpmw` `2f10d4c`, but that port does
+  not define `emu_host_file_get_read_name()`, which the post-v1.36 core calls
+  unconditionally — so it will not link, and the doc now records that. And a
+  section was added for a second data-loss path the document never mentioned:
+  `ioscpm`'s `checkCatalogVersionAndInvalidate()` deletes every `.img` in
+  `Documents/Disks` on any change to `disks.xml`'s `version` attribute — user
+  imports and app-created disks included, which the catalog cannot restore —
+  and step 4 is what tells you to bump that attribute.
+- **`todo.txt` went from 269 lines to 127**, and holds only work somebody could
+  start. Closing an item had been producing a paragraph explaining that it
+  closed, longer than the item was, so roughly two lines in three were not open
+  work: post-mortems of fixed bugs, re-readings of parity tables, and
+  "the cleanup half is fixed" sentences that are already in the commit that
+  fixed them. Those are deleted rather than summarised — that summary is the
+  disease.
+
+  Three claims in it were false at `HEAD` and went with them: that `node` is not
+  on `PATH` and `make -C src test` therefore prints `SKIP web JS tests` (it is,
+  and it does not — both JS suites run and pass), that the `macos` and `msvc`
+  jobs "have never been executed" (both ran the day the sentence was written;
+  see the CI entry above), and a fourteen-line restatement of the `cpmtools`
+  libdsk 8 MB ceiling, which is recorded in more detail in `disks/diskdefs`'
+  own header and again in `.claude/CLAUDE.md`.
+
+  Every surviving item now carries a tag — `[BROWSER]`, `[EMSCRIPTEN]`,
+  `[DECISION]`, `[RELEASE]`, `[MAC/LINUX]`, `[WINDOWS]` — saying what a machine
+  has to be able to do to take it, and cites a function or a greppable symbol
+  rather than a `file:line` that rots within hours.
+- **`MANUAL_CHECKS.md`** — the checks that need a person at a keyboard, which is
+  all of the web keyboard pass, the vendored xterm coming up at all, and the two
+  `W8` behaviours only a browser shows. `todo.txt` keeps one line pointing here.
+  Items are deleted once someone runs them; the file is not a log of checks that
+  were done. Same convention as `cpmemu` and `z80cpmw`, which already had one.
 
 ## [1.36] - 2026-08-25
 
@@ -622,6 +756,12 @@ images.
   over. xterm.js is a more complete VT than any native front end in this family;
   this filter was what made it look otherwise. It forwards every byte now,
   keeping only the LF → CR LF rewrite.
+
+  Corrected since: that is true of `Module.onConsoleOutput` and false of the
+  path as a whole. `emu_console_write_char()` in `emu_io_wasm.cc` masks to
+  `0x7F` before the byte ever reaches JavaScript, so no high-bit byte can reach
+  xterm today whatever the page does. The mask is an open question in
+  `todo.txt`, not a regression from this change.
 - **`Module.onError` is implemented.** `emu_io_wasm.cc` has always called it and
   nothing ever defined it, so every error the core reported went nowhere — a
   large part of why the dead VDA/sound wiring survived unnoticed, since the one

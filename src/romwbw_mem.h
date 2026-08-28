@@ -260,12 +260,15 @@ public:
         uint16_t range_start = 0;
         bool in_data_range = false;
 
+        // addr is 32-bit so `addr < 0x10000` can terminate; the probes take a
+        // 16-bit guest address, which is what its low half is.
         for (uint32_t addr = org_addr; addr < 0x10000; addr++) {
-            bool is_code = was_executed(addr);
-            bool is_data = (was_data_read(addr) || was_data_written(addr)) && !is_code;
+            const uint16_t a = (uint16_t)addr;
+            bool is_code = was_executed(a);
+            bool is_data = (was_data_read(a) || was_data_written(a)) && !is_code;
 
             if (is_data && !in_data_range) {
-                range_start = addr;
+                range_start = a;
                 in_data_range = true;
             } else if (!is_data && in_data_range) {
                 if (addr - 1 > range_start) {
@@ -284,7 +287,7 @@ public:
         fprintf(f, "\n# Entry points (start of executed code regions)\n");
         bool was_code = false;
         for (uint32_t addr = org_addr; addr < 0x10000; addr++) {
-            bool is_code = was_executed(addr);
+            bool is_code = was_executed((uint16_t)addr);
             if (is_code && !was_code) {
                 fprintf(f, "-e %04X\n", addr);
             }

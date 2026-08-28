@@ -138,7 +138,7 @@ struct Rig {
   // Fill the buffer area with a byte no answer would ever contain, so an
   // untouched cell is distinguishable from a written one.
   void poison(uint16_t at, int n, uint8_t with = 0xEE) {
-    for (int i = 0; i < n; i++) mem.store_mem(at + i, with);
+    for (int i = 0; i < n; i++) mem.store_mem((uint16_t)(at + i), with);
   }
 
   void call(uint8_t func, uint8_t c, uint16_t de) {
@@ -157,7 +157,7 @@ struct Rig {
   std::string str(uint16_t a, int cap = 512) {
     std::string s;
     for (int i = 0; i < cap; i++) {
-      uint8_t ch = mem.fetch_mem(a + i);
+      uint8_t ch = mem.fetch_mem((uint16_t)(a + i));
       if (ch == 0) break;
       s += (char)ch;
     }

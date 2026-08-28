@@ -442,7 +442,7 @@ void HBIOSDispatch::populateDiskUnitTable() {
   for (int i = 0; i < 16; i++) {
     for (int b = 0; b < 4; b++) {
       rom[DISKUT_BASE + i * 4 + b] = 0xFF;
-      memory->write_bank(0x80, DISKUT_BASE + i * 4 + b, 0xFF);
+      memory->write_bank(0x80, (uint16_t)(DISKUT_BASE + i * 4 + b), 0xFF);
     }
   }
 
@@ -453,14 +453,14 @@ void HBIOSDispatch::populateDiskUnitTable() {
   for (int i = 0; i < 16 && disk_idx < 16; i++) {
     if (debug_log) debug_log("[DISKUT] disks[%d].is_open = %d, size = %zu\n", i, disks[i].is_open ? 1 : 0, disks[i].size);
     if (disks[i].is_open) {
-      rom[DISKUT_BASE + disk_idx * 4 + 0] = 0x09;  // DIODEV_HDSK
-      rom[DISKUT_BASE + disk_idx * 4 + 1] = i;     // HDSK unit number
-      rom[DISKUT_BASE + disk_idx * 4 + 2] = 0x00;  // No special attrs
+      rom[DISKUT_BASE + disk_idx * 4 + 0] = 0x09;        // DIODEV_HDSK
+      rom[DISKUT_BASE + disk_idx * 4 + 1] = (uint8_t)i;  // HDSK unit number
+      rom[DISKUT_BASE + disk_idx * 4 + 2] = 0x00;        // No special attrs
       rom[DISKUT_BASE + disk_idx * 4 + 3] = 0x00;
-      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 0, 0x09);
-      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 1, i);
-      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 2, 0x00);
-      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 3, 0x00);
+      memory->write_bank(0x80, (uint16_t)(DISKUT_BASE + disk_idx * 4 + 0), 0x09);
+      memory->write_bank(0x80, (uint16_t)(DISKUT_BASE + disk_idx * 4 + 1), (uint8_t)i);
+      memory->write_bank(0x80, (uint16_t)(DISKUT_BASE + disk_idx * 4 + 2), 0x00);
+      memory->write_bank(0x80, (uint16_t)(DISKUT_BASE + disk_idx * 4 + 3), 0x00);
       if (debug_log) debug_log("[DISKUT] Entry %d: HD%d (hard disk, %zu bytes)\n", disk_idx, i, disks[i].size);
       disk_idx++;
     }
@@ -470,14 +470,14 @@ void HBIOSDispatch::populateDiskUnitTable() {
   for (int i = 0; i < 2 && disk_idx < 16; i++) {
     if (md_disks[i].is_enabled) {
       // Write to both ROM (for boot loader) and RAM bank 0x80 (working copy)
-      rom[DISKUT_BASE + disk_idx * 4 + 0] = 0x00;  // DIODEV_MD
-      rom[DISKUT_BASE + disk_idx * 4 + 1] = i;     // Unit number
-      rom[DISKUT_BASE + disk_idx * 4 + 2] = 0x00;  // No special attrs
+      rom[DISKUT_BASE + disk_idx * 4 + 0] = 0x00;        // DIODEV_MD
+      rom[DISKUT_BASE + disk_idx * 4 + 1] = (uint8_t)i;  // Unit number
+      rom[DISKUT_BASE + disk_idx * 4 + 2] = 0x00;        // No special attrs
       rom[DISKUT_BASE + disk_idx * 4 + 3] = 0x00;
-      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 0, 0x00);
-      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 1, i);
-      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 2, 0x00);
-      memory->write_bank(0x80, DISKUT_BASE + disk_idx * 4 + 3, 0x00);
+      memory->write_bank(0x80, (uint16_t)(DISKUT_BASE + disk_idx * 4 + 0), 0x00);
+      memory->write_bank(0x80, (uint16_t)(DISKUT_BASE + disk_idx * 4 + 1), (uint8_t)i);
+      memory->write_bank(0x80, (uint16_t)(DISKUT_BASE + disk_idx * 4 + 2), 0x00);
+      memory->write_bank(0x80, (uint16_t)(DISKUT_BASE + disk_idx * 4 + 3), 0x00);
       emu_log("[DISKUT] Entry %d: MD%d (memory disk)\n", disk_idx, i);
       disk_idx++;
     }
@@ -507,7 +507,7 @@ void HBIOSDispatch::clearRomApps() {
 }
 
 int HBIOSDispatch::findRomApp(char key) const {
-  char upper_key = std::toupper(key);
+  char upper_key = (char)std::toupper(key);
   for (size_t i = 0; i < rom_apps.size(); i++) {
     if (std::toupper(rom_apps[i].key) == upper_key && rom_apps[i].is_loaded) {
       return (int)i;
@@ -717,7 +717,7 @@ void HBIOSDispatch::doRet() {
   uint16_t sp = cpu->regs.SP.get_pair16();
   uint8_t lo = memory->fetch_mem(sp);
   uint8_t hi = memory->fetch_mem(sp + 1);
-  uint16_t ret_addr = lo | (hi << 8);
+  uint16_t ret_addr = (uint16_t)(lo | (hi << 8));
   cpu->regs.SP.set_pair16(sp + 2);
   cpu->regs.PC.set_pair16(ret_addr);
 
@@ -1086,13 +1086,13 @@ void HBIOSDispatch::handleDIO() {
 
           uint32_t bank_offset = md.current_lba / sectors_per_bank;
           uint32_t sector_in_bank = md.current_lba % sectors_per_bank;
-          uint8_t src_bank = md.start_bank + bank_offset;
-          uint16_t src_offset = sector_in_bank * 512;
+          uint8_t src_bank = (uint8_t)(md.start_bank + bank_offset);
+          uint16_t src_offset = (uint16_t)(sector_in_bank * 512);
 
           // Copy 512 bytes from bank memory to buffer
           for (int j = 0; j < 512; j++) {
-            uint8_t byte = memory->read_bank(src_bank, src_offset + j);
-            write_to_bank(buffer + s * 512 + j, byte);
+            uint8_t byte = memory->read_bank(src_bank, (uint16_t)(src_offset + j));
+            write_to_bank((uint16_t)(buffer + s * 512 + j), byte);
           }
 
           md.current_lba++;
@@ -1115,7 +1115,7 @@ void HBIOSDispatch::handleDIO() {
               break;
             }
             for (size_t i = 0; i < 512; i++) {
-              write_to_bank(buffer + s * 512 + i, sector_buf[i]);
+              write_to_bank((uint16_t)(buffer + s * 512 + i), sector_buf[i]);
             }
             blocks_read++;
           }
@@ -1127,7 +1127,7 @@ void HBIOSDispatch::handleDIO() {
               break;
             }
             for (size_t i = 0; i < 512; i++) {
-              write_to_bank(buffer + s * 512 + i, disks[hd_unit].data[(size_t)offset + i]);
+              write_to_bank((uint16_t)(buffer + s * 512 + i), disks[hd_unit].data[(size_t)offset + i]);
             }
             blocks_read++;
           }
@@ -1199,13 +1199,13 @@ void HBIOSDispatch::handleDIO() {
 
           uint32_t bank_offset = md.current_lba / sectors_per_bank;
           uint32_t sector_in_bank = md.current_lba % sectors_per_bank;
-          uint8_t dst_bank = md.start_bank + bank_offset;
-          uint16_t dst_offset = sector_in_bank * 512;
+          uint8_t dst_bank = (uint8_t)(md.start_bank + bank_offset);
+          uint16_t dst_offset = (uint16_t)(sector_in_bank * 512);
 
           // Copy 512 bytes from buffer to bank memory
           for (int j = 0; j < 512; j++) {
-            uint8_t byte = read_from_bank(buffer + s * 512 + j);
-            memory->write_bank(dst_bank, dst_offset + j, byte);
+            uint8_t byte = read_from_bank((uint16_t)(buffer + s * 512 + j));
+            memory->write_bank(dst_bank, (uint16_t)(dst_offset + j), byte);
           }
 
           md.current_lba++;
@@ -1225,7 +1225,7 @@ void HBIOSDispatch::handleDIO() {
           for (int s = 0; s < count; s++) {
             uint64_t offset = ((uint64_t)lba + s) * 512;
             for (size_t i = 0; i < 512; i++) {
-              sector_buf[i] = read_from_bank(buffer + s * 512 + i);
+              sector_buf[i] = read_from_bank((uint16_t)(buffer + s * 512 + i));
             }
             size_t written = emu_disk_write((emu_disk_handle)disks[hd_unit].handle,
                                             (size_t)offset, sector_buf, 512);
@@ -1256,7 +1256,7 @@ void HBIOSDispatch::handleDIO() {
               break;
             }
             for (size_t i = 0; i < 512; i++) {
-              disks[hd_unit].data[(size_t)offset + i] = read_from_bank(buffer + s * 512 + i);
+              disks[hd_unit].data[(size_t)offset + i] = read_from_bank((uint16_t)(buffer + s * 512 + i));
             }
             blocks_written++;
           }
@@ -1395,7 +1395,7 @@ void HBIOSDispatch::handleRTC() {
 
       // RomWBW format: YY MM DD HH MM SS (BCD)
       auto to_bcd = [](int v) -> uint8_t {
-        return ((v / 10) << 4) | (v % 10);
+        return (uint8_t)(((v / 10) << 4) | (v % 10));
       };
 
       memory->store_mem(buffer + 0, to_bcd(t.year % 100));
@@ -1457,7 +1457,7 @@ void HBIOSDispatch::handleRTC() {
       // Output: buffer filled with NVRAM data (5 bytes)
       uint16_t buffer = cpu->regs.HL.get_pair16();
       for (int i = 0; i < NVRAM_SIZE; i++) {
-        memory->store_mem(buffer + i, nvram_switches[i]);
+        memory->store_mem((uint16_t)(buffer + i), nvram_switches[i]);
       }
       if (debug_log) {
         emu_log("[RTC GETBLK] -> buffer at 0x%04X: %02X %02X %02X %02X %02X\n",
@@ -1472,7 +1472,7 @@ void HBIOSDispatch::handleRTC() {
       // Input: HL = buffer address with 5 bytes of NVRAM data
       uint16_t buffer = cpu->regs.HL.get_pair16();
       for (int i = 0; i < NVRAM_SIZE; i++) {
-        nvram_switches[i] = memory->fetch_mem(buffer + i);
+        nvram_switches[i] = memory->fetch_mem((uint16_t)(buffer + i));
       }
       // Recalculate checksum to ensure consistency
       recalcNvramChecksum();
@@ -1689,7 +1689,7 @@ void HBIOSDispatch::handleSYS() {
                   md_disks[1].is_enabled ? 1 : 0,
                   disks[0].is_open ? 1 : 0,
                   count);
-          cpu->regs.DE.set_low(count);
+          cpu->regs.DE.set_low((uint8_t)count);
           break;
         }
 
@@ -1711,8 +1711,8 @@ void HBIOSDispatch::handleSYS() {
 
         case SYSGET_BOOTINFO:
           // Boot info: D = boot unit, E = boot slice (saved during SYSBOOT)
-          cpu->regs.DE.set_high(saved_boot_unit);
-          cpu->regs.DE.set_low(saved_boot_slice);
+          cpu->regs.DE.set_high((uint8_t)saved_boot_unit);
+          cpu->regs.DE.set_low((uint8_t)saved_boot_slice);
           if (debug_log) {
             emu_log("[SYSGET BOOTINFO] Returning D=%d (unit), E=%d (slice)\n",
                     saved_boot_unit, saved_boot_slice);
@@ -1961,8 +1961,8 @@ void HBIOSDispatch::handleSYS() {
           // to set shadow bits, ensuring reads from either path get the updated value.
           uint8_t saved_bank = memory->get_current_bank();
           memory->select_bank(0x00);  // ROM bank 0 - writes go to shadow RAM + set shadow bit
-          memory->store_mem(0x010D, saved_boot_slice);  // CB_BOOTVOL low byte
-          memory->store_mem(0x010E, saved_boot_unit);   // CB_BOOTVOL high byte
+          memory->store_mem(0x010D, (uint8_t)saved_boot_slice);  // CB_BOOTVOL low byte
+          memory->store_mem(0x010E, (uint8_t)saved_boot_unit);   // CB_BOOTVOL high byte
           memory->select_bank(saved_bank);  // Restore previous bank
           if (debug_log) {
             emu_log("[SYSSET BOOTINFO] unit=%d slice=%d -> CB_BOOTVOL=0x%02X%02X\n",
@@ -1993,7 +1993,7 @@ void HBIOSDispatch::handleSYS() {
       char cmd_str[64];
       int i = 0;
       while (i < 63) {
-        uint8_t c = memory->fetch_mem(cmd_addr + i);
+        uint8_t c = memory->fetch_mem((uint16_t)(cmd_addr + i));
         if (c == 0 || c == '\r' || c == '\n') break;
         cmd_str[i++] = c;
       }
@@ -2044,8 +2044,8 @@ void HBIOSDispatch::handleVDA() {
 
     case HBF_VDAQRY: {
       // Query - return rows/cols
-      cpu->regs.DE.set_high(vda_cols);
-      cpu->regs.DE.set_low(vda_rows);
+      cpu->regs.DE.set_high((uint8_t)vda_cols);
+      cpu->regs.DE.set_low((uint8_t)vda_rows);
       break;
     }
 
@@ -2069,7 +2069,7 @@ void HBIOSDispatch::handleVDA() {
       // D = foreground, E = background (CGA 16-color)
       uint8_t fg = cpu->regs.DE.get_high();
       uint8_t bg = cpu->regs.DE.get_low();
-      vda_attr = (bg << 4) | (fg & 0x0F);
+      vda_attr = (uint8_t)((bg << 4) | (fg & 0x0F));
       emu_video_set_attr(vda_attr);
       break;
     }
@@ -2685,9 +2685,9 @@ void HBIOSDispatch::handleEXT() {
           size_t len = p - arg_start;
           if (len > 255) len = 255;
           for (size_t i = 0; i < len; i++) {
-            memory->store_mem(buf_addr + i, arg_start[i]);
+            memory->store_mem((uint16_t)(buf_addr + i), arg_start[i]);
           }
-          memory->store_mem(buf_addr + len, 0);  // Null terminate
+          memory->store_mem((uint16_t)(buf_addr + len), 0);  // Null terminate
           result = HBR_SUCCESS;
           break;
         }
@@ -2737,9 +2737,9 @@ bool HBIOSDispatch::bootFromDevice(const char* cmd_str) {
       }
 
       // Read metadata from offset 0x5E0
-      uint16_t load_addr = app_data[0x5EA] | (app_data[0x5EB] << 8);
-      uint16_t end_addr = app_data[0x5EC] | (app_data[0x5ED] << 8);
-      uint16_t entry_addr = app_data[0x5EE] | (app_data[0x5EF] << 8);
+      uint16_t load_addr = (uint16_t)(app_data[0x5EA] | (app_data[0x5EB] << 8));
+      uint16_t end_addr = (uint16_t)(app_data[0x5EC] | (app_data[0x5ED] << 8));
+      uint16_t entry_addr = (uint16_t)(app_data[0x5EE] | (app_data[0x5EF] << 8));
 
       if (debug_log) {
         emu_log("[SYSBOOT] ROM app load: 0x%04X-0x%04X entry: 0x%04X\n",
@@ -2800,8 +2800,8 @@ bool HBIOSDispatch::bootFromDevice(const char* cmd_str) {
   // to set shadow bits, ensuring reads from either path get the updated value.
   uint8_t saved_bank = memory->get_current_bank();
   memory->select_bank(0x00);  // ROM bank 0 - writes go to shadow RAM + set shadow bit
-  memory->store_mem(0x010D, boot_slice);  // CB_BOOTVOL low byte
-  memory->store_mem(0x010E, boot_unit);   // CB_BOOTVOL high byte
+  memory->store_mem(0x010D, (uint8_t)boot_slice);  // CB_BOOTVOL low byte
+  memory->store_mem(0x010E, (uint8_t)boot_unit);   // CB_BOOTVOL high byte
   memory->select_bank(saved_bank);  // Restore previous bank
 
   if (debug_log) {
@@ -2828,9 +2828,9 @@ bool HBIOSDispatch::bootFromDevice(const char* cmd_str) {
   // Offset 26-27: PR_LOAD (load address)
   // Offset 28-29: PR_END (end address)
   // Offset 30-31: PR_ENTRY (entry point)
-  uint16_t load_addr = meta_buf[26] | (meta_buf[27] << 8);
-  uint16_t end_addr = meta_buf[28] | (meta_buf[29] << 8);
-  uint16_t entry_addr = meta_buf[30] | (meta_buf[31] << 8);
+  uint16_t load_addr = (uint16_t)(meta_buf[26] | (meta_buf[27] << 8));
+  uint16_t end_addr = (uint16_t)(meta_buf[28] | (meta_buf[29] << 8));
+  uint16_t entry_addr = (uint16_t)(meta_buf[30] | (meta_buf[31] << 8));
 
   if (debug_log) {
     emu_log("[SYSBOOT] Load: 0x%04X-0x%04X Entry: 0x%04X\n",
@@ -2868,7 +2868,7 @@ bool HBIOSDispatch::bootFromDevice(const char* cmd_str) {
   }
 
   // Set up boot registers
-  cpu->regs.DE.set_high(boot_unit);
+  cpu->regs.DE.set_high((uint8_t)boot_unit);
   cpu->regs.DE.set_low(0);
 
   // Jump to entry point
@@ -2899,7 +2899,7 @@ void HBIOSDispatch::setNvramSetting(const std::string& setting) {
 
   if (isalpha(first_char)) {
     // ROM app boot - use the letter as the app selection
-    char app_char = toupper(first_char);
+    char app_char = (char)toupper(first_char);
     nvram_switches[1] = app_char;         // L = app character
     nvram_switches[2] = BOPTS_ROM;        // H = ROM boot flag (bit 7)
     nvram_switches[3] = ABOOT_AUTO;       // Enable autoboot, 0 timeout (immediate)

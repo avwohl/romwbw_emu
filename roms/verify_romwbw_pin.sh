@@ -31,6 +31,12 @@ set -u
 
 SELF_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="${1:-$SELF_ROOT}"
+# Resolved to an absolute path so the -path prunes below match whatever form
+# the caller typed ("../z80cpmw", "z80cpmw/", "."), and so relname() strips a
+# prefix that is actually there.
+if [ -d "$ROOT" ]; then
+    ROOT="$(cd "$ROOT" && pwd)"
+fi
 PIN_H="${ROMWBW_PIN_H:-$SELF_ROOT/src/romwbw_pin.h}"
 
 fail=0
@@ -87,12 +93,43 @@ echo
 # archive/ is skipped along with .git: it exists to hold superseded material
 # on purpose (the RomWBW v3.6.0 stock ROM lives there awaiting an upgrade),
 # so flagging it would make a correct tree fail forever.
+#
+# So is any sibling checkout sitting in the tree root, and that one is not
+# cosmetic. Every job in .github/workflows/test.yml and release.yml does
+# `git clone https://github.com/avwohl/cpmemu.git` in the workspace root -
+# which is the tree root this script is pointed at - and cpmemu/tests holds
+# seventeen hand-written Z80 .bin fixtures of a few hundred bytes each. Without
+# this prune all seventeen are reported as "too small to contain an HCB" and
+# the run exits 1: seventeen mismatches against the pin in a tree where nothing
+# is wrong. release.yml clones emsdk beside it for the same reason, and a port
+# following the same recipe can land any of the rest of this family there.
+#
+# Two conditions, and both are needed. The prune matches a full PATH rather
+# than a name, because a name prune reaches any depth: z80cpmw keeps its own
+# sources in a z80cpmw/ subdirectory, which is exactly the tree this script is
+# meant to read when it is pointed at that port
+# (`romwbw_emu/roms/verify_romwbw_pin.sh ../z80cpmw`). And the directory has to
+# be a checkout in its own right - it has a .git of its own - because that is
+# what makes it somebody else's tree rather than part of this one. A tree root
+# that happens to be named cpmemu is then still checked in full.
 scratch=$(mktemp -d 2>/dev/null || mktemp -d -t rwbwpin)
 trap 'rm -rf "$scratch"' EXIT INT TERM
-find "$ROOT" \( -name .git -o -name archive \) -prune -o \
+# Built in the positional parameters rather than one string: a tree root with
+# a space in it has to survive into find's expression intact, and "$@" is the
+# only POSIX list that does. The script's own argument was read into ROOT
+# above, so there is nothing left in "$@" to lose.
+set -- -name .git -o -name archive
+for sibling in cpmemu emsdk romwbw_emu z80cpmw cpmdroid ioscpm RomWBW; do
+    # -e, not -d: a worktree or submodule checkout has .git as a file.
+    if [ -e "$ROOT/$sibling/.git" ]; then
+        set -- "$@" -o -path "$ROOT/$sibling"
+    fi
+done
+
+find "$ROOT" \( "$@" \) -prune -o \
     -type f \( -name '*.rom' -o -name '*.bin' \) \
     -print 2>/dev/null | sort > "$scratch/roms"
-find "$ROOT" \( -name .git -o -name archive \) -prune -o \
+find "$ROOT" \( "$@" \) -prune -o \
     -type f -name '*.img' \
     -print 2>/dev/null | sort > "$scratch/disks"
 

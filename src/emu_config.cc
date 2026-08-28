@@ -92,7 +92,7 @@ bool emu_config_load(const std::string& path, EmuConfig& out, std::string& err) 
           return false;
         }
         EmuConfig::RomApp app;
-        app.key = toupper(key[0]);
+        app.key = (char)toupper(key[0]);
         app.name = a.value("name", std::string());
         app.path = app_path;
         out.romapps.push_back(app);

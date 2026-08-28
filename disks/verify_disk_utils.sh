@@ -42,6 +42,16 @@
 # the wrong one prints a garbage directory, which reads as "no such file".  That
 # is exactly how hd1k_infocom.img was once recorded as carrying no w8.com when
 # it carries both.  Hence the explicit table below rather than one default.
+#
+# One thing more than "matches the source" is asserted, and only of w8.com: that
+# the copy on the image asks HBF_HOST_CAPS before it hands a host path to the
+# emulator.  Matching the source is not enough on its own, because an image is
+# edited in place - a rebuild that puts back an older w8.com, or an image
+# restored from before v1.36, is a W8 that gives a host path to a front end that
+# has made no promise about where it lands.  docs/RELEASE_ORDER_2026-08-25.md
+# asks for exactly this check.  Nothing in the file's text discriminates: the
+# armed 1408-byte build prints the same "Usage: W8 <cpmname> [hostpath]" as the
+# 1792-byte interlocked one, so the assertion is on the instruction bytes.
 
 set -u
 
@@ -58,6 +68,7 @@ cpmtool() { ( cd "$ROOT/disks" && "$@" ); }
 fail=0
 skip=0
 checked=0
+interlocked=0
 
 note()  { printf '  %s\n' "$*"; }
 
@@ -72,6 +83,20 @@ is_zero_padded() {
     # No {512} repetition count: BSD grep caps repetition at 255.  "contains no
     # character other than 0" says the same thing and is portable.
     ! head -c 256 "$1" | od -An -v -tx1 | tr -d ' \n' | grep -q '[^0]'
+}
+# True when $1 contains `ld b,H_CAPS` / `rst 8` - the three bytes 06 e9 cf that
+# w8.asm's check_host_path_safe assembles to.  That sequence is the whole of the
+# interlock: W8 asks the emulator whether a guest-supplied host path can escape
+# the directory the front end writes to, and refuses the path when the answer is
+# "no such call" or "no guarantee".
+#
+# Bytes, via od, rather than `xxd -p | grep`: xxd is not on a stock Ubuntu runner
+# (it ships with vim-common), and a flat hex string also matches across a byte
+# boundary - 0xB0 0x6E 0x9C 0xF3 reads as "b06e9cf3" and would answer yes.  The
+# spaces od leaves between bytes are what keeps the match aligned, so the
+# newlines become spaces rather than being deleted.
+has_caps_interlock() {
+    od -An -v -tx1 "$1" | tr '\n' ' ' | tr -s ' ' | grep -q ' 06 e9 cf '
 }
 ok()    { printf 'ok    %-30s %s\n' "$1" "$2"; }
 bad()   { printf 'FAIL  %-30s %s\n' "$1" "$2"; fail=$((fail + 1)); }
@@ -136,6 +161,33 @@ for util in $UTILS; do
             continue
         fi
 
+        # Asserted on the copy the image holds, not on the one just built: what
+        # ships is the image, and an armed W8 gets onto one by being restored or
+        # copied from an older tree, not by being assembled here.  Asked before
+        # the layout and byte comparisons below rather than after, because both
+        # of those `continue` on a mismatch and this question is independent of
+        # either: a search for three instruction bytes does not care whether the
+        # file is a bare .COM or a padded memory image, and "is it stale" and
+        # "does it hand over a host path unguarded" are different answers.
+        if [ "$util" = w8 ]; then
+            if has_caps_interlock "$TMP/from_img.com"; then
+                interlocked=$((interlocked + 1))
+                ok "$(basename "$img") w8.com" "asks HBF_HOST_CAPS before using a host path"
+            else
+                bad "$(basename "$img") w8.com" "hands over a host path with no interlock"
+                note "      The bytes 06 e9 cf - \`ld b,H_CAPS\` then \`rst 8\` - are not in"
+                note "      the copy on this image, so it is a W8 from before v1.36: it"
+                note "      passes a guest-supplied host path to whatever emulator opens"
+                note "      the image, and that emulator may have made no promise about"
+                note "      where the path can reach.  The usage message does not tell"
+                note "      the two apart: the armed 1408-byte w8.com in this"
+                note "      repository's own history prints the same"
+                note "      \"Usage: W8 <cpmname> [hostpath]\" as the 1792-byte"
+                note "      interlocked one, which is why the check is on bytes."
+                note "      rebuild:  disks/rebuild_disk_utils.sh"
+            fi
+        fi
+
         # Both layouts must match before cmp can speak: a bare .COM and a
         # padded memory image of the same program differ in every address
         # constant by exactly 0x100, so a byte compare would call them
@@ -185,7 +237,10 @@ if [ "$checked" -eq 0 ]; then
 fi
 if [ "$fail" -eq 0 ]; then
     echo "PASS: $checked disk-resident binar$( [ "$checked" -eq 1 ] && echo y || echo ies ) match the source"
+    echo "PASS: $interlocked shipped w8.com carr$( [ "$interlocked" -eq 1 ] && echo ies || echo y ) the HBF_HOST_CAPS interlock"
     exit 0
 fi
-echo "FAIL: $fail disk-resident binary/binaries are stale against the source"
+# Not "stale" any more: $fail now also counts a w8.com that is byte-identical to
+# the source and still has no interlock, which is a different fault.
+echo "FAIL: $fail check(s) failed on the disk-resident binaries"
 exit 1

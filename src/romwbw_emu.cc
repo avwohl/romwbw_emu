@@ -181,7 +181,7 @@ static bool parse_escape_char(const char* esc, char* out) {
   // rejects a multi-byte literal like --escape=e-acute, which truncated to
   // its UTF-8 lead byte and left the guest receiving the orphaned trail.
   if (esc[0] == '^' && esc[1] != '\0' && esc[2] == '\0') {
-    char c = toupper((unsigned char)esc[1]);
+    char c = (char)toupper((unsigned char)esc[1]);
     if (c >= '@' && c <= '_') {
       *out = c - '@';
       return true;
@@ -232,22 +232,22 @@ static bool load_symbols(const char* filename) {
 
     // Try "ADDR SYMBOL" format first
     if (sscanf(line, "%x %63s", &addr, sym) == 2) {
-      symbols[sym] = addr;
-      addr_to_symbol[addr] = sym;
+      symbols[sym] = (uint16_t)addr;
+      addr_to_symbol[(uint16_t)addr] = sym;
     }
     // Try "SYMBOL = ADDR" format
     else if (sscanf(line, "%63s = %x", sym, &addr) == 2 ||
              sscanf(line, "%63s =%x", sym, &addr) == 2 ||
              sscanf(line, "%63s= %x", sym, &addr) == 2 ||
              sscanf(line, "%63s=%x", sym, &addr) == 2) {
-      symbols[sym] = addr;
-      addr_to_symbol[addr] = sym;
+      symbols[sym] = (uint16_t)addr;
+      addr_to_symbol[(uint16_t)addr] = sym;
     }
     // Try "SYMBOL EQU ADDR" format (common in assembler listings)
     else if (sscanf(line, "%63s EQU %x", sym, &addr) == 2 ||
              sscanf(line, "%63s equ %x", sym, &addr) == 2) {
-      symbols[sym] = addr;
-      addr_to_symbol[addr] = sym;
+      symbols[sym] = (uint16_t)addr;
+      addr_to_symbol[(uint16_t)addr] = sym;
     }
   }
 
@@ -341,7 +341,7 @@ static bool read_console_line(char* buf, size_t buflen) {
   fprintf(stderr, "sim> ");
   fflush(stderr);
 
-  if (!fgets(buf, buflen, stdin)) {
+  if (!fgets(buf, (int)buflen, stdin)) {
     emu_io_init();
     return false;
   }
@@ -399,7 +399,7 @@ static ConsoleResult handle_console_mode(qkz80* cpu, banked_mem* memory) {
     if (cmd[0] == '\0') continue;
 
     // Convert command to lowercase for comparison
-    for (char* p = cmd; *p; p++) *p = tolower(*p);
+    for (char* p = cmd; *p; p++) *p = (char)tolower(*p);
 
     // Continue/Go
     if (strcmp(cmd, "g") == 0 || strcmp(cmd, "go") == 0 ||
@@ -552,8 +552,8 @@ static ConsoleResult handle_console_mode(qkz80* cpu, banked_mem* memory) {
         fprintf(stderr, "Invalid address: %s\n", arg1);
         continue;
       }
-      breakpoints.insert(addr);
-      fprintf(stderr, "  Breakpoint set at %s\n", format_address(addr).c_str());
+      breakpoints.insert((uint16_t)addr);
+      fprintf(stderr, "  Breakpoint set at %s\n", format_address((uint16_t)addr).c_str());
       continue;
     }
 
@@ -568,8 +568,8 @@ static ConsoleResult handle_console_mode(qkz80* cpu, banked_mem* memory) {
         fprintf(stderr, "Invalid address: %s\n", arg1);
         continue;
       }
-      if (breakpoints.erase(addr)) {
-        fprintf(stderr, "  Breakpoint cleared at %s\n", format_address(addr).c_str());
+      if (breakpoints.erase((uint16_t)addr)) {
+        fprintf(stderr, "  Breakpoint cleared at %s\n", format_address((uint16_t)addr).c_str());
       } else {
         fprintf(stderr, "  No breakpoint at %04X\n", addr);
       }
@@ -619,8 +619,8 @@ static ConsoleResult handle_console_mode(qkz80* cpu, banked_mem* memory) {
         fprintf(stderr, "Invalid address: %s\n", arg1);
         continue;
       }
-      cpu->regs.PC.set_pair16(addr);
-      fprintf(stderr, "  PC set to %s\n", format_address(addr).c_str());
+      cpu->regs.PC.set_pair16((uint16_t)addr);
+      fprintf(stderr, "  PC set to %s\n", format_address((uint16_t)addr).c_str());
       continue;
     }
 
@@ -1011,11 +1011,11 @@ int main(int argc, char** argv) {
     } else if (strcmp(argv[i], "--strict-io") == 0) {
       strict_io_mode = true;
     } else if (strncmp(argv[i], "--sense=", 8) == 0) {
-      sense = strtol(argv[i] + 8, nullptr, 0);
+      sense = (int)strtol(argv[i] + 8, nullptr, 0);
     } else if (strncmp(argv[i], "--load=", 7) == 0) {
-      load_addr = strtol(argv[i] + 7, nullptr, 0);
+      load_addr = (uint16_t)strtol(argv[i] + 7, nullptr, 0);
     } else if (strncmp(argv[i], "--start=", 8) == 0) {
-      start_addr = strtol(argv[i] + 8, nullptr, 0);
+      start_addr = (uint16_t)strtol(argv[i] + 8, nullptr, 0);
       start_addr_set = true;
     } else if (strncmp(argv[i], "--disk", 6) == 0) {
       // Parse --disk0=file, --disk1=file (preferred form)
@@ -1055,7 +1055,7 @@ int main(int argc, char** argv) {
 
       if (isalpha(opt[0]) && opt[1] == '=') {
         // Format: K=Name:path
-        def.key = toupper(opt[0]);
+        def.key = (char)toupper(opt[0]);
         const char* rest = opt + 2;
         const char* colon = strchr(rest, ':');
         if (colon && colon[1] != '\0') {
@@ -1067,7 +1067,7 @@ int main(int argc, char** argv) {
         }
       } else if (isalpha(opt[0]) && opt[1] == ':') {
         // Format: K:path (auto-name)
-        def.key = toupper(opt[0]);
+        def.key = (char)toupper(opt[0]);
         def.path = opt + 2;
         // Auto-generate name from key
         if (def.key == 'C') def.name = "CP/M 2.2";
@@ -1622,7 +1622,7 @@ int main(int argc, char** argv) {
         !waiting_for_int_delivery) {
       // Request interrupt using upstream API
       if (maskable_int_config.use_rst) {
-        cpu.request_rst(maskable_int_config.rst_num);
+        cpu.request_rst((uint8_t)maskable_int_config.rst_num);
       } else {
         // CALL mode: use IM0 with RST 38H vector (0xFF)
         cpu.request_int(0xFF);
@@ -1667,7 +1667,7 @@ int main(int argc, char** argv) {
           fprintf(stderr, "Current bank: 0x%02X\n", cur_bank);
           fprintf(stderr, "Code dump 0x4D50-0x4D90:\n");
           for (int i = 0; i < 64; i++) {
-            fprintf(stderr, "%02X ", memory.fetch_mem(0x4D50 + i));
+            fprintf(stderr, "%02X ", memory.fetch_mem((uint16_t)(0x4D50 + i)));
             if ((i + 1) % 16 == 0) fprintf(stderr, "\n");
           }
         }

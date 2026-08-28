@@ -55,11 +55,45 @@ endif
 QKZ80_CFLAGS ?= $(shell pkg-config --cflags qkz80 2>/dev/null || \
     ([ -f "$(SISTER_QKZ80_PATH)/qkz80.h" ] && echo "-I$(SISTER_QKZ80)") || \
     echo "-I/usr/local/include/qkz80")
+# The sister-checkout branch names the archive instead of saying
+# "-L<dir> -lqkz80", which is what it used to say.  The test above it is
+# for libqkz80.a, but -lqkz80 does not have to resolve to the file that was
+# tested for: `make libs` in cpmemu leaves a libqkz80.dylib in the same
+# directory and the linker prefers it.  Measured here, on macOS 27: with
+# both present every test binary linked against the dylib and then died at
+# start-up with "Library not loaded: /usr/local/lib/libqkz80.4.dylib",
+# because that is the install_name a not-yet-installed dylib carries, and
+# DYLD_LIBRARY_PATH cannot rescue it - SIP strips DYLD_* when make spawns
+# /bin/sh, so `make test` fails even where the binary run by hand does not.
+# Naming the archive makes the link use the file the test found.  Anyone who
+# does want the shared library sets QKZ80_LIBS.
 QKZ80_LIBS ?= $(shell pkg-config --libs qkz80 2>/dev/null || \
-    ([ -f "$(SISTER_QKZ80_PATH)/libqkz80.a" ] && echo "-L$(SISTER_QKZ80) -lqkz80") || \
+    ([ -f "$(SISTER_QKZ80_PATH)/libqkz80.a" ] && echo "$(SISTER_QKZ80)/libqkz80.a") || \
     echo "-L/usr/local/lib -lqkz80")
 
-CXXFLAGS = -std=c++11 -Wall -O2 -I. $(QKZ80_CFLAGS)
+# -Wimplicit-int-conversion and -Wshorten-64-to-32 are both Clang-only, and
+# GCC does not ignore an unknown -W flag, it fails the compile.  Probing for
+# them is not tidiness: hardcoded, an unknown flag stops every GCC build on
+# the first object file, which has broken this family's CI before.
+# cpmemu/src/makefile guards -Wshorten-64-to-32 the same way, for the same
+# reason.
+#
+# -Wimplicit-int-conversion is the Clang name for what MSVC reports as C4267
+# at /W3.  It finds the places a size_t or int index is truncated into a
+# 16-bit guest address.  Those truncations are what HBIOS wants - a Z80 doing
+# the same pointer arithmetic wraps at 64K - so each site now carries an
+# explicit (uint16_t) cast that says so, rather than a suppression.
+# -Wconversion is deliberately NOT here: it adds the Z80 core's intended
+# mod-256 wraps on top, which is the call cpmemu made too.
+#
+# Two diagnostics per object file remain that this tree cannot fix: the
+# qkz80_MK_INT16 macro narrows its int result to qkz80_uint16, so every file
+# that calls set_low()/set_high() reports qkz80_reg_pair.h:32 and :35.  The
+# fix is a qkz80_uint16() around that macro body, which lives in cpmemu; this
+# repo goes quiet when CPMEMU_REF moves past it.
+IMPLICIT_INT_CONVERSION := $(shell $(CXX) -Wimplicit-int-conversion -x c++ -fsyntax-only /dev/null 2>/dev/null && echo -Wimplicit-int-conversion)
+SHORTEN_64_TO_32 := $(shell $(CXX) -Wshorten-64-to-32 -x c++ -fsyntax-only /dev/null 2>/dev/null && echo -Wshorten-64-to-32)
+CXXFLAGS = -std=c++11 -Wall $(IMPLICIT_INT_CONVERSION) $(SHORTEN_64_TO_32) -O2 -I. $(QKZ80_CFLAGS)
 # A missing VERSION file falls back to the in-source default, never an
 # empty-string macro
 ifneq ($(VERSION),)
