@@ -60,9 +60,10 @@ paragraphs.
     directory would have answered all three checks against a five-month-old
     wasm. Both are deleted with `make -C web clean`, which is the makefile's own
     target for them, so `make serve` and the two deploy targets now fail on the
-    absent `emcc` rather than quietly shipping a stale build. `clean` does not
-    touch `romwbw_node.*` or `romwbw_test.*`, which are December 2025 pairs and
-    are left in place. What is left is a person at a browser.
+    absent `emcc` rather than quietly shipping a stale build. The December 2025
+    `romwbw_node.*` and `romwbw_test.*` pairs, which `clean` does not name, went
+    with them, so no `.wasm` remains in `web/` - see below. What is left is a
+    person at a browser.
   - the `[RELEASE]` item said steps 0 and 1 of the release-order document are
     cleared; `c750678` moved steps 2 and 3 to "Code done" as well, so step 4 is
     the next one. It also conflated two `disks.xml` files: this tree's is
@@ -79,6 +80,20 @@ paragraphs.
     test sections only "windows console" needs a real machine; "windows
     cross-compile" skips for want of `x86_64-w64-mingw32-g++`, which is
     installed here, and is another compile rather than a run.
+
+- **The unrebuildable Node wasm builds in `web/` are deleted too.**
+  `romwbw_node.js`/`.wasm` and `romwbw_test.js`/`.wasm` were December 2025
+  Emscripten builds, never tracked, and `web/README.md` recorded that "the
+  makefile has no target to rebuild them" - so they had drifted five months
+  behind the sources with no way to notice and no way to refresh. Their only
+  consumer was `web/test_roms.js`, itself a gitignored leftover; the two web
+  tests `make -C src test` actually runs (`tests/web_console_output.js`,
+  `tests/web_reload_disks.js`) read `romwbw.html-template` and never touched a
+  wasm, so the suite is unaffected. Deletion is permanent by construction - a
+  file no target builds and no commit holds cannot come back - which is the
+  argument for removing it rather than leaving it to be trusted by accident.
+  `web/README.md` now says they are gone and that `test_roms.js` cannot run
+  until someone writes a Node-targeted build target.
 
 ## [1.37] - 2026-09-01
 

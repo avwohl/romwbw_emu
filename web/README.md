@@ -235,12 +235,21 @@ Node test scripts (run with `node`):
   argument.
 - `test_roms.js` - boots each ROM in `../roms` using the Node build.
 - `test_cpm3.js` - Puppeteer regression test for the CP/M 3 boot hang fix.
-
-- `romwbw_node.js` / `romwbw_node.wasm` and `romwbw_test.js` /
-  `romwbw_test.wasm` - prebuilt Node-targeted Emscripten builds used by
-  the test scripts (`test_roms.js` loads `romwbw_test.js`); the makefile
-  has no target to rebuild them.
 - `node_modules` - Puppeteer and friends for the Node harnesses.
+
+The prebuilt Node-targeted Emscripten builds these scripts loaded -
+`romwbw_node.js` / `romwbw_node.wasm` and `romwbw_test.js` /
+`romwbw_test.wasm` - are **gone**, deleted 2026-09-01. They were December 2025
+builds, they were never tracked (gitignored, like every script in this list),
+and the makefile has no target to rebuild them, so they had drifted five months
+behind the sources with no way to tell and no way to refresh. `test_roms.js`
+loaded `romwbw_test.js` and therefore cannot run until someone writes a target
+that builds a Node-targeted wasm.
+
+Note that none of the scripts above is in the repository either. The two web
+tests that ARE tracked and that `make -C src test` runs are
+`tests/web_console_output.js` and `tests/web_reload_disks.js`, and they read
+`romwbw.html-template` directly rather than any wasm, so they are unaffected.
 
 Sample images:
 

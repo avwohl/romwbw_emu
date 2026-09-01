@@ -16,11 +16,11 @@ byte for byte HEAD's template rendered.  serve the UNPACKED DEB, not web/ out of
 this tree: web/ held gitignored March leftovers of romwbw.js and romwbw.wasm
 whose md5s differed from the CI build's, and serving them would have answered
 all three checks against a five-month-old wasm.  they are deleted (make -C web
-clean), so `make serve` and both deploy targets now fail on absent emcc instead
-of shipping a stale one - but web/romwbw_node.* and web/romwbw_test.* are
-December 2025 pairs that `clean` does not touch, so do not reach for those
-either.  what is left is a person at a browser: emcc, node and every browser are
-absent from this machine.
+clean), as are the December 2025 romwbw_node.* and romwbw_test.* pairs that
+`clean` does not name - there is no .wasm left in web/ at all, so `make serve`
+and both deploy targets now fail on absent emcc instead of shipping a stale one.
+what is left is a person at a browser: emcc, node and every browser are absent
+from this machine.
 
 - [BROWSER] the wasm's video, DSKY, sound and printer callbacks are wired to
 names nothing implements.  emu_io_wasm.cc emits Module.onVideo*, Module.onDsky*
