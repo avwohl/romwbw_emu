@@ -53,10 +53,9 @@ jobs:
           # here: 1.18.0 was published 2026-08-26 - six days before v1.37 was
           # cut, and the first fpm release since 1.17.0 in October 2025 - so an
           # unpinned install stepped a version under a release nobody was
-          # watching for it.  1.18.0 is what `gem install fpm`
-          # resolves to as this is written and is what built v1.37, so the pin
-          # changes nothing about the next release; it only stops the answer
-          # moving on its own.
+          # watching for it.  1.18.0 is what `gem install fpm` resolves to as
+          # this is written and is what built v1.37, so the pin changes nothing
+          # about the next release; it only stops the answer moving on its own.
           sudo gem install fpm -v "${FPM_VERSION}"
           #
           # There is deliberately no um80 here, and no python3-pip to install it
