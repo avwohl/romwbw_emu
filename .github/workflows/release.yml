@@ -116,9 +116,12 @@ jobs:
           # via libqkz80.a; cpmemu.cc and os/*/platform.cc are its own app and
           # are never compiled by this repository.  `git diff <a>..<b> --
           # 'src/qkz80*'` is the check for whether a bump touched the core at
-          # all - across cpmemu v4.6.0..v4.7.2 it was empty, and libqkz80.a came
-          # out byte-identical (118976 bytes, md5
-          # 374bde15a856cef17b89388c6576ff2f).
+          # all.  Across the last two refs this repository pinned,
+          # 9a94e8d..91151f1, it returned qkz80.pc.in alone - pkg-config
+          # metadata nothing here reads - and libqkz80.a came out byte-identical
+          # (118976 bytes, md5 374bde15a856cef17b89388c6576ff2f).  Do not read
+          # that as "cpmemu releases never touch the core": over the wider
+          # v4.6.0..v4.7.2 the same command returns five files.  Run it.
           git clone https://github.com/avwohl/cpmemu.git
           cd cpmemu/src
           make libqkz80.a

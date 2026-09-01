@@ -19,12 +19,43 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
-`VERSION` is `1.37`, which is what `v1.37` was tagged at, so the first change
-that lands here has to bump it. A commit past a tag whose binary still reports
-that tag's version is the confusion `[1.37]` was cut to end; see its opening
-paragraphs.
+`VERSION` is `1.38` and nothing is tagged at it. `main` is eight commits past
+`v1.37` (`c750678`) - the eight written up here - and a binary built from this
+tree reports `1.38`, so it can no longer be read as the released tag. That
+mistake, a commit past a tag whose binary still answers with that tag's
+version, is the confusion `[1.37]` was cut to end; the bump is done rather than
+pending, and that section's opening paragraphs say why it was worth doing.
+Cutting the next release from here means dating this heading and renaming it
+`[1.38]`, and it now takes less than the last one did: `VERSION` already says
+what the tag will say and there is no `CPMEMU_REF` left to move. What it gains
+is a step before the tag - a `workflow_dispatch` run of `release.yml` that has
+to come out green, which is what replaced the pins; see **Changed** below. The
+first change to land after the tag bumps `VERSION` again.
 
 ### Fixed
+
+- **`release.yml` got its CRLF endings back after a whole-file rewrite.**
+  `1e4a07e` changed twenty lines and produced a diff of 255 insertions and 234
+  deletions, and the diff size is the tell. The cause was editing the file with
+  Python in text mode, which reads CRLF as LF and does not translate back on
+  Linux, so every line ending in the file was silently rewritten around a small
+  edit: `release.yml` went from 234 CRLF lines out of 234 to 0 out of 255, and
+  is all-CRLF again now. Silent, whole-file, and no test will ever fail on it.
+
+  `git diff --ignore-cr-at-eol 41565a1 2dd99df` is what proves nothing else
+  moved: 24 insertions and 4 deletions in `release.yml` alone, which is the
+  twenty-line change plus one comment paragraph rewrapped because the broken
+  edit had left it ragged. Write it with **both** revisions - the one-rev form
+  diffs against the working tree, so as a durable instruction it would prove
+  the opposite the moment the tree moved on.
+
+  This is the **second** time this failure mode has hit this repository, which
+  is the reason to write it down again. The first is recorded in `[1.37]`
+  below, against `src/emu_io.h` inside the `v1.36` tag, and that record is how
+  this one was recognised. `test.yml` escaped in the same session for a reason
+  rather than by luck: it was edited with `perl -pi`, which does not translate
+  endings, and stayed at 270 CRLF lines out of 270 at `41565a1`, `1e4a07e` and
+  `2dd99df` alike.
 
 - **One arch failing no longer cancels the other in `release.yml`.** GitHub's
   matrix default is `fail-fast: true`, and the two build jobs are independent -
@@ -42,6 +73,87 @@ paragraphs.
   untouched. `collect` is still skipped when an arch fails, which is correct: it
   only lists what was built. `test.yml` needs no equivalent change - its three
   platforms are separate jobs, not a matrix.
+
+### Changed
+
+- **The four dependency pins are gone; a dry run of `release.yml` before
+  tagging replaces them.** `EMSDK_VERSION`, `UM80_VERSION`, `CPMEMU_REF` (all
+  four value sites) and the `FPM_VERSION` added and removed the same morning,
+  two commits apart, are gone, so fpm, emscripten, um80 and the cpmemu clone
+  that supplies the Z80 core now track whatever those projects ship. Owner's
+  call, made after the alternative had been run here rather than argued in the
+  abstract, and the case for pinning is not being written out of the record: it
+  is real, and it has cost this repository twice. `13d1c23`, where `emcc`
+  stopped implying the C++ driver at link time and the web build failed on a
+  commit that had not touched it; and the cpmemu makefile change that put a
+  Clang-only `-W` flag in unconditionally and stopped `make libqkz80.a` on
+  every GCC runner, which is
+  the `CPMEMU_REF` bump `[1.37]` below records as a bug fix rather than a
+  routine move. What was wrong with pinning was the price. Pins rot silently -
+  they stop collecting fixes, the bump becomes a cliff, and in a one-maintainer
+  project only one person can ever do it - and here they promise more than they
+  deliver, because `ubuntu-latest`, every apt package and the emsdk tooling
+  repo float regardless: a pinned fpm under a moving OS is not a reproducible
+  build, only a partial one that reads like a whole one.
+
+  What replaces them is the thing that would have caught both of those failures
+  anyway - running the release workflow before it matters. `release.yml` is
+  `workflow_dispatch`-able, and both the upload step and the `collect` job are
+  gated on the release event, so
+  `gh workflow run release.yml --ref main -f version=X.Y` builds everything and
+  publishes nothing. An "On pinning" header at the top of `release.yml` now
+  carries that command and the whole argument, so the next person to reach for
+  a pin finds the reasoning instead of a vacuum; it also records the hyphen
+  trap that cost a red dry run, since rpm rewrites `-` in a version and the
+  version-less copy step matches fpm's filename literally.
+
+  Two things make the floating cpmemu clone tolerable, and both are written
+  where they apply. `test.yml` clones the same unpinned default branch on every
+  push here, so a cpmemu change that breaks this repository surfaces on the
+  next commit rather than at tag time - that is what the floating core is
+  bought with. And only the `qkz80*` sources reach this binary at all, so
+  `git diff <a>..<b> -- 'src/qkz80*'` is the check for whether a cpmemu move
+  touched the core; across the last two refs this repository pinned it returned
+  `qkz80.pc.in` alone, with `libqkz80.a` byte-identical, measured in `[1.37]`
+  below.
+
+  um80 keeps the sharpest edge of the four, and `test.yml` says so where it
+  installs it: `disks/verify_disk_utils.sh` compares the `r8.com`/`w8.com` on
+  each image byte for byte against a fresh assembly, so a um80 release that
+  changes its output turns that job red with nothing in this repository
+  touched. That is the intended signal rather than a defect - it means the
+  committed images no longer match their sources - and the answer is
+  `disks/rebuild_disk_utils.sh`, not a pin.
+
+  Two pins are deliberately left, and are a different class: `setup-python`
+  still takes `python-version: '3.12'` in `test.yml`, and every action is at a
+  major tag (`actions/checkout@v6` and friends, plus the third-party
+  `softprops/action-gh-release@v3` that holds `contents: write`). Those are the
+  runner's own plumbing and a supply-chain question respectively, not the
+  build-tool versions this entry is about.
+
+  Stale references outside the workflows went with the pins. `src/makefile`
+  said this tree "goes quiet when `CPMEMU_REF` moves past it"; `todo.txt` said
+  `CPMEMU_REF` "has to move past it in both workflows and in release.yml".
+  There is no `CPMEMU_REF` to move, so both now say it goes quiet on the first
+  build after cpmemu ships the fix, with nothing to bump here.
+
+  Verified rather than assumed, at `d18e374` itself: the dispatch dry run
+  `33531118963` is green on both `ubuntu-latest` and `ubuntu-24.04-arm` with
+  `collect` skipped - which is the release-event gating doing exactly what the
+  header claims - and `test.yml` run `33531083094` is green on all three of
+  `test`, `macos` and `msvc`.
+
+- **`release.yml` no longer installs um80**, or the `python3-pip` that was
+  there to install it. um80 was installed "for 8080/Z80" and never invoked:
+  that workflow assembles nothing, runs no tests, and builds `r8.com`/`w8.com`
+  from no target - nothing does, which is why `disks/verify_disk_utils.sh`
+  exists to check the copies on the images against their sources, under
+  `make -C src test`, which only `test.yml` runs. So the release job was
+  carrying an unpinned network install of a tool it never uses: a dependency
+  that could only ever break a release, never help one. emsdk needs `python3`,
+  which the runner has, not pip. This removal stands - the same commit also
+  pinned fpm, and it is only that pin the unpinning above took back out.
 
 ### Docs
 
