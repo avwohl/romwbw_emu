@@ -45,10 +45,30 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential ruby ruby-dev rubygems rpm python3-pip
-          sudo gem install fpm
-          # Install um80 assembler for 8080/Z80
-          pip install um80
+          sudo apt-get install -y build-essential ruby ruby-dev rubygems rpm
+          # fpm builds both packages, so an unpinned one lets a gem released
+          # that morning change what ships - metadata, layout, defaults - with
+          # nothing in this repository touched.  Pinned for the reason
+          # EMSDK_VERSION and CPMEMU_REF are, and the risk is not theoretical
+          # here: 1.18.0 was published 2026-08-26 - six days before v1.37 was
+          # cut, and the first fpm release since 1.17.0 in October 2025 - so an
+          # unpinned install stepped a version under a release nobody was
+          # watching for it.  1.18.0 is what `gem install fpm`
+          # resolves to as this is written and is what built v1.37, so the pin
+          # changes nothing about the next release; it only stops the answer
+          # moving on its own.
+          sudo gem install fpm -v "${FPM_VERSION}"
+          #
+          # There is deliberately no um80 here, and no python3-pip to install it
+          # with.  um80 used to be installed "for 8080/Z80" and was never
+          # invoked: this workflow assembles nothing, runs no tests, and builds
+          # r8.com/w8.com from no target - those are checked against their
+          # sources by `make -C src test`, which only test.yml runs, and that
+          # job pins UM80_VERSION because the disk check compares bytes.  An
+          # unpinned network install of an unused tool can only ever break a
+          # release, never help one.  emsdk needs python3, which the runner
+          # already has; it does not need pip.
+          #
           # Install emscripten for WebAssembly build.
           #
           # Pinned, for the reason CPMEMU_REF below is pinned and test.yml pins
@@ -71,6 +91,7 @@ jobs:
           ./emsdk activate ${EMSDK_VERSION}
         env:
           EMSDK_VERSION: 6.0.8
+          FPM_VERSION: 1.18.0
 
       - name: Build qkz80 library
         run: |
