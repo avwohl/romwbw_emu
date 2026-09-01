@@ -16,6 +16,17 @@ permissions:
 jobs:
   build:
     strategy:
+      # The two arches are independent builds that upload their own assets, so
+      # one failing must not cancel the other.  GitHub's default is fail-fast:
+      # true, and it has already cost a release here - run 31176917009: the
+      # arm64 job failed, amd64 was cancelled mid-build, `collect` was skipped,
+      # and the release ended up with NO assets on either arch rather than the
+      # four that were about to succeed.  Recovering that took a force-moved
+      # tag (v1.35's headSha went 6f4bc554 -> 13d1c239), which is exactly the
+      # thing docs/RELEASE_ORDER_2026-08-25.md says not to do to a published
+      # tag.  With this set, a half-failed release keeps the good arch's four
+      # assets and `gh run rerun --failed` completes the set in place.
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
