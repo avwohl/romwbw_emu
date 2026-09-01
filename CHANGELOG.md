@@ -17,10 +17,63 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
-Nothing yet. `VERSION` is `1.37`, which is what `v1.37` was tagged at, so the
-first change that lands here has to bump it. A commit past a tag whose binary
-still reports that tag's version is the confusion `[1.37]` was cut to end; see
-its opening paragraphs.
+`VERSION` is `1.37`, which is what `v1.37` was tagged at, so the first change
+that lands here has to bump it. A commit past a tag whose binary still reports
+that tag's version is the confusion `[1.37]` was cut to end; see its opening
+paragraphs.
+
+### Fixed
+
+- **One arch failing no longer cancels the other in `release.yml`.** GitHub's
+  matrix default is `fail-fast: true`, and the two build jobs are independent -
+  each compiles, packages and uploads its own four assets, with no step reading
+  the other's output - so the default bought nothing and had already cost a
+  release. Run `31176917009`, 2026-08-07: the `ubuntu-24.04-arm` job failed, the
+  `ubuntu-latest` job was **cancelled** mid-build, `collect` was skipped, and the
+  release came out with no assets on either arch rather than the four that were
+  about to succeed on amd64. Recovering it took a force-moved tag - that run's
+  headSha is `6f4bc554`, the successful one's is `13d1c239`, and
+  `git rev-parse v1.35^{}` is `13d1c239` today - which is exactly the move
+  `docs/RELEASE_ORDER_2026-08-25.md` tells every port never to make on a
+  published tag. With `fail-fast: false` a half-failed release keeps the good
+  arch's assets and `gh run rerun --failed` completes the set with the tag
+  untouched. `collect` is still skipped when an arch fails, which is correct: it
+  only lists what was built. `test.yml` needs no equivalent change - its three
+  platforms are separate jobs, not a matrix.
+
+### Docs
+
+- **`todo.txt` re-checked item by item against `HEAD`, and nothing closed.** All
+  13 items were verified against the code rather than against their own text:
+  none is finished, so none moved here. Six are `[DECISION]` items whose whole
+  content is a question only the owner can settle, and the facts each rests on
+  were re-measured and still hold. Three carried text that had gone stale and
+  were corrected in place rather than deleted:
+  - the first `[BROWSER]` item said the checks need "a wasm built elsewhere:
+    emcc is not on this machine". That stopped being true when CI run
+    `33519212283` built one from `c750678`: the v1.37 `.deb` ships
+    `romwbw.html`, `romwbw.js`, `romwbw.wasm` and `vendor/` as a servable
+    layout, and the packaged page is byte for byte this tree's template
+    rendered. The item now says so, and carries the trap it opens - `web/`
+    holds **untracked** March leftovers of `romwbw.js`/`romwbw.wasm` whose md5s
+    differ from the CI build's, so serving that directory would answer all three
+    checks against a five-month-old wasm. What is left is a person at a browser.
+  - the `[RELEASE]` item said steps 0 and 1 of the release-order document are
+    cleared; `c750678` moved steps 2 and 3 to "Code done" as well, so step 4 is
+    the next one. It also conflated two `disks.xml` files: this tree's is
+    `version="6"` with 21 entries and no checksums, while the catalog the three
+    ports actually fetch is `ioscpm`'s, `version="13"` with 20 entries **and** a
+    per-disk `sha256` - and it is that file's version attribute whose bump fires
+    the disk-wipe hazard. The published `hd1k_combo.img` was dissected rather
+    than assumed: its `w8.com` is 1280 bytes, rebuilds byte for byte from
+    `w8.asm` at `3101b6d`, still has `cp 1Ah` in the copy loop and no
+    `06 e9 cf` interlock probe. The other 19 published images were not opened.
+  - the `[WINDOWS]` item credited `z80cpmw`'s CI with executing Windows code.
+    That port has no CI at all (`gh api repos/avwohl/z80cpmw/actions/workflows`
+    answers 0), and cpmemu has no test workflow either. Of cpmemu's two Windows
+    test sections only "windows console" needs a real machine; "windows
+    cross-compile" skips for want of `x86_64-w64-mingw32-g++`, which is
+    installed here, and is another compile rather than a run.
 
 ## [1.37] - 2026-09-01
 

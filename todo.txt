@@ -8,8 +8,16 @@ so a session on another OS can see at a glance what it can pick up.
 - [BROWSER] no browser has drawn the page since xterm was vendored, since a
 zero-byte export started downloading, and since the download name became the
 lowercased last component of the typed path.  the checklist is in
-MANUAL_CHECKS.md.  it needs a wasm built elsewhere: emcc is not on this
-machine, so nothing here can rebuild web/romwbw.js.
+MANUAL_CHECKS.md.  the wasm is no longer the blocker: CI run 33519212283 built
+it from c750678, and the v1.37 .deb ships web/romwbw.html, romwbw.js,
+romwbw.wasm and vendor/ as a servable layout - `gh run download 33519212283 -n
+deb-amd64 -R avwohl/romwbw_emu` then `dpkg-deb -x`.  the packaged romwbw.html is
+byte for byte HEAD's template rendered.  do NOT serve web/ out of this tree
+instead: web/romwbw.js and web/romwbw.wasm there are untracked March leftovers
+that predate every change named above, and their md5s differ from the CI
+build's - serving them would answer all three checks against a five-month-old
+wasm.  what is left is a person at a browser: emcc, node and every browser are
+absent from this machine.
 
 - [BROWSER] the wasm's video, DSKY, sound and printer callbacks are wired to
 names nothing implements.  emu_io_wasm.cc emits Module.onVideo*, Module.onDsky*
@@ -101,13 +109,26 @@ DiskCatalog.cpp and in cpmdroid's DiskCatalogRepository.kt, releaseTag in
 ioscpm's EmulatorViewModel.swift).  19 of disks.xml's 21 entries exist nowhere
 in this tree.  a user coming through any of them gets a W8 that truncates every
 binary at the first 1Ah and an R8 that can erase files it did not create.
-steps 0 and 1 of docs/RELEASE_ORDER_2026-08-25.md are cleared, so what is left
-is step 4 - rebuild with disks/rebuild_disk_utils.sh and publish under a NEW
+steps 0 through 3 of docs/RELEASE_ORDER_2026-08-25.md are cleared - c750678 set
+step 2's and step 3's headings to "Code done", z80cpmw's 713bfce having defined
+emu_host_file_get_read_name() so that port links again - so what is left is
+step 4 - rebuild with disks/rebuild_disk_utils.sh and publish under a NEW
 tag - and then step 5's per-port pin bump.  read that document's second hazard
 before step 5: bumping disks.xml's version attribute deletes the user's disks.
-what would make this catchable rather than periodic: disks.xml carries no
-per-disk version or checksum, so nothing here can look at a release asset and
-tell whether its w8.com is current.
+measured 2026-09-01 against the published asset rather than assumed: v1.4.5's
+hd1k_combo.img (51380224 bytes, sha256 be19984e...) carries a 1280-byte w8.com
+that rebuilds byte for byte from w8.asm at 3101b6d - `cp 1Ah` still in the copy
+loop, usage string without `[hostpath]`, and the `06 e9 cf` interlock probe
+absent - and a 1079-byte r8.com older than any build in this repo's history,
+with no illegal-character table.  the other 19 published images were not
+dissected.
+what would make this catchable rather than periodic: two different disks.xml
+files are in play and only one of them has checksums.  this tree's
+disks/disks.xml is `<disks version="6">`, 21 entries, no per-disk version or
+checksum, so nothing here can look at a release asset and tell whether its
+w8.com is current.  the catalog the three ports actually fetch is ioscpm's,
+`<disks version="13">`, 20 entries, and it DOES carry a per-disk sha256 - and it
+is that file's version attribute whose bump fires the disk-wipe hazard.
 
 - [MAC/LINUX] the last integer-narrowing warnings in a clean build are not this
 repository's to fix.  qkz80_MK_INT16 in cpmemu's qkz80_types.h builds an int
@@ -132,5 +153,11 @@ nearly got deleted as stale.
 - [WINDOWS] nothing on Windows is RUN, only compiled.  the msvc job builds the
 three core .cc files z80cpmw pulls straight out of src/ and stops there: there
 is no MSVC build of the emulator to link and no test program that would run.
-z80cpmw's own CI is still the only thing that executes Windows code, and
-cpmemu's suite still skips its two Windows cases for want of a machine.
+the only thing that executes Windows code is z80cpmw built and run by hand on a
+Windows box (build.bat, run_test.bat, tests/): that port has no CI at all -
+`gh api repos/avwohl/z80cpmw/actions/workflows` answers 0 and `gh run list` is
+empty.  cpmemu has no test workflow either; release.yml is its only one and it
+never runs tests/run_tests.sh.  of that suite's two Windows sections only
+"windows console" needs a real machine - "windows cross-compile" skips merely
+for want of x86_64-w64-mingw32-g++, which IS installed here, so it runs, and it
+is another compile rather than a run.
