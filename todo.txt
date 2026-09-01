@@ -12,11 +12,14 @@ MANUAL_CHECKS.md.  the wasm is no longer the blocker: CI run 33519212283 built
 it from c750678, and the v1.37 .deb ships web/romwbw.html, romwbw.js,
 romwbw.wasm and vendor/ as a servable layout - `gh run download 33519212283 -n
 deb-amd64 -R avwohl/romwbw_emu` then `dpkg-deb -x`.  the packaged romwbw.html is
-byte for byte HEAD's template rendered.  do NOT serve web/ out of this tree
-instead: web/romwbw.js and web/romwbw.wasm there are untracked March leftovers
-that predate every change named above, and their md5s differ from the CI
-build's - serving them would answer all three checks against a five-month-old
-wasm.  what is left is a person at a browser: emcc, node and every browser are
+byte for byte HEAD's template rendered.  serve the UNPACKED DEB, not web/ out of
+this tree: web/ held gitignored March leftovers of romwbw.js and romwbw.wasm
+whose md5s differed from the CI build's, and serving them would have answered
+all three checks against a five-month-old wasm.  they are deleted (make -C web
+clean), so `make serve` and both deploy targets now fail on absent emcc instead
+of shipping a stale one - but web/romwbw_node.* and web/romwbw_test.* are
+December 2025 pairs that `clean` does not touch, so do not reach for those
+either.  what is left is a person at a browser: emcc, node and every browser are
 absent from this machine.
 
 - [BROWSER] the wasm's video, DSKY, sound and printer callbacks are wired to

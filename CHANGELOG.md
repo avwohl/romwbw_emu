@@ -54,10 +54,15 @@ paragraphs.
     `33519212283` built one from `c750678`: the v1.37 `.deb` ships
     `romwbw.html`, `romwbw.js`, `romwbw.wasm` and `vendor/` as a servable
     layout, and the packaged page is byte for byte this tree's template
-    rendered. The item now says so, and carries the trap it opens - `web/`
-    holds **untracked** March leftovers of `romwbw.js`/`romwbw.wasm` whose md5s
-    differ from the CI build's, so serving that directory would answer all three
-    checks against a five-month-old wasm. What is left is a person at a browser.
+    rendered. The item now says so. It also carried a trap that has since been
+    closed: `web/` held gitignored March leftovers of `romwbw.js`
+    (md5 `40c9e15e...`) and `romwbw.wasm` (`18ef70a2...`), so serving that
+    directory would have answered all three checks against a five-month-old
+    wasm. Both are deleted with `make -C web clean`, which is the makefile's own
+    target for them, so `make serve` and the two deploy targets now fail on the
+    absent `emcc` rather than quietly shipping a stale build. `clean` does not
+    touch `romwbw_node.*` or `romwbw_test.*`, which are December 2025 pairs and
+    are left in place. What is left is a person at a browser.
   - the `[RELEASE]` item said steps 0 and 1 of the release-order document are
     cleared; `c750678` moved steps 2 and 3 to "Code done" as well, so step 4 is
     the next one. It also conflated two `disks.xml` files: this tree's is
