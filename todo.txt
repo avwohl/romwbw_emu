@@ -50,25 +50,26 @@ changing it needs a name parameter on emu_host_file_provide_data() and a change
 to the page's picker callback.  until then the browser answers 0xFF and R8
 prints what was typed, which is what it always did.
 
-- [RELEASE] the hd1k_* disk images published under ioscpm's v1.4.5 tag still
-carry the old R8/W8, and all three ports pin that tag (RELEASE_TAG in z80cpmw's
-DiskCatalog.cpp and in cpmdroid's DiskCatalogRepository.kt, releaseTag in
-ioscpm's EmulatorViewModel.swift).  19 of disks.xml's 21 entries exist nowhere
-in this tree.  a user coming through any of them gets a W8 that truncates every
-binary at the first 1Ah and an R8 that can erase files it did not create.
-steps 0 through 3 of docs/RELEASE_ORDER_2026-08-25.md are cleared - c750678 set
-step 2's and step 3's headings to "Code done", z80cpmw's 713bfce having defined
-emu_host_file_get_read_name() so that port links again - so what is left is
-step 4 - rebuild with disks/rebuild_disk_utils.sh and publish under a NEW
-tag - and then step 5's per-port pin bump.  read that document's second hazard
-before step 5: bumping disks.xml's version attribute deletes the user's disks.
-measured 2026-09-01 against the published asset rather than assumed: v1.4.5's
-hd1k_combo.img (51380224 bytes, sha256 be19984e...) carries a 1280-byte w8.com
-that rebuilds byte for byte from w8.asm at 3101b6d - `cp 1Ah` still in the copy
-loop, usage string without `[hostpath]`, and the `06 e9 cf` interlock probe
-absent - and a 1079-byte r8.com older than any build in this repo's history,
-with no illegal-character table.  the other 19 published images were not
-dissected.
+- [RELEASE] step 4 is DONE and step 5 is what is left.  the refreshed images are
+published as ioscpm v1.4.12 (prerelease, 2026-09-01, 29 assets): hd1k_combo.img
+refreshed to sha256 89b8ae1a..., the other 19 re-uploaded byte-identical, and
+disks.xml's version attribute deliberately left at 13 so the invalidation wipe
+never fired.  v1.4.5 is untouched - still be19984e..., still 30 assets - and
+releases/latest is still v1.4.11.
+all three ports still pin v1.4.5 (RELEASE_TAG in z80cpmw's DiskCatalog.cpp and
+in cpmdroid's DiskCatalogRepository.kt, releaseTag in ioscpm's
+EmulatorViewModel.swift), so nobody has the new utilities yet.  that pin bump is
+step 5, and it is blocked on something no machine here can do: a build carrying
+the sanitiser has to be one users actually have.  the App Store is on 1.4.9 from
+2026-03-19 (builds 36/37); build 52 is fifteen builds and five months past it.
+ioscpm's MANUAL_CHECKS.md section 1 also has all six boxes unticked, and
+RELEASE_ORDER's pre-flight item 5 wants a hands-on device run.
+what was measured while doing step 4, and is worth not re-deriving: only
+hd1k_combo.img carries r8.com/w8.com at all - the other 19 published images
+contain neither, so the whole job was one image and a one-line catalog diff.
+the old combo's w8.com was 1280 bytes, rebuilding byte for byte from w8.asm at
+3101b6d with `cp 1Ah` still in the copy loop and no `06 e9 cf` probe; its r8.com
+was 1079 bytes, older than any build in this repo's history.
 what would make this catchable rather than periodic: two different disks.xml
 files are in play and only one of them has checksums.  this tree's
 disks/disks.xml is `<disks version="6">`, 21 entries, no per-disk version or

@@ -84,6 +84,10 @@ ordering, and why it is that order.
 > - **Step 5 has a second data-loss path this document never mentioned**, and it
 >   is fired by step 4's own instruction to bump the catalog `version`. It has
 >   its own section below.
+> - *(2026-09-01: **step 4 is done** — `ioscpm` `v1.4.12`, a prerelease, with
+>   the catalog `version` deliberately left at 13 so that path never fired. Only
+>   `hd1k_combo.img` needed refreshing; the other 19 published images carry no
+>   `R8`/`W8` at all. See step 4. Step 5 remains blocked.)*
 > - **What has not changed:** the armed `W8` blobs are still in git history —
 >   and now *published*, because pushing `main` published them — and the usage
 >   string still does not tell an armed `W8` from an interlocked one. There is
@@ -129,7 +133,28 @@ Every port pins the catalog *tag* in its binary — `ioscpm`'s
 `RELEASE_TAG = L"v1.4.5"` (`DiskCatalog.cpp:17`), and per `FEATURE_PARITY.md`
 `cpmdroid`'s `DiskCatalogRepository.kt:27`. That pinning is the safety
 property: new assets under a **new** tag reach nobody until a build points at
-them, so publishing them arms nothing on its own. Overwriting `v1.4.5`'s assets
+them, so publishing them arms nothing on its own.
+
+> **Correction, 2026-09-01: that is true only of builds 42 and later, and the
+> installed fleet is older than that.** The pin landed in `ioscpm` build 42
+> (`4be8a13`, 2026-07-25). The App Store record for `com.awohl.cpm` is version
+> **1.4.9, released 2026-03-19** — measured, not inferred:
+> `curl 'https://itunes.apple.com/lookup?bundleId=com.awohl.cpm'` returns
+> `version 1.4.9`, and `MARKETING_VERSION 1.4.9` maps to builds 36 and 37.
+> Those builds fetch the catalog and the images from
+> `releases/latest/download/`, **not** from a pinned tag. So for every device
+> actually in service, a new *normal* release becomes `Latest` and is fetched
+> immediately — and builds 36/37 contain
+> `checkCatalogVersionAndInvalidate()`, so a moved `version` attribute would
+> wipe their disk libraries with no step 5 involved.
+>
+> What actually protects those users is **`--prerelease`**, which keeps a tag
+> from becoming `Latest`. That is why `v1.4.5` carries the flag
+> (`DISK_CATALOG_PINNING.md` says so), and it is why `v1.4.12` does. Treat the
+> flag as load-bearing, not cosmetic: publishing step 4 without it is a live
+> action against every installed device.
+
+Overwriting `v1.4.5`'s assets
 throws that away — every already-installed app starts fetching the new images
 with no update. With the interlock in place the `W8` consequence softened from
 data-loss to a broken feature (an old build gets a refusal instead of an
@@ -346,7 +371,41 @@ typed. It answers `""` only when the bytes came from
 
 Can happen before or after step 4; it is independent.
 
-### Step 4 — publish refreshed disk images under a **new** `ioscpm` tag.
+### Step 4 — publish refreshed disk images under a **new** `ioscpm` tag. **DONE 2026-09-01: `v1.4.12`.**
+
+> **Done, as a prerelease.** `v1.4.12` on `avwohl/ioscpm`, 29 assets, published
+> 2026-09-01. Eight gates were checked after publishing and all held:
+> `releases/latest` is still `v1.4.11`; `v1.4.12` reports `prerelease: true`;
+> `v1.4.5`'s `hd1k_combo.img` is still `be19984e…` and its asset count is still
+> 30, so nothing was clobbered; `v1.4.12`'s combo is the refreshed
+> `89b8ae1a…`; the uploaded catalog reads `<disks version="13">`; and
+> `releases/latest/download/disks.xml` still hashes `6ae94b8c…`, so the
+> installed 1.4.9 fleet sees no change at all.
+>
+> **The job was far smaller than this document assumed.** All 21 published
+> `v1.4.5` assets were opened: **only `hd1k_combo.img` carries `r8.com`/`w8.com`
+> at all.** The other 19 contain neither, so they were re-uploaded byte-identical
+> and the catalog diff is one line — the combo's `<sha256>`. The refreshed image
+> was built from the *published* bytes rather than from `disks/hd1k_combo.img`
+> in this repo: the tracked image is a superset carrying seven developer scratch
+> files, and shipping it would have published those. The result is deterministic
+> — same 51380224 bytes, sha256 `89b8ae1a…` on independent runs — and
+> `disks/verify_disk_utils.sh` passed on the exact uploaded bytes.
+>
+> **`hd1k_combo_ioscpm_w8fixed.img` was dropped and must not be republished.**
+> It is byte-identical to the *unfixed* combo (`be19984e…`), is in no catalog
+> entry, and its filename claims a fix it does not contain. Carrying it forward
+> would have been the one literal breach of the never-publish-an-unprobed-`w8.com`
+> rule.
+>
+> **`ioscpm/docs/DISK_W8FIX_RUNBOOK.md` contradicts this document and is a live
+> footgun.** Its line 122 says `gh release upload <tag> --repo avwohl/ioscpm
+> --clobber`, line 47 downloads from `v1.4.5`, and it tells the reader "Do not
+> cut a fresh tag". Following it overwrites `v1.4.5`'s assets, which is the one
+> action forbidden absolutely above. It was not followed. Fix or delete it
+> before anyone reads it as instructions.
+>
+> Step 5 is **not** unblocked by this. No port pin was bumped.
 
 Still after step 1 — but now because an unfixed port would *refuse* the feature
 rather than destroy the user's data, which is a broken feature rather than an
@@ -454,6 +513,16 @@ refresh.
 
 1. Does the build being shipped contain that port's sanitiser? If no, stop.
 2. Are the new images under a **new** tag, with `v1.4.5` untouched? If no, stop.
+2a. **Is the release marked `--prerelease`?** If no, stop. The installed fleet
+   is App Store 1.4.9 (builds 36/37), which predates the catalog pin and fetches
+   from `releases/latest/download/`, so a normal release is fetched by every
+   device immediately. Confirm afterwards with
+   `gh api repos/avwohl/ioscpm/releases/latest --jq .tag_name`, which must still
+   name the *old* tag. See the correction under "The thing that must never
+   happen".
+2b. **Does every uploaded image's `w8.com` carry the probe, and does no upload
+   carry a misleading name?** `hd1k_combo_ioscpm_w8fixed.img` is byte-identical
+   to the unfixed combo despite its name; do not republish it.
 3. Does `disks/verify_disk_utils.sh` pass on the images being published? It
    answers two questions now, not one: that each `r8.com`/`w8.com` matches its
    source, and that the `w8.com` on the image carries the `HBF_HOST_CAPS` probe.

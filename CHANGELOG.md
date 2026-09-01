@@ -19,13 +19,53 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
-Nothing yet. `VERSION` is `1.38`, which is what `v1.38` was tagged at, so the
-first change that lands here has to bump it - the rule `[1.37]` was cut to
-establish and `[1.38]` had to apply eight commits late. Cutting a release from
+`VERSION` is `1.38`, which is what `v1.38` was tagged at. The rule `[1.37]` was
+cut to establish is that a **binary-affecting** change landing here bumps it, so
+that no build answers with a tag's version while differing from it; the entries
+below are documentation and published assets, and the binary is bit-identical to
+`v1.38`'s, so `1.38` is still a true answer and the file is deliberately left
+alone. The first change that touches `src/` bumps it. Cutting a release from
 here takes a dated heading, a `VERSION` that already matches the tag, and a
 green `workflow_dispatch` run of `release.yml` before the tag exists; that dry
 run is what replaced the dependency pins, so it is a step rather than a
 courtesy.
+
+### Changed
+
+- **Step 4 of the release-order plan is done: the refreshed disk images are
+  published as `ioscpm` `v1.4.12`.** A prerelease, 29 assets, 2026-09-01. Only
+  `hd1k_combo.img` needed refreshing - all 21 published `v1.4.5` assets were
+  opened and the other 19 carry no `R8`/`W8` at all - so they went up
+  byte-identical and the catalog diff is one line, the combo's `<sha256>`
+  moving to `89b8ae1a...`. The image was rebuilt from the *published* bytes
+  rather than from `disks/hd1k_combo.img` here, because the tracked image is a
+  superset carrying seven developer scratch files; the result is deterministic
+  at 51380224 bytes and `disks/verify_disk_utils.sh` passed on the exact
+  uploaded bytes, interlock assertion included. `disks.xml`'s `version`
+  attribute was deliberately left at `13`, so the wipe that deletes every `.img`
+  in a user's `Documents/Disks` never fired. Eight post-publish gates held:
+  `releases/latest` is still `v1.4.11`, `v1.4.5` is still `be19984e...` with 30
+  assets, and `releases/latest/download/disks.xml` still hashes `6ae94b8c...`.
+  **No port pin was bumped** - that is step 5, and it stays blocked.
+  `hd1k_combo_ioscpm_w8fixed.img` was dropped and must not be republished: it is
+  byte-identical to the *unfixed* combo and its name claims a fix it does not
+  carry.
+
+### Docs
+
+- **`docs/RELEASE_ORDER_2026-08-25.md` corrected on the point the whole plan
+  rested on.** It said new assets under a new tag "reach nobody until a build
+  points at them". That holds only for `ioscpm` builds 42 and later. The App
+  Store is on **1.4.9, released 2026-03-19** - measured with
+  `itunes.apple.com/lookup` for `com.awohl.cpm` - and `MARKETING_VERSION 1.4.9`
+  maps to builds 36/37, which predate the catalog pin and fetch from
+  `releases/latest/download/`. For every device in service a *normal* release is
+  fetched immediately, and those builds contain the invalidation wipe. What
+  actually protected users at step 4 was `--prerelease`, which is now a numbered
+  pre-flight gate rather than an implicit habit. Step 4 is marked done with its
+  evidence, and a warning records that `ioscpm/docs/DISK_W8FIX_RUNBOOK.md` tells
+  the reader to `gh release upload <tag> --clobber` against `v1.4.5` - the one
+  action the plan forbids absolutely.
 
 ## [1.38] - 2026-09-01
 
