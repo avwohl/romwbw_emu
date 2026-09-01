@@ -19,18 +19,32 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
-`VERSION` is `1.38` and nothing is tagged at it. `main` is eight commits past
-`v1.37` (`c750678`) - the eight written up here - and a binary built from this
-tree reports `1.38`, so it can no longer be read as the released tag. That
-mistake, a commit past a tag whose binary still answers with that tag's
-version, is the confusion `[1.37]` was cut to end; the bump is done rather than
-pending, and that section's opening paragraphs say why it was worth doing.
-Cutting the next release from here means dating this heading and renaming it
-`[1.38]`, and it now takes less than the last one did: `VERSION` already says
-what the tag will say and there is no `CPMEMU_REF` left to move. What it gains
-is a step before the tag - a `workflow_dispatch` run of `release.yml` that has
-to come out green, which is what replaced the pins; see **Changed** below. The
-first change to land after the tag bumps `VERSION` again.
+Nothing yet. `VERSION` is `1.38`, which is what `v1.38` was tagged at, so the
+first change that lands here has to bump it - the rule `[1.37]` was cut to
+establish and `[1.38]` had to apply eight commits late. Cutting a release from
+here takes a dated heading, a `VERSION` that already matches the tag, and a
+green `workflow_dispatch` run of `release.yml` before the tag exists; that dry
+run is what replaced the dependency pins, so it is a step rather than a
+courtesy.
+
+## [1.38] - 2026-09-01
+
+This release is nine commits of build and bookkeeping work on top of `v1.37`,
+cut the same day. **It changes no emulator behaviour**, and that is measurable
+rather than asserted: `git diff v1.37..HEAD -- src/` touches one file,
+`src/makefile`, and only a comment in it - not one `.cc` or `.h` changed, so the
+binary differs from `v1.37`'s in the version string and nothing else. A package
+user has no reason to upgrade for the emulator; the reason to cut it is that
+`VERSION` must not keep answering `1.37` for a tree that is not `v1.37`.
+
+What did change is how a release is made and what the repository says about
+itself: the workflows, `CHANGELOG.md`, the new `DECISIONS.md`, `README.md`,
+`todo.txt` and `web/README.md`.
+
+The headline is that **CI pins nothing now** - see **Changed** - which makes a
+`workflow_dispatch` dry run of `release.yml` a required step before any future
+tag rather than an optional check. That dry run was run for this one, green on
+both arches, before the tag existed.
 
 ### Fixed
 
