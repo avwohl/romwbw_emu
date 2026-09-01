@@ -6,9 +6,11 @@ This file starts at `v1.35`. For most of this project's life the record of a
 change has been the commit message that made it, and those messages are longer
 and more specific than any changelog entry — they carry the measurements, the
 counter-examples and the things that were deliberately *not* done. This file
-summarises and points; `git log` is the detail. Open work is in
-[`todo.txt`](todo.txt); what downstream ports have to do about a release is in
-[`DOWNSTREAM.md`](DOWNSTREAM.md) and `docs/DOWNSTREAM_*.md`.
+summarises and points; `git log` is the detail. Open work some machine could
+take is in [`todo.txt`](todo.txt), and the open questions waiting on the owner's
+ruling are in [`DECISIONS.md`](DECISIONS.md); what downstream ports have to do
+about a release is in [`DOWNSTREAM.md`](DOWNSTREAM.md) and
+`docs/DOWNSTREAM_*.md`.
 
 Downstream ports do not consume a *release* of this repository — `ioscpm`
 symlinks into `src/`, `z80cpmw`'s vcxproj compiles it in place, and `cpmdroid`'s
@@ -43,12 +45,41 @@ paragraphs.
 
 ### Docs
 
+- **The six `[DECISION]` items moved out of `todo.txt` into `DECISIONS.md`.**
+  `todo.txt`'s header makes two promises - that checks needing a person at a
+  keyboard are in `MANUAL_CHECKS.md`, and that "every item carries a tag saying
+  what a machine has to be able to do to take it, so a session on another OS can
+  see at a glance what it can pick up" - and `[DECISION]` honoured neither. It
+  names no capability; it says the opposite, that *no* machine can take the item
+  at any time, because what blocks it is the owner's judgment rather than a
+  tool, an OS or a credential. The cost of leaving them there is measured rather
+  than argued: the audit recorded below re-verified all six against `HEAD` on
+  2026-09-01, found every fact they rest on still standing, and moved none - and
+  that is what each future audit would also do, because evidence was never what
+  they were short of. `DECISIONS.md` is a sibling of `MANUAL_CHECKS.md` on the
+  principle that file already established: work needing a human comes out of the
+  machine's list, whether the human runs a check or makes a ruling. Everything
+  measured moved with them - the `826c3bcf7db18a36f8eb73792873613d` md5 the four
+  ROM files share, `STAT DEV:` and `PIP LST:=SOURCE.TXT` under CP/M 2.2 on
+  `hd1k_combo.img`, `SYSGET_CIOCNT` answering 1, the seven uncalled aux/printer
+  functions by name, the `"100%\rDONE"` and `0xC3 0xA9` console cases and the
+  WordStar reason behind the `0x7F` mask, `emu_host_file_open_write()`'s
+  unconditional `true` against the `HBF_HOST_*` codes four ports implement, and
+  the `boot`-key write-back - nothing was summarised away. `todo.txt` is 13
+  items down to 7, every one of them takeable by some machine. Entries in
+  `[1.37]` and `[1.36]` below that send a reader to `todo.txt` for one of these
+  questions - the packaged `.img`, the callerless aux/printer family, the
+  `0x7F` mask - were true when written and are left exactly as they are; this
+  repository does not rewrite shipped history, and the new pointer in
+  `todo.txt`'s own header is what catches a reader who follows one.
+
 - **`todo.txt` re-checked item by item against `HEAD`, and nothing closed.** All
   13 items were verified against the code rather than against their own text:
   none is finished, so none moved here. Six are `[DECISION]` items whose whole
   content is a question only the owner can settle, and the facts each rests on
-  were re-measured and still hold. Three carried text that had gone stale and
-  were corrected in place rather than deleted:
+  were re-measured and still hold; those six have since moved to
+  [`DECISIONS.md`](DECISIONS.md), above. Three carried text that had gone stale
+  and were corrected in place rather than deleted:
   - the first `[BROWSER]` item said the checks need "a wasm built elsewhere:
     emcc is not on this machine". That stopped being true when CI run
     `33519212283` built one from `c750678`: the v1.37 `.deb` ships

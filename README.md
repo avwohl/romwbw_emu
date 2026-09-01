@@ -114,8 +114,8 @@ names - `hd1k_combo.img`, `z80cpm_tools.img`, `hd1k_games.img`,
 two the page selects by default, `hd1k_combo.img` and `hd1k_games.img`.
 (`z80cpm_tools.img` is not in this repository at all.) Load an image with
 the page's file picker instead. Whether the packages should carry an image
-at all is an open question in `todo.txt`, not an oversight; the CLI is
-unaffected, since it takes a path.
+at all is an open question in [`DECISIONS.md`](DECISIONS.md), not an
+oversight; the CLI is unaffected, since it takes a path.
 
 ### From Source
 
@@ -626,7 +626,7 @@ romwbw_emu/
   disks/			Disk images, diskdefs, and the R8/W8 install scripts
   docs/				Technical documentation
   archive/			Retired material kept for reference
-  CHANGELOG.md DOWNSTREAM.md MANUAL_CHECKS.md todo.txt VERSION
+  CHANGELOG.md DECISIONS.md DOWNSTREAM.md MANUAL_CHECKS.md todo.txt VERSION
 ```
 
 ## Documentation
@@ -634,7 +634,8 @@ romwbw_emu/
 - [CHANGELOG.md](CHANGELOG.md) - What changed in each release, with the commit behind every entry
 - [DOWNSTREAM.md](DOWNSTREAM.md) - What a port must do to take a sync of this core; `docs/DOWNSTREAM_*.md` are the dated notices, newest first
 - [MANUAL_CHECKS.md](MANUAL_CHECKS.md) - The checks that need a person at a keyboard, which no test here can settle
-- `todo.txt` - Open work
+- `todo.txt` - Open work, every item tagged with what a machine has to be able to do to take it
+- [DECISIONS.md](DECISIONS.md) - The open questions that need the owner's ruling rather than a machine; split out of `todo.txt`, where no capability tag could describe them
 - `docs/BOOT_CONFIGURATION.md` - Boot options, SYSCONF utility, NVRAM persistence
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md) - The JSON settings file and its schema
 - `docs/DISK_FORMATS.md` - Disk formats, SIMH compatibility, and cpmtools usage
