@@ -64,12 +64,15 @@ jobs:
           # cpmtools: cpmls/cpmcp/cpmrm, for disks/verify_disk_utils.sh.
           sudo apt-get install -y build-essential cpmtools
           # um80/ul80: the MACRO-80 toolchain src/r8.asm and src/w8.asm are
-          # written for. Pinned for the reason CPMEMU_REF is pinned below - an
-          # unpinned toolchain assembles a different binary without anyone
-          # touching this repository, and the disk check compares bytes.
-          pip install "um80==${UM80_VERSION}"
-        env:
-          UM80_VERSION: 0.3.43
+          # written for.  Unpinned, like everything else here - see "On
+          # pinning" in release.yml.  Note what that accepts: disks/
+          # verify_disk_utils.sh compares the r8.com/w8.com on each image
+          # against a fresh assembly BYTE FOR BYTE, so a um80 release that
+          # changes its output turns this job red with nothing in this
+          # repository touched.  That is the intended signal - it means the
+          # committed images no longer match their sources - and the fix is
+          # disks/rebuild_disk_utils.sh, not a version pin.
+          pip install um80
 
       - name: Check the tools the disk check needs are really present
         run: |
@@ -83,18 +86,15 @@ jobs:
 
       - name: Build qkz80 library
         run: |
-          # Cloned and pinned exactly as release.yml does it, into the same
-          # place, so the tests and the released binary contain the same CPU
-          # core. qkz80 is compiled straight out of a sibling checkout by this
-          # repo and by three downstream ports with no version gate, so an
-          # unpinned clone would test whatever cpmemu looked like this morning.
+          # Cloned exactly as release.yml does it, into the same place, so the
+          # tests and the released binary contain the same CPU core.  Neither
+          # pins a ref - see "On pinning" in release.yml - so both track
+          # cpmemu's default branch, and this job is what makes that safe: it
+          # runs on every push here, so a cpmemu change that breaks this
+          # repository surfaces on the next commit rather than at tag time.
           git clone https://github.com/avwohl/cpmemu.git
-          cd cpmemu
-          git checkout --detach ${CPMEMU_REF}
-          cd src
+          cd cpmemu/src
           make libqkz80.a
-        env:
-          CPMEMU_REF: 91151f1
 
       - name: Build and test
         run: |
@@ -173,16 +173,11 @@ jobs:
 
       - name: Build qkz80 library
         run: |
-          # Same clone and the same pin as the ubuntu job above and as
-          # release.yml. Four copies of one SHA now - three here and one in
-          # release.yml - which is not ideal; bump all four together.
+          # Same clone as the ubuntu job above and as release.yml, and like
+          # them it tracks cpmemu's default branch rather than a ref.
           git clone https://github.com/avwohl/cpmemu.git
-          cd cpmemu
-          git checkout --detach ${CPMEMU_REF}
-          cd src
+          cd cpmemu/src
           make libqkz80.a
-        env:
-          CPMEMU_REF: 91151f1
 
       - name: Build the CLI
         run: |
@@ -240,15 +235,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Check out the pinned cpmemu for qkz80's headers
+      - name: Check out cpmemu for qkz80's headers
         run: |
-          # Headers only - nothing of cpmemu is compiled here. Same pin as the
-          # other two jobs.
+          # Headers only - nothing of cpmemu is compiled here. Same unpinned
+          # clone as the other two jobs.
           git clone https://github.com/avwohl/cpmemu.git
-          cd cpmemu
-          git checkout --detach ${env:CPMEMU_REF}
-        env:
-          CPMEMU_REF: 91151f1
 
       - name: Compile the shared core with cl
         shell: cmd

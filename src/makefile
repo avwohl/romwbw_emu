@@ -90,7 +90,8 @@ QKZ80_LIBS ?= $(shell pkg-config --libs qkz80 2>/dev/null || \
 # qkz80_MK_INT16 macro narrows its int result to qkz80_uint16, so every file
 # that calls set_low()/set_high() reports qkz80_reg_pair.h:32 and :35.  The
 # fix is a qkz80_uint16() around that macro body, which lives in cpmemu; this
-# repo goes quiet when CPMEMU_REF moves past it.
+# repo goes quiet on the first build after cpmemu ships it, since CI clones
+# cpmemu's default branch rather than a pinned ref.
 IMPLICIT_INT_CONVERSION := $(shell $(CXX) -Wimplicit-int-conversion -x c++ -fsyntax-only /dev/null 2>/dev/null && echo -Wimplicit-int-conversion)
 SHORTEN_64_TO_32 := $(shell $(CXX) -Wshorten-64-to-32 -x c++ -fsyntax-only /dev/null 2>/dev/null && echo -Wshorten-64-to-32)
 CXXFLAGS = -std=c++11 -Wall $(IMPLICIT_INT_CONVERSION) $(SHORTEN_64_TO_32) -O2 -I. $(QKZ80_CFLAGS)

@@ -1,5 +1,31 @@
 name: Build and Release Packages
 
+# On pinning: this workflow pins none of what it installs - not fpm, not
+# emscripten, not the cpmemu clone that supplies the Z80 core.  That is a
+# decision, not an oversight, and it was made after the alternative had been
+# tried: EMSDK_VERSION, UM80_VERSION and CPMEMU_REF all existed here and were
+# removed.
+#
+# The argument for pinning is that a dependency can change what ships with
+# nothing in this repository touched.  True, and it has happened - 13d1c23 for
+# emcc, and a cpmemu makefile change that broke the GCC build of libqkz80.a.
+# The argument against is that pins rot silently: they stop collecting fixes,
+# the bump becomes a cliff, and only one person can do it.  They also promise
+# more than they deliver here, because ubuntu-latest, every apt package and the
+# emsdk tooling repo all float regardless - a pinned fpm under a moving OS is
+# not a reproducible build, just a partial one.
+#
+# What replaces the pins is running this workflow before it matters.  It is
+# workflow_dispatch-able, the upload step and the collect job are both gated on
+# the release event, so a dispatch builds everything and publishes nothing:
+#
+#     gh workflow run release.yml --ref main -f version=X.Y
+#
+# Do that before tagging.  A dependency that moved under you then costs one red
+# run instead of a broken release, which is the failure the pins existed to
+# prevent.  Use a plain version with no hyphen: rpm rewrites '-' and the
+# version-less copy step below matches fpm's filename literally.
+
 on:
   release:
     types: [published]
@@ -46,81 +72,56 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential ruby ruby-dev rubygems rpm
-          # fpm builds both packages, so an unpinned one lets a gem released
-          # that morning change what ships - metadata, layout, defaults - with
-          # nothing in this repository touched.  Pinned for the reason
-          # EMSDK_VERSION and CPMEMU_REF are, and the risk is not theoretical
-          # here: 1.18.0 was published 2026-08-26 - six days before v1.37 was
-          # cut, and the first fpm release since 1.17.0 in October 2025 - so an
-          # unpinned install stepped a version under a release nobody was
-          # watching for it.  1.18.0 is what `gem install fpm` resolves to as
-          # this is written and is what built v1.37, so the pin changes nothing
-          # about the next release; it only stops the answer moving on its own.
-          sudo gem install fpm -v "${FPM_VERSION}"
+          # Deliberately unpinned, like everything else this workflow installs.
+          # See "On pinning" at the top of this file.
+          sudo gem install fpm
           #
           # There is deliberately no um80 here, and no python3-pip to install it
           # with.  um80 used to be installed "for 8080/Z80" and was never
           # invoked: this workflow assembles nothing, runs no tests, and builds
           # r8.com/w8.com from no target - those are checked against their
-          # sources by `make -C src test`, which only test.yml runs, and that
-          # job pins UM80_VERSION because the disk check compares bytes.  An
-          # unpinned network install of an unused tool can only ever break a
-          # release, never help one.  emsdk needs python3, which the runner
-          # already has; it does not need pip.
+          # sources by `make -C src test`, which only test.yml runs.  Installing
+          # a tool this job never invokes could only ever break a release, never
+          # help one.  emsdk needs python3, which the runner already has; it
+          # does not need pip.
           #
-          # Install emscripten for WebAssembly build.
-          #
-          # Pinned, for the reason CPMEMU_REF below is pinned and test.yml pins
-          # UM80_VERSION: `install latest` makes every release depend on
-          # whatever emscripten shipped that morning, and it has already broken
-          # one. 13d1c23: emcc stopped implying the C++ driver at link time, so
-          # web/makefile's link came out with operator new undefined and the
-          # web build failed on a commit that had not touched it. Nothing in
-          # this repository builds the wasm - emcc is not a build dependency
-          # here - so CI is the only place that failure can appear, which makes
-          # the pin worth more here than anywhere else.
-          #
-          # 6.0.8 is what `latest` resolves to as this is written, so the pin
-          # changes nothing about what the next release builds with; it only
-          # stops the answer moving on its own. Bump it deliberately, and
-          # expect to rebuild the web page when you do.
+          # Install emscripten for WebAssembly build.  Unpinned - see "On
+          # pinning" at the top of this file.  This is the install with the
+          # worst feedback loop of the three: nothing in this repository builds
+          # the wasm, so an emcc regression can only ever appear here, and only
+          # when a release is being cut.  It has happened once, at 13d1c23 -
+          # emcc stopped implying the C++ driver at link time, web/makefile's
+          # link came out with operator new undefined, and the web build failed
+          # on a commit that had not touched it.  Run this workflow with
+          # workflow_dispatch before tagging and that is a caught problem
+          # instead of a broken release.
           git clone https://github.com/emscripten-core/emsdk.git
           cd emsdk
-          ./emsdk install ${EMSDK_VERSION}
-          ./emsdk activate ${EMSDK_VERSION}
-        env:
-          EMSDK_VERSION: 6.0.8
-          FPM_VERSION: 1.18.0
+          ./emsdk install latest
+          ./emsdk activate latest
 
       - name: Build qkz80 library
         run: |
-          # Pinned, not default-branch HEAD. This clone is the Z80 core the
-          # released binary contains, so an unpinned one makes every release
-          # depend on whatever cpmemu happened to look like that morning - a
-          # commit in another repo could change or break a release here with
-          # nobody touching this one. Bump deliberately, the way the RomWBW pin
-          # is bumped.
+          # cpmemu's default branch, not a pinned ref - see "On pinning" at
+          # the top of this file.  This clone is the Z80 core the released
+          # binary contains, so what ships is whatever cpmemu's main looked
+          # like when the release was cut.  That is the accepted trade: the
+          # core is one project by one author, its releases are deliberate, and
+          # `make -C src test` in test.yml builds against the same floating
+          # clone on every push here - so a cpmemu change that breaks this
+          # repository shows up on the next commit rather than at tag time.
           #
-          # 91151f1 is cpmemu's v4.7.2 tag - a tagged release rather than the
-          # mid-stream commit this used to name, which is the only thing the
-          # bump buys. It is not a core change: libqkz80.a built from 9a94e8d
-          # and from 91151f1 is byte-identical - 118976 bytes, all four members
-          # matching, md5
-          #   374bde15a856cef17b89388c6576ff2f
-          # both times - because none of the eight intervening commits touch a
-          # qkz80 source or header (the only `src/qkz80*` file that moved is
-          # qkz80.pc.in, pkg-config metadata this CI never reads). What
-          # they touch - SECTRAN, CPM_BIOS_DISK, --save-memory, the Windows
-          # console rewrite - lives in cpmemu's own app and platform layers,
-          # which this repository never compiles. Do not credit a release note
-          # with a CPU change on the strength of this pin moving.
+          # Worth knowing when reading a release note: most cpmemu releases
+          # change nothing here.  Only the four qkz80 sources reach this binary
+          # via libqkz80.a; cpmemu.cc and os/*/platform.cc are its own app and
+          # are never compiled by this repository.  `git diff <a>..<b> --
+          # 'src/qkz80*'` is the check for whether a bump touched the core at
+          # all - across cpmemu v4.6.0..v4.7.2 it was empty, and libqkz80.a came
+          # out byte-identical (118976 bytes, md5
+          # 374bde15a856cef17b89388c6576ff2f).
           git clone https://github.com/avwohl/cpmemu.git
-          cd cpmemu
-          git checkout --detach ${CPMEMU_REF}
-          cd src
+          cd cpmemu/src
           make libqkz80.a
-        env:
-          CPMEMU_REF: 91151f1
 
       - name: Get version
         id: version
