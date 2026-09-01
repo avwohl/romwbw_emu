@@ -117,8 +117,17 @@ by every object file that calls set_low()/set_high() - 8 warnings from
 here.  the fix is a qkz80_uint16() around that macro body, in cpmemu, after
 which CPMEMU_REF has to move past it in both workflows and in release.yml.
 until then a clean build is not silent, which is the state that teaches people
-to stop reading warnings.  z80cpmw's /wd4267 on hbios_dispatch.cc is removable
-now either way.
+to stop reading warnings.  measured again 2026-09-01 against cpmemu v4.7.2
+(91151f1), the ref v1.37 pins: same 8 and 12, all of them qkz80_reg_pair.h:32
+and :35.  the pin moving in v1.37 does not touch this - `git diff 9a94e8d
+91151f1 -- 'src/qkz80*.h' 'src/qkz80*.cc'` is empty, so the macro is byte for
+byte what it was.  z80cpmw's C4267 suppression on hbios_dispatch.cc is
+removable either way: 8eeb227 cast all six sites here, so the file is clean at
+/W3 from v1.37 on.  it has NOT been removed there - checked 2026-09-01 at
+z80cpmw 148be4f, still present at z80cpmw/z80cpmw.vcxproj:260.  grep for the
+MSBuild spelling `<DisableSpecificWarnings>4267`, not for `/wd4267`; searching
+for the compiler flag reports it gone when it is not, which is how this entry
+nearly got deleted as stale.
 
 - [WINDOWS] nothing on Windows is RUN, only compiled.  the msvc job builds the
 three core .cc files z80cpmw pulls straight out of src/ and stops there: there

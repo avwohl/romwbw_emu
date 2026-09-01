@@ -17,7 +17,33 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
-Not tagged. `VERSION` still says `1.36`.
+Nothing yet. `VERSION` is `1.37`, which is what `v1.37` was tagged at, so the
+first change that lands here has to bump it. A commit past a tag whose binary
+still reports that tag's version is the confusion `[1.37]` was cut to end; see
+its opening paragraphs.
+
+## [1.37] - 2026-09-01
+
+`VERSION` says `1.37` and the tag is `v1.37`. It does **not** follow a released
+`v1.36`. `v1.36` was tagged at `04ad2b6` on 2026-08-25 and pushed
+(`refs/tags/v1.36` peels to `04ad2b6` on `origin`), and then no release workflow
+ever ran for it: the newest run of "Build and Release Packages" is
+`31186495366`, a `workflow_dispatch` on 2026-08-07, and `gh release list` still
+shows `v1.35` as `Latest`. So no deb, no rpm and no CI-built wasm was ever
+produced for `v1.36`, and **`v1.37` is the first packaged release since `v1.35`**
+(2026-08-07). A package user goes 1.35 -> 1.37 and takes 29 commits of change at
+once: the 23 inside the `v1.36` tag, written up in `[1.36]` below, and the 6
+after it (`04ad2b6..8eeb227`), written up here. `git log v1.36..v1.37` shows one
+more than that — the release commit itself, which sets `VERSION`, moves
+`CPMEMU_REF` and writes this entry.
+
+The `v1.36` tag itself stands untouched — not retracted, not moved, not re-cut.
+It is the published core-ABI contract three downstream ports coordinate against:
+`emu_host_path_caps()` is undefined in the core from `04ad2b6` onward, and
+[docs/DOWNSTREAM_2026-08-25.md](docs/DOWNSTREAM_2026-08-25.md) names that tag as
+where it starts. Moving it would take away the one fixed reference those ports
+have. A tag that was never packaged is a different thing from a release that
+shipped, and nothing below should be read as saying `v1.36` shipped.
 
 **One build-contract change, so read this before syncing.** `emu_io.h` declares
 `emu_host_file_get_read_name()` and the core does not define it, exactly as it
@@ -41,12 +67,72 @@ checks, `ALL TESTS PASSED`. The bump also takes cpmemu's 8080 `DAA`/`CMA`/
 runs Z80, and cpmemu's zexdoc and zexall each still complete 67 groups with no
 CRC mismatches.
 
+`CPMEMU_REF` then moved once more for this release, `9a94e8d` -> `91151f1`, at
+all four value sites (`test.yml:97`, `:185`, `:251`, `release.yml:89`). **That
+one is provenance, not function.** `91151f1` is cpmemu's `v4.7.2` tag, so the
+pin now names a tagged cpmemu release instead of a mid-stream commit; the core
+it produces is unchanged. Measured rather than asserted: `libqkz80.a` built from
+a clean tree at each ref, same compiler, same flags, is byte-identical — 118976
+bytes, md5 `374bde15a856cef17b89388c6576ff2f`, both times. The eight commits in
+between touch six files under `src/` — `cpmemu.cc`, `os/linux/platform.cc`,
+`os/windows/platform.cc`, `CMakeLists.txt`, `makefile`'s dylib branch and
+`qkz80.pc.in` — and this repository compiles none of them: it links the archive
+and includes the `qkz80_*.h` headers, and
+`git diff --name-only 9a94e8d..91151f1 -- 'src/qkz80*'` returns `qkz80.pc.in`
+alone. So cpmemu `v4.7.2`'s BIOS `SECTRAN`, its `CPM_BIOS_DISK` handling,
+`--save-memory` fix and its Windows console rewrite are all real and all in
+`cpmemu`, and **none of them is in this binary**. This release must not be
+credited with any of them. Nor with the 8080 `DAA`/`CMA`/`STC`/`CMC` flag
+fixes, for a different reason: those landed *in* `9a94e8d` itself
+(`git log -S'MODE_8080' -- src/qkz80.cc`), so they arrived at the previous
+bump, in `657d61a` — and they are gated on `MODE_8080`, which this Z80
+emulator never sets, so they were inert then too.
+
+It does not close the `qkz80_MK_INT16` narrowing item in `todo.txt` either,
+which is the one thing a cpmemu bump could plausibly have closed.
+`qkz80_types.h` and `qkz80_reg_pair.h` are byte-identical at both refs, and
+`clang++ -Wall -Wimplicit-int-conversion -Wshorten-64-to-32 -fsyntax-only
+-Isrc -I<cpmemu>/src src/hbios_dispatch.cc` — the `-I` at each ref's headers is
+what "against each of them" means, and without it the command stops at
+`'qkz80.h' file not found` — emits the same two warnings both times, at
+`qkz80_reg_pair.h:32` and `:35`. `src/makefile`'s comment — "this repo goes
+quiet when `CPMEMU_REF` moves past it" — is still true and still unredeemed, and
+is deliberately left as written: the fix it points at is in cpmemu's future, not
+in `v4.7.2`.
+
+Two version numbers have to be kept equal by hand, which is the other reason
+this section is `[1.37]` and not `[1.36]`. The CLI binary's `--version` string
+and the wasm's compiled-in one come from the `VERSION` file (`src/makefile:7`
+and `web/makefile:18`, both feeding `-DEMU_VERSION`). The deb and rpm filenames
+and package metadata, and the `@VERSION@` the rendered page prints in its banner,
+come from the **tag**: `release.yml:94-96` reads
+`github.event.release.tag_name` and strips the leading `v`, and that value is
+what reaches `:119`, `:156`, `:169` and `:181-182`. Nothing compares the two. A
+tag that disagrees with `VERSION` builds a `romwbw-emu_1.37_amd64.deb` whose
+binary answers `v1.36` to `--version`, and a page whose banner disagrees with
+the version compiled into the wasm beneath it, and no step goes red anywhere.
+Hence: `VERSION` is `1.37`, the tag is `v1.37`.
+
 The disk images in `disks/` changed: they carry the new `r8.com` and `w8.com`
 and nothing else. Both were rebuilt with `disks/rebuild_disk_utils.sh` from the
 committed images, so `cpmls` of each one lists exactly what its committed
 version lists — an earlier working copy of `hd1k_combo.img` had picked up two
 files from guest-side testing (`rd.$$$`, `source.txt`) and that is not in this
 diff. Everything else here is the CLI, the build and the web page.
+
+**The images are not part of this release.** `release.yml`'s "Upload to Release"
+step attaches `*.deb` and `*.rpm` and nothing else (`release.yml:200-202`), and
+its staging step copies the binary, the rendered page, the wasm, `web/vendor/`
+and `roms/*.rom` — no `.img` at any point (`release.yml:122-150`). So the
+refreshed `r8.com`/`w8.com` above reach **nobody** through this channel; a
+reader of the paragraph before this one would otherwise assume they do. They
+travel through `ioscpm`'s release assets, which all three port catalogs pin,
+under the ordering constraint in
+[docs/DOWNSTREAM_2026-08-25.md](docs/DOWNSTREAM_2026-08-25.md): the sanitiser
+fix has to land in `ioscpm` before, or with, the new images. That separation is
+the same one `[1.36]` records and it has not changed. The consequence for a deb
+user is still open in `todo.txt` as a policy question: nothing packages an
+image, so a stock install 404s on every `.img` name the page's select offers.
 
 ### Added
 
@@ -334,6 +420,28 @@ diff. Everything else here is the CLI, the build and the web page.
   in full.
   Both behaviours are measured: a cloned `cpmemu` beside `roms/` is skipped, a
   plain `z80cpmw/` directory holding a ROM is not.
+- **`src/emu_io.h` lost its CRLF endings inside the `v1.36` tag.** `04ad2b6` —
+  the commit that tag points at — edited that header through a text-mode round
+  trip and rewrote all 438 of its lines LF. `emu_io.h` is a CRLF file, and so
+  is `src/emu_init.h` beside it — the commit that fixed this says "like the
+  rest of this repo's headers", which measured is too strong: two of the seven
+  headers in `src/` are CRLF and the other five are LF. The point stands for
+  this one, which was CRLF before `04ad2b6` and is CRLF again after it.
+  `17cd380`, the first commit after the tag, restored them, and the counts are
+  the whole proof:
+  `git show <ref>:src/emu_io.h | awk '/\r$/{c++} END{print c+0, NR}'` gives
+  `0 438` at `04ad2b6`, `445 445` at `17cd380`, and `478 478` at `HEAD` after
+  `322ca8e` added to the file. The content diff against the pushed version is
+  only the breadcrumb described under **Changed** below; every other file in
+  that pushed range was audited and this was the only one affected, because the
+  `.cc` files were edited in binary mode and kept their endings.
+
+  This is not cosmetic here. Three ports compile `src/` in place, so `v1.36` as
+  tagged hands them the one revision of this header where every line differs
+  from the revision before it and from the revision after — a whole-file diff on
+  their next sync, in the file that carries the build-contract comment they are
+  being sent there to read. A second reason, beside the commits `main` is
+  ahead by, not to publish a release from that tag.
 
 ### Changed
 
@@ -450,12 +558,31 @@ diff. Everything else here is the CLI, the build and the web page.
   52 must not be given one. `docs/RELEASE_ORDER_2026-08-25.md` step 0 has asked
   for this since it was written: it is the only measure that reaches someone who
   already has the file, because they read the repo rather than re-clone.
+- **The deliberate link error names the notice to read.**
+  `emu_host_path_caps()` being undefined in the core is the only *push* this
+  repository has — the other two channels, `DOWNSTREAM.md` and the verify
+  scripts, both wait to be pulled — and it was a dead end. The comment a
+  maintainer lands on when they go to define the symbol named no notice, and
+  `DOWNSTREAM.md`'s index entry mentioned neither the link error nor the steps
+  no compiler enforces, so the error could be silenced with a one-line stub by
+  someone who then missed the disk-image refresh, the `R8` destructive-delete
+  fix and the release ordering entirely. `src/emu_io.h` now says it outright at
+  the point of arrival — "If you reached this comment from a linker error
+  ('undefined symbol emu_host_path_caps'), that error is the intended signal
+  that your port has a core sync to absorb. Do NOT just add a stub to make it
+  compile: read docs/DOWNSTREAM_2026-08-25.md first" — and `DOWNSTREAM.md`'s
+  index was rewritten to lead with the build-contract change and to list the
+  non-code steps beside it (`17cd380`). The index leads with
+  `docs/DOWNSTREAM_2026-08-26.md` now, the read-name sync, because `322ca8e`
+  added a second contract change behind the first.
 - **`docs/RELEASE_ORDER_2026-08-25.md` is corrected against the four working
   trees**, since three other repositories point at it and were being told the
   old state. Step 0 said "committed locally, NOT pushed" with `origin/main` at
   `fc68ca0`; `main` and `v1.36` are both on `origin` (`refs/tags/v1.36` peels to
-  `04ad2b6`, `main` is five commits past it) and `HEAD` no longer serves an
-  armed `W8`. Step 1 said `ioscpm`'s fix was uncommitted; it is `bb5543f`. Step
+  `04ad2b6`, and `main` is **six** commits past it — `git rev-list --count
+  v1.36..HEAD` = 6; this entry said five, which was the count before the commit
+  that wrote this entry landed) and `HEAD` no longer serves an armed `W8`.
+  Step 1 said `ioscpm`'s fix was uncommitted; it is `bb5543f`. Step
   2 said `cpmdroid` was not checked out; it is, at `c6756af`, with its code half
   done. Step 3's named change landed in `z80cpmw` `2f10d4c`, but that port does
   not define `emu_host_file_get_read_name()`, which the post-v1.36 core calls
@@ -502,6 +629,13 @@ build, whose wasm nothing in this tree can produce (emcc is not a build
 dependency here). The browser half of this release — the shared basename
 reduction, the zero-byte download, a refused disk reported as refused, and
 `W8`'s whole `To host:` change — reaches a web user only when CI builds it.
+
+**Correction, 2026-09-01: none of that was ever built.** No release workflow ran
+for this tag — the newest run of "Build and Release Packages" is `31186495366`
+on 2026-08-07, and `gh release list` shows `v1.35` as `Latest` — so the deb, the
+rpm and the wasm this section promises "this repository's own users" do not
+exist and the browser half reached nobody. The tag stands; the packages ship for
+the first time in `[1.37]` above.
 
 The disk images are a separate channel again and are **not** in this release:
 `release.yml` stages the binary, the web page and `roms/` only. The refreshed

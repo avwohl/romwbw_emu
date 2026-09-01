@@ -69,13 +69,27 @@ jobs:
           # commit in another repo could change or break a release here with
           # nobody touching this one. Bump deliberately, the way the RomWBW pin
           # is bumped.
+          #
+          # 91151f1 is cpmemu's v4.7.2 tag - a tagged release rather than the
+          # mid-stream commit this used to name, which is the only thing the
+          # bump buys. It is not a core change: libqkz80.a built from 9a94e8d
+          # and from 91151f1 is byte-identical - 118976 bytes, all four members
+          # matching, md5
+          #   374bde15a856cef17b89388c6576ff2f
+          # both times - because none of the eight intervening commits touch a
+          # qkz80 source or header (the only `src/qkz80*` file that moved is
+          # qkz80.pc.in, pkg-config metadata this CI never reads). What
+          # they touch - SECTRAN, CPM_BIOS_DISK, --save-memory, the Windows
+          # console rewrite - lives in cpmemu's own app and platform layers,
+          # which this repository never compiles. Do not credit a release note
+          # with a CPU change on the strength of this pin moving.
           git clone https://github.com/avwohl/cpmemu.git
           cd cpmemu
           git checkout --detach ${CPMEMU_REF}
           cd src
           make libqkz80.a
         env:
-          CPMEMU_REF: 9a94e8d
+          CPMEMU_REF: 91151f1
 
       - name: Get version
         id: version

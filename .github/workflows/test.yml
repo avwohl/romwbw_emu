@@ -94,7 +94,7 @@ jobs:
           cd src
           make libqkz80.a
         env:
-          CPMEMU_REF: 9a94e8d
+          CPMEMU_REF: 91151f1
 
       - name: Build and test
         run: |
@@ -182,7 +182,7 @@ jobs:
           cd src
           make libqkz80.a
         env:
-          CPMEMU_REF: 9a94e8d
+          CPMEMU_REF: 91151f1
 
       - name: Build the CLI
         run: |
@@ -248,7 +248,7 @@ jobs:
           cd cpmemu
           git checkout --detach ${env:CPMEMU_REF}
         env:
-          CPMEMU_REF: 9a94e8d
+          CPMEMU_REF: 91151f1
 
       - name: Compile the shared core with cl
         shell: cmd

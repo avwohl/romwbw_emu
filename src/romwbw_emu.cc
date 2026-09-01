@@ -865,16 +865,22 @@ void print_usage(const char* prog) {
   fprintf(stderr, "  --symbols=FILE    Load symbol table from FILE (.sym)\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Console mode:\n");
-  fprintf(stderr, "  Press the escape char (default Ctrl+E) to enter console mode. That key\n");
-  fprintf(stderr, "  never reaches CP/M; use --escape=none when the guest needs it (WordStar\n");
-  fprintf(stderr, "  and its descendants use ^E for cursor-up).\n");
+  fprintf(stderr, "  Press the escape char (default Ctrl+E) to enter console mode. On an\n");
+  fprintf(stderr, "  interactive terminal that key never reaches CP/M; use --escape=none when\n");
+  fprintf(stderr, "  the guest needs it (WordStar and its descendants use ^E for cursor-up).\n");
+  fprintf(stderr, "  With piped or redirected stdin nothing is reserved and the key goes to\n");
+  fprintf(stderr, "  the guest; the start-up banner says which case you are in.\n");
   fprintf(stderr, "  Type 'help' in console mode for available commands.\n");
   fprintf(stderr, "  Use 'quit' to exit.\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Examples:\n");
   fprintf(stderr, "  %s --romwbw=roms/emu_avw.rom\n", prog);
   fprintf(stderr, "  %s --romwbw=roms/emu_avw.rom --disk0=disks/hd1k_combo.img\n", prog);
-  fprintf(stderr, "  %s --romwbw=roms/emu_avw.rom --disk0=disks/hd1k_infocom.img:1\n", prog);
+  fprintf(stderr, "  %s --romwbw=roms/emu_avw.rom --disk0=disks/hd1k_combo.img --boot=2.1\n", prog);
+  fprintf(stderr, "\n");
+  fprintf(stderr, "  A slice is picked at boot, not in the disk name: --disk0= takes the\n");
+  fprintf(stderr, "  rest of the argument as a literal path - there is no :SLICE suffix -\n");
+  fprintf(stderr, "  and --boot=2.1 boots unit 2 slice 1, which CBIOS then makes A:.\n");
 }
 
 int main(int argc, char** argv) {

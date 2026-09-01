@@ -410,11 +410,10 @@ that, and nothing told the user why.
 `emu_validate_rom_hcb()` and **return false** on a ROM this core cannot run,
 where they previously accepted it and produced a dead emulator:
 
-| Condition | Result |
-|---|---|
-| HCB marker at 0x103 is not `57 A8` | load fails - corrupt or not a RomWBW ROM |
-| HCB version bytes differ from the pin | load fails - names both versions |
-| `CB_PLATFORM != 0` (stock hardware ROM) | warning only, load proceeds |
+	Condition	Result
+	HCB marker at 0x103 is not `57 A8`	load fails - corrupt or not a RomWBW ROM
+	HCB version bytes differ from the pin	load fails - names both versions
+	`CB_PLATFORM != 0` (stock hardware ROM)	warning only, load proceeds
 
 GUI ports are the main beneficiaries: you load ROMs from a bundle or a
 download and have no console to notice a silent failure on. **Handle the new
@@ -846,6 +845,26 @@ Ctrl+Space, so binding it moves the theft rather than ending it.
 
 ## Migration Checklist
 
+Unprefixed items are the original migration, written between `abbde53` and
+`cd4e2da` (2025-12-25 to 2026-01-16) — before this file started tagging items
+by release. A `vN.NN:` prefix
+names the romwbw_emu release whose sources first require the item, so a port
+syncing past that tag owes everything up to and including it. The `v1.36:`
+items are inside the `v1.36` tag (`04ad2b6`, 2026-08-25); the `v1.37:` items
+come from the commits after it, and the read-name build contract
+([docs/DOWNSTREAM_2026-08-26.md](docs/DOWNSTREAM_2026-08-26.md), `322ca8e`) is
+one of them - so a port that took the tag has the `emu_host_path_caps()` half
+of the link contract and not the `emu_host_file_get_read_name()` half.
+
+One thing to know before reading those prefixes as download links: `v1.36` was
+tagged and never packaged. No `release.yml` run exists for it, so there is no
+deb, rpm, web build or `roms/` asset under that tag - `gh release list` shows
+`v1.35` (2026-08-07) as the newest release with assets, and `v1.37` is the next
+one. A port that syncs *sources* by tag therefore sees v1.36; a port that
+downloads *release assets* goes from v1.35 straight to v1.37. The tag itself
+stays where it is: it is the contract the `v1.36:` items below are measured
+against, and it is not being moved or retracted.
+
 - [ ] Pull latest `romwbw_mem.h` with shadow RAM fix
 - [ ] Pull latest `emu_init.cc` and `emu_init.h`
 - [ ] Pull latest `hbios_dispatch.cc` and `hbios_dispatch.h`
@@ -884,7 +903,8 @@ Ctrl+Space, so binding it moves the theft rather than ending it.
 - [ ] v1.36: Make `emu_host_file_get_write_name()` return the *effective* destination, not an echo of the requested name - W8 prints it to the user now (`HBF_HOST_GETNAME`). Return `""`/`nullptr` outside an open write, and after a failed open
 - [ ] v1.36: If your backend cannot honour a directory (browser, sandboxed app), reduce the requested path with the shared `emu_host_path_basename()` rather than your own split - it takes both separators and refuses `.`/`..`
 - [ ] v1.36: Refresh any bundled `hd1k_*` images: `r8.com` and `w8.com` both changed (W8 no longer truncates binaries at the first `^Z`). `disks/rebuild_disk_utils.sh` builds and installs; `disks/verify_disk_utils.sh` checks
-- [ ] post-1.36: Define `emu_host_file_get_read_name()` or fail to link. `return "";` is a correct answer - R8 then prints what it was asked for, as before. Answer properly only if your backend resolves, redirects or sandboxes a read path; a backend whose read is a file picker should return `""`, as the browser does. See [docs/DOWNSTREAM_2026-08-26.md](docs/DOWNSTREAM_2026-08-26.md)
-- [ ] post-1.36: Refresh bundled images again - `r8.com` and `w8.com` changed once more (R8 names the file it opened; W8 tells a CP/M read error from end of file, which matters on ZSDOS and CP/M 3 and not on CP/M 2.2)
-- [ ] post-1.36: If you scrape R8/W8 output, a failed open is two lines now: the message, then `  Asked for: <path>`
-- [ ] post-1.36: If your `emu_io_cleanup()` closes state that has to survive a mode switch (the CLI's did - printer/aux redirection), move it to process exit
+- [ ] v1.37: Define `emu_host_file_get_read_name()` or fail to link. `return "";` is a correct answer - R8 then prints what it was asked for, as before. Answer properly only if your backend resolves, redirects or sandboxes a read path; a backend whose read is a file picker should return `""`, as the browser does. See [docs/DOWNSTREAM_2026-08-26.md](docs/DOWNSTREAM_2026-08-26.md)
+- [ ] v1.37: Refresh bundled images again - `r8.com` and `w8.com` changed once more (R8 names the file it opened; W8 tells a CP/M read error from end of file, which matters on ZSDOS and CP/M 3 and not on CP/M 2.2)
+- [ ] v1.37: If you scrape R8/W8 output, a failed open is two lines now: the message, then `  Asked for: <path>`
+- [ ] v1.37: If your `emu_io_cleanup()` closes state that has to survive a mode switch (the CLI's did - printer/aux redirection), move it to process exit
+- [ ] v1.37: MSVC ports can drop any C4267 suppression on `hbios_dispatch.cc` - `8eeb227` cast all six sites (a `size_t` loop index promoting a `uint16_t` guest address in `write_to_bank`/`read_from_bank`, where truncating to sixteen bits *is* the Z80 64K wrap HBIOS wants). Grep for the MSBuild spelling, not the compiler flag: `z80cpmw` still carries it as `<DisableSpecificWarnings>4267` at `z80cpmw/z80cpmw.vcxproj:260`, which a search for `/wd4267` reports as already gone

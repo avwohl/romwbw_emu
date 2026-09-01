@@ -79,7 +79,8 @@ ordering, and why it is that order.
 > - **Step 3 is half done and will not link.** The `z80cpmw` change this file
 >   names landed in `2f10d4c`, but that port does not define
 >   `emu_host_file_get_read_name()`, which the post-`v1.36` core calls
->   unconditionally.
+>   unconditionally. *(2026-09-01: it does now - `713bfce`, the same day this
+>   block was written. See step 3.)*
 > - **Step 5 has a second data-loss path this document never mentioned**, and it
 >   is fired by step 4's own instruction to bump the catalog `version`. It has
 >   its own section below.
@@ -87,7 +88,9 @@ ordering, and why it is that order.
 >   and now *published*, because pushing `main` published them — and the usage
 >   string still does not tell an armed `W8` from an interlocked one. There is
 >   also still no `v1.36` GitHub release: `gh release list` shows `v1.35` as
->   Latest, published 2026-08-07.
+>   Latest, published 2026-08-07. *(2026-09-01: still true, and now settled -
+>   there will never be one, and `v1.37` is cut from `main` instead. See
+>   step 0.)*
 
 ---
 
@@ -175,7 +178,9 @@ c5f98ba…  refs/tags/v1.36
 ```
 
 `main` is at `a95db9f`, five commits past the tag (`17cd380`, `322ca8e`,
-`657d61a`, `5920681`, `a95db9f`). The tagged commit `04ad2b6` carries the core
+`657d61a`, `5920681`, `a95db9f`). *(2026-09-01: six now - `8eeb227` followed,
+and `04ad2b6..8eeb227` is the code `v1.37` ships; `git log v1.36..v1.37` shows a
+seventh, the release commit itself.)* The tagged commit `04ad2b6` carries the core
 fixes, the shared `emu_host_path_basename()`, `HBF_HOST_GETNAME` and the
 `HBF_HOST_CAPS` interlock; `322ca8e` rebuilt both tracked images again after it.
 
@@ -194,11 +199,32 @@ exactly where they were.
 
 Remaining here:
 
-- **There is no `v1.36` GitHub release.** The tag is pushed; the release is not
-  cut. `gh release list` shows `v1.35` as Latest, published 2026-08-07. Until
-  the release exists, `release.yml` has not run for `v1.36` and there is no
-  binary, no web page and no `roms/` asset under that tag. The tag still carries
-  no disk images either way, so cutting it is independent of everything below.
+- **There is no `v1.36` GitHub release, and there will not be one. Decided
+  2026-09-01.** This bullet used to end "so cutting it is independent of
+  everything below", which read as an invitation to cut it. Cutting it would
+  fail. A `release: published` event runs the workflow file *from the tag's own
+  commit*, not from `main` - measured, not assumed: the successful `v1.35`
+  release run `31177155425` reports `headSha` `13d1c23`, which is exactly
+  `git rev-parse v1.35^{}`. And `git show v1.36:.github/workflows/release.yml`
+  pins `CPMEMU_REF: 9fee3c2`, the cpmemu commit whose `src/makefile` puts the
+  Clang-only `-Wshorten-64-to-32` into `CXXFLAGS` unconditionally, so
+  `make libqkz80.a` cannot build on a GitHub GCC runner. That is not a
+  prediction either: the tagged `test.yml` pins the same `9fee3c2` and runs the
+  same clone-and-`make libqkz80.a` step, and run `32880455802` — that workflow,
+  on a push of `04ad2b6` itself — is a failure whose one failed step is named
+  "Build qkz80 library". The tagged workflow also predates the `web/vendor/`
+  and `roms/emu_avw.rom` staging (grep the tagged file for `vendor` or
+  `emu_avw`: nothing), so a build that somehow got past the library step would
+  install a page whose ROM 404s, and — since the tagged template still loads
+  xterm from `cdn.jsdelivr.net` — one with no terminal on any machine without
+  internet.
+
+  So `v1.37` is cut from `main` instead. The `v1.36` tag stays exactly where it
+  is - it is a published core-ABI contract that `ioscpm`, `cpmdroid` and
+  `z80cpmw` coordinate against, and `DOWNSTREAM.md`'s `v1.36:` checklist items
+  are measured against it - it is simply never packaged. `gh release list`
+  shows `v1.35` (2026-08-07) as Latest until `v1.37` exists. The tag carries no
+  disk images either way, so all of this remains independent of steps 4 and 5.
 - The `README.md` line this plan asked for **is now written**, in the
   **Recommended Disk Images** section directly under the table. It is still the
   only measure that reaches someone who already has the file, since they read
@@ -241,7 +267,7 @@ will really write, so `W8` can tell the user where the file went.
 **Remaining: ship it as a build users have.** Do not bump `releaseTag` in this
 build unless the new assets already exist.
 
-### Step 2 — `cpmdroid` code fix. **Code half done.** Blocks step 5 for that port only.
+### Step 2 — `cpmdroid` code fix. **Code done.** Blocks step 5 for that port only.
 
 **Corrected 2026-08-27.** This section used to say "Not checked out on this
 machine". It is: `/Users/wohl/src/cpmdroid`, at `c6756af`. The task it set —
@@ -258,12 +284,24 @@ file gaps"). In `app/src/main/cpp/emu_io_android.cpp` today:
 - and `emu_host_file_get_read_name()` is defined too, so the post-`v1.36` core
   links there as well.
 
+**Heading corrected 2026-09-01.** It said "Code half done." while the four
+bullets under it list the code as complete, which is the sort of contradiction a
+port reads the heading of and not the body. Re-checked against
+`/home/wohl/src/cpmdroid` at `22f10df`, tree clean and in sync with its
+upstream: `emu_host_path_caps()` is at `app/src/main/cpp/emu_io_android.cpp:753`
+and `emu_host_file_get_read_name()` at `:898`, both present since `a523d40` and
+so already true when the body was written. `167acbe` (2026-08-29) then made the
+read-name answer a gated one — it returns `""` unless the state is
+`HOST_FILE_READING`, because on this port an open only parks the request for the
+Kotlin layer to poll, so at `0xEA` time there is usually nothing honest to say
+yet and R8 falls back to printing what was typed.
+
 What is left for this port is step 5's half, not the code: it must not bump its
 catalog pin before a build carrying the above is what users have — and see the
 catalog-`version` hazard below, which applies to it as much as to `ioscpm` if it
 implements the same invalidation.
 
-### Step 3 — `z80cpmw` code fix. Not a safety blocker.
+### Step 3 — `z80cpmw` code fix. **Code done.** Not a safety blocker.
 
 No delete was found there: that backend is `fopen`-based, honours absolute
 paths deliberately, and has no `removeItem`. Its change is about *reporting* —
@@ -287,6 +325,24 @@ syncing anything past `v1.36` into that vcxproj fails to link, exactly the way
 `emu_host_path_caps()` did before it. `return "";` is a correct answer and costs
 nothing — see this repo's `docs/DOWNSTREAM_2026-08-26.md`. Add it with the sync,
 not after it.
+
+**Corrected 2026-09-01: the port links. The paragraph above was true for one
+day.** `f197dde` is 2026-08-26; `713bfce` ("Define the read-name getter the core
+requires, and check disk assets before a release") is 2026-08-27 and defines
+`emu_host_file_get_read_name()` at `z80cpmw/emu_io_windows.cpp:1067`, with
+`emu_host_path_caps()` beside it at `:1083`. Re-checked on this machine against
+`/home/wohl/src/z80cpmw` at `148be4f`, tree clean and in sync with
+`origin/master`, and `f197dde` is an ancestor of it — so the "checked against
+`f197dde`" reading was correct when written and is simply out of date, not
+wrong. Anyone syncing this repo's `v1.37` sources into that vcxproj links.
+
+It did not take the free `return "";`, which is worth recording because it is
+the case the contract was written for: this backend resolved the guest's name to
+a real path in `emu_host_file_open_read()`, so it returns that path, and an
+installed MSIX build tells the user the redirected
+`...\Packages\...\LocalCache\Local` location instead of the bare name they
+typed. It answers `""` only when the bytes came from
+`emu_host_file_provide_data()`, which has no path to report.
 
 Can happen before or after step 4; it is independent.
 
@@ -435,6 +491,10 @@ against the core, which is the point. *(2026-08-27: all three ports have added
 it — `ioscpm` in `49851aa`, `cpmdroid` in `a523d40`, `z80cpmw` in `2f10d4c`. The
 same construction has since caught a second one:
 `emu_host_file_get_read_name()` is declared and not defined, and `z80cpmw` has
-not added it yet. See step 3.)* The bit's meaning was also corrected: it
+not added it yet. See step 3.)* *(2026-09-01: `z80cpmw` added it in `713bfce`,
+so the second catch is closed too and all three ports define both. That is two
+for two: each time the core has taken a guarantee away from a constant and given
+it to a backend function, the linker has named every port that had to answer,
+and none of them found out from prose.)* The bit's meaning was also corrected: it
 is "the path is never used destructively", not "confined to one directory", so a
 backend that honours absolute paths sets it honestly.

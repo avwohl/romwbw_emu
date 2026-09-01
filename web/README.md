@@ -2,8 +2,15 @@
 
 Browser frontend for the RomWBW emulator. The shared C++ engine is compiled
 to WebAssembly with Emscripten and driven from a single-page terminal UI
-built on xterm.js 5.3.0 (plus the fit addon 0.8.0), both loaded from the
-jsdelivr CDN by `romwbw.html-template`.
+built on xterm.js 5.3.0 (plus the fit addon 0.8.0). Both are vendored in
+`vendor/` and loaded from there by `romwbw.html-template`; 5920681 took the
+jsdelivr tags out, because release.yml staged the page, the wasm and the ROM
+and no xterm, so an installed .deb on a machine with no internet opened a page
+with no terminal in it. The page now talks to no third-party host at all.
+`vendor/README.md` records which npm tarballs the bytes came from, and why the
+tags no longer carry an `integrity=` (SRI is a check on a file fetched from a
+host you do not control; a same-origin file shipped inside the package is the
+file the hash would be over).
 
 Keyboard input is `term.onData`: xterm.js has already resolved the keystroke to
 bytes - control keys as their native byte, special keys as their escape
@@ -61,9 +68,10 @@ Versioning: the makefile reads `../VERSION` and passes it as
 `-DEMU_VERSION` at compile time. Both deploy targets generate `index.html`
 by sed-substituting every `@VERSION@` in `romwbw.html-template` with that
 version (the template also uses it as a `romwbw.js?v=...` cache-buster).
-The deploy targets copy only `index.html`, `romwbw.js`, and `romwbw.wasm`;
-the ROM and disk images offered by the page's dropdowns must already be
-present in the deploy directory.
+The deploy targets copy `index.html`, `romwbw.js`, `romwbw.wasm` and the five
+files of `vendor/` (a deploy that leaves those out is a page with no terminal
+in it); the ROM and disk images offered by the page's dropdowns must already
+be present in the deploy directory.
 
 Notable Emscripten settings: `ALLOW_MEMORY_GROWTH=1`, 64MB initial memory,
 and exported runtime methods `ccall`, `cwrap`, `FS`, `HEAPU8`.
@@ -171,8 +179,10 @@ Persistence:
 - NVRAM and disk images live only in WASM memory. Nothing about the guest
   survives a page reload - closing the tab discards all disk writes.
 - The one exception is the UI itself: since v1.34 the control selections
-  (ROM choice, disk 0/1 selections, slice overrides, boot string, and the
-  per-disk "don't warn" checkboxes) persist in browser `localStorage`.
+  (ROM choice, disk 0/1 selections, boot string, and the per-disk "don't
+  warn" checkboxes) persist in browser `localStorage`. That is six values and
+  no slice setting: the two slice `<select>`s were deleted in 2dbf6f2 because
+  they fed `Module._romwbw_set_disk_slices`, which does not exist.
   Local file uploads cannot be restored (browsers forbid programmatic
   file-input values) and the Debug checkbox is deliberately session-only.
 - A `beforeunload` handler warns before the tab closes if any disk unit
@@ -204,6 +214,11 @@ Build and page sources:
   deploy time to produce `index.html`.
 - `romwbw.js` / `romwbw.wasm` - local build outputs of `make romwbw.js`
   (gitignored, not in the repository).
+- `vendor/` - xterm.js 5.3.0, the fit addon 0.8.0, their two MIT licences,
+  and a README recording the npm tarballs they were taken from. The page
+  loads the terminal from here, so both deploy targets and release.yml's
+  staging step copy this directory; unlike most of what follows, it is
+  checked in.
 
 Debug harnesses:
 
@@ -245,5 +260,5 @@ R8/W8 host file transfer availability on the web-served disks:
 Note that most files listed in this inventory (debug harnesses, Node test
 scripts, prebuilt node builds, sample disk images) exist only in the
 author's working tree or the deployment directory; a fresh clone contains
-only this README, the makefile, `romwbw_web.cc`, the HTML templates, and
-the sample ROMs.
+only this README, the makefile, `romwbw_web.cc`, the HTML templates,
+`vendor/`, and the sample ROMs.

@@ -324,9 +324,16 @@
     <p>R8.COM and W8.COM are on <code>hd1k_combo.img</code>, the default disk 0.</p>
 
     <h3>Drive Letters & Slices</h3>
-    <p>Hard disks are assigned first, then memory disks. The boot slice becomes A:.</p>
+    <p>The memory disks take the first letters - A:=MD0 (RAM), B:=MD1 (ROM) -
+    and each hard disk's slices follow in order. Booting a slice moves that one
+    slice to A: and pushes everything else down: with the default two disks,
+    <code>2.1</code> gives A:=HDSK0:1, B:=MD0, C:=MD1, D:=HDSK0:0, then the rest.</p>
     <p><strong>Auto slices:</strong> 1 disk = 8 slices | 2 disks = 4 each | 3+ disks = 2 each</p>
-    <p>Use the slice dropdown to override (e.g., set disk 0 to 6 slices for boot 2.4).</p>
+    <p>Those counts only decide how many letters a disk is handed; they do not
+    limit what you can boot. There is no slice control on this page - name the
+    slice in the <strong>Boot</strong> box instead. <code>2.4</code> boots unit 2
+    slice 4 and lands on A: even with two disks loaded, where the counts above
+    only reach slice 3.</p>
   </div>
 
   <script src="vendor/xterm.js"></script>
@@ -798,12 +805,15 @@
     //=========================================================================
     // UI settings persistence (localStorage)
     //
-    // Persists the control selections (ROM, disks, slices, boot string,
-    // warning suppression) across reloads. Local file uploads cannot be
-    // restored (browsers forbid programmatic file-input values), so
-    // '__custom__' / empty selections are stored as null and the markup
-    // default applies on reload. The Debug checkbox is deliberately not
-    // persisted (session diagnostic).
+    // Persists exactly six things across reloads: the ROM selection, the boot
+    // string, the two disk selections, and their two "Don't warn" checkboxes.
+    // Nothing about slices - it used to store disk0Slices/disk1Slices too, but
+    // 2dbf6f2 deleted those two <select>s because nothing read them (the reason
+    // is spelled out in the Start handler below); a slice is named in the boot
+    // string instead. Local file uploads cannot be restored (browsers forbid
+    // programmatic file-input values), so '__custom__' / empty selections are
+    // stored as null and the markup default applies on reload. The Debug
+    // checkbox is deliberately not persisted (session diagnostic).
     //=========================================================================
     const SETTINGS_KEY = 'romwbw_emu_ui';
 
