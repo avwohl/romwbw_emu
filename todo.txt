@@ -56,14 +56,20 @@ refreshed to sha256 89b8ae1a..., the other 19 re-uploaded byte-identical, and
 disks.xml's version attribute deliberately left at 13 so the invalidation wipe
 never fired.  v1.4.5 is untouched - still be19984e..., still 30 assets - and
 releases/latest is still v1.4.11.
-all three ports still pin v1.4.5 (RELEASE_TAG in z80cpmw's DiskCatalog.cpp and
-in cpmdroid's DiskCatalogRepository.kt, releaseTag in ioscpm's
-EmulatorViewModel.swift), so nobody has the new utilities yet.  that pin bump is
-step 5, and it is blocked on something no machine here can do: a build carrying
-the sanitiser has to be one users actually have.  the App Store is on 1.4.9 from
-2026-03-19 (builds 36/37); build 52 is fifteen builds and five months past it.
-ioscpm's MANUAL_CHECKS.md section 1 also has all six boxes unticked, and
-RELEASE_ORDER's pre-flight item 5 wants a hands-on device run.
+step 5's EDIT half is now done in all three ports and its SHIPPING half is done
+in none, which is the whole of what is left and is not this repository's to do.
+every tree reads v1.4.12: releaseTag in ioscpm's EmulatorViewModel.swift
+(0010591), RELEASE_TAG in cpmdroid's DiskCatalogRepository.kt (642b3b0, and it
+is that port's HEAD) and in z80cpmw's DiskCatalog.cpp (5ee0e5f, also HEAD).
+not one of those commits has a release tag on or after it, so every package a
+user can install still fetches v1.4.5 and still gets the R8 that erases on
+wildcards.  read the pin out of the artifact rather than the tree and it says
+so: `git -C ../z80cpmw show v1.0.22-beta:z80cpmw/DiskCatalog.cpp` is v1.4.5, and
+dbd53b1 records that 1.0.23 went to both channels carrying v1.4.5 too.
+nothing here needs a release for any of it.  this repository publishes no disk
+image - v1.38's eight assets are the .deb and .rpm pairs - and it fetches no
+catalog, so no romwbw_emu tag stands between the fix and a user.  the two
+commits past v1.38 are this file and tools/check-disk-pins.sh.
 what was measured while doing step 4, and is worth not re-deriving: only
 hd1k_combo.img carries r8.com/w8.com at all - the other 19 published images
 contain neither, so the whole job was one image and a one-line catalog diff.
