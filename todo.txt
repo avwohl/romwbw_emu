@@ -70,6 +70,36 @@ nothing here needs a release for any of it.  this repository publishes no disk
 image - v1.38's eight assets are the .deb and .rpm pairs - and it fetches no
 catalog, so no romwbw_emu tag stands between the fix and a user.  the two
 commits past v1.38 are this file and tools/check-disk-pins.sh.
+
+- [ANY] tools/check-disk-pins.sh exits 0 while not one shipped package of any
+port carries the repin, and that is structural rather than a bug in the
+comparison.  Its whole stated reason for existing is checking the built artifact,
+and artifacts_for() globs only local paths - dist/, bin/Release/,
+app/build/outputs, build/ - so on a machine where none of those exist it scans
+nothing, prints nothing, and the run still ends in "every artifact found agrees
+with its own tree".  Found nothing and checked nothing read identically.  At
+minimum the summary has to distinguish them; a gate that cannot see an artifact
+should not report on artifacts at all.
+  What it must NOT do is reach for the obvious fix.  Querying
+  avwohl/{z80cpmw,cpmdroid} release APIs would answer the wrong question on both:
+  cpmdroid's newest GitHub release is v1.14 from 2026-01-16 while Play serves
+  1.25, so the gate would scan a package nine versions older than anything a user
+  has, and z80cpmw's Store channel leaves no GitHub release behind at all - its
+  CHANGELOG.md header says so and is the only record of what shipped.  The three
+  authorities that do answer it are the iTunes lookup API (ioscpm already wraps it
+  in tools/check-store-version.sh), the Play listing, and for Windows a
+  human-maintained note.  Two of the three are not artifacts, so the honest shape
+  is a gate that compares published store VERSIONS against the commit that moved
+  each pin, not one that unzips packages.
+
+- [ANY] a green pin does not mean a user has the fixed R8, and the gate implies
+it does.  All three ports decide "already downloaded" by filename alone -
+fileExists in ioscpm's refreshAvailableDisks, the same in cpmdroid's
+DiskDownloadManager, and z80cpmw hashes nothing on download at all - and the
+catalog's version attribute is 13 at v1.4.5 and at v1.4.12 alike, so nothing
+re-fetches an image already on disk.  A port can be pinned correctly, shipped
+correctly, and still leave every existing user on the old combo.  Whatever the
+gate grows into should say which of those two questions it is answering.
 what was measured while doing step 4, and is worth not re-deriving: only
 hd1k_combo.img carries r8.com/w8.com at all - the other 19 published images
 contain neither, so the whole job was one image and a one-line catalog diff.
