@@ -32,6 +32,20 @@ courtesy.
 
 ### Changed
 
+- **`disks/disks.xml` stopped calling CP/M Plus broken.** The entry read
+  `CP/M Plus (CP/M 3.0) - NOT WORKING, under investigation.` It boots: booting
+  slice 3 of `hd1k_combo.img` headless prints `CP/M v3.0 [BANKED] for HBIOS
+  v3.5.1` and `60K TPA`, and `DIR *.COM` lists the CP/M 3 utility set
+  (`GENCPM`, `SETDEF`, `DEVICE`, `HEXCOM`, `INITDIR`, `PATCH`, `PUT`/`GET`,
+  `ZSID`). The corrected wording is the one `ioscpm` already carries at
+  `release_assets/disks.xml:39`, written for `v1.4.1` ("Update CP/M 3
+  description - now working with bank config fixes") and never propagated back
+  here. Documentation only; no asset changed and the binary is untouched. One
+  caveat worth knowing before automating against it, and not recorded anywhere
+  else: CP/M 3's `DIR` paginates and then blocks on `Press RETURN to Continue`,
+  where CP/M 2.2's on the same disk runs to completion — a piped capture
+  truncates there and then hangs.
+
 - **Step 4 of the release-order plan is done: the refreshed disk images are
   published as `ioscpm` `v1.4.12`.** A prerelease, 29 assets, 2026-09-01. Only
   `hd1k_combo.img` needed refreshing - all 21 published `v1.4.5` assets were

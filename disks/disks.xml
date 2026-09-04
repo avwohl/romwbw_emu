@@ -31,7 +31,7 @@
     <disk>
         <filename>hd1k_cpm3.img</filename>
         <name>CP/M 3</name>
-        <description>CP/M Plus (CP/M 3.0) - NOT WORKING, under investigation.</description>
+        <description>CP/M Plus (CP/M 3.0) - advanced OS with banked memory support.</description>
         <size>8388608</size>
         <license>Mixed</license>
     </disk>
