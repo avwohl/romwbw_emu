@@ -19,18 +19,100 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
-`VERSION` is `1.38`, which is what `v1.38` was tagged at. The rule `[1.37]` was
-cut to establish is that a **binary-affecting** change landing here bumps it, so
-that no build answers with a tag's version while differing from it; the entries
-below are documentation and published assets, and the binary is bit-identical to
-`v1.38`'s, so `1.38` is still a true answer and the file is deliberately left
-alone. The first change that touches `src/` bumps it. Cutting a release from
-here takes a dated heading, a `VERSION` that already matches the tag, and a
-green `workflow_dispatch` run of `release.yml` before the tag exists; that dry
-run is what replaced the dependency pins, so it is a step rather than a
-courtesy.
+`VERSION` is `1.39`. The rule `[1.37]` was cut to establish is that a
+**binary-affecting** change landing here bumps it, so that no build answers with
+a tag's version while differing from it. The RomWBW runtime-version change below
+touches four files in `src/`, so it bumped. Cutting a release from here takes a
+dated heading, a `VERSION` that already matches the tag, and a green
+`workflow_dispatch` run of `release.yml` before the tag exists; that dry run is
+what replaced the dependency pins, so it is a step rather than a courtesy.
+
+### Added
+
+- **One binary now boots more than one RomWBW release.** The compile-time pin is
+  gone. `emu_validate_rom_hcb()` compared a loaded ROM's HCB version bytes
+  against `ROMWBW_PIN_VER_BYTE`/`ROMWBW_PIN_UPD_BYTE` and failed the load on any
+  difference, so a build pinned to 3.5.1 physically could not load a 3.6.0 ROM -
+  which is why every downstream client could *fetch* two RomWBW versions and run
+  only one. The version is now read out of the loaded ROM at run time, and this
+  build boots v3.5.1 and v3.6.0. `--version` says so:
+
+      RomWBW releases this build can run: 3.5.1, 3.6.0
+        (the version a guest sees is read from the ROM it loads, not compiled in)
+
+  Five sites report a version to the guest and every one of them now derives it
+  from the ROM rather than holding a copy: `HBF_SYSVER`
+  (`hbios_dispatch.cc:1537`), the NVRAM checksum seed (`:697-707`), the HBIOS
+  ident block (`emu_init.cc:283`, `:289`), the CBIOS page-zero stamp at
+  `0x42`/`0x43` (`:324-325`), and the load-time check itself. **The last two
+  exist only in emulated RAM.** Nothing in this tree inspects emulated RAM, so a
+  stored copy that was never updated would have been invisible to every verifier
+  here and would have surfaced only as a guest printing the wrong version.
+  Deriving rather than storing is what makes that unrepresentable: there is no
+  cached value and no initialisation order to get wrong, only `read_bank(0,
+  0x105)`.
+
+  Verified by running it, not by reading it. A CP/M program assembled for the
+  purpose (`R8`-imported, reading `0x42`/`0x43`, `0xFE02`, the block `0xFFFC`
+  points at, and `HBF_SYSVER`) reports `3510` under a 3.5.1 ROM and `3600` under
+  a 3.6.0 ROM, on all four - which is the only way those two RAM-only sites can
+  be checked at all. Both releases boot CP/M 2.2, banked CP/M 3, ZPM3, Z3PLUS,
+  ZSDOS and NZCOM; `R8`/`W8` round-trip a file byte-identically under both; the
+  boot loader prints `NV Switches Found` under both, so the checksum seed agrees
+  with the ROM's own SYSCONF.
+
+- **`ROMWBW_SUPPORTED_RELEASES`, and a refusal that means something.** A release
+  this core has never been checked against is still refused, because bank 0 is
+  our HBIOS proxy and a release whose CBIOS calls a function the dispatcher does
+  not implement would load and then hang - much worse than a refusal. The
+  message names the release and what this build can run:
+
+      ROM is built for RomWBW v3.7.0, which this emulator has not been checked
+      against (it can run 3.5.1, 3.6.0) - use one of those, or add v3.7.0 to
+      ROMWBW_SUPPORTED_RELEASES in src/romwbw_pin.h once you have booted it
+
+  `emu_set_allow_untested_romwbw(true)`, or `--allow-untested-romwbw`, overrides
+  it with a warning. Adding a release is a claim that somebody ran it, and each
+  `X()` entry carries the date it was checked.
+
+- **New public API in `emu_init.h`** for ports that show a version:
+  `emu_romwbw_release_of_image()` (inspect an image before offering it in a
+  picker), `emu_romwbw_release_loaded()`, `emu_romwbw_release_str()`,
+  `emu_romwbw_release_supported()` and `emu_romwbw_supported_list()`.
+
+### Fixed
+
+- **`src/makefile` had no header dependencies at all.** The pattern rule was
+  `%.o: %.cc` and nothing else, so editing any header rebuilt nothing: `make`
+  reported "up to date" and the binary kept whatever was compiled in before.
+  Found by editing `romwbw_pin.h` - the file whose entire job is to be the
+  single source of truth about the RomWBW version - and watching `--version`
+  keep answering with the old one. `-MMD -MP` plus `-include $(wildcard *.d)`
+  now records and replays them; `clean` and `.gitignore` take `*.d`.
+
+- **`roms/verify_romwbw_pin.sh` was never run by anything.** Not by `make test`,
+  not by any CI job - only by a human remembering its name. `make -C src test`
+  runs it now, which is how a stale binary or a mismatched artifact gets caught
+  without anyone remembering.
 
 ### Changed
+
+- **`roms/verify_romwbw_pin.sh` asks a different question.** It used to be "does
+  everything in this tree match the one pinned release?", which would now fail a
+  tree that correctly ships both. It is now "is every artifact a release this
+  core can run, and does every disk have a ROM to pair with?" - plus a new check
+  that no single image carries slices from two releases, and a binary check that
+  compares `--version`'s list against the header rather than one string. The
+  file name is kept because DOWNSTREAM.md, README.md and three client CHANGELOGs
+  already name it; there is no pin left for it to verify.
+
+- **`ROMWBW_PIN_*` is now `ROMWBW_DEFAULT_*`**, and means something narrower:
+  the release *this tree's own* `roms/` and `disks/` artifacts are cut from, for
+  the build scripts to read. It is not a constraint on what the binary can load.
+  Renamed rather than repurposed so that anything still reading the old name
+  fails loudly. `roms/build_emu_rom.sh` and `roms/build_from_source.sh` follow;
+  `roms/emu_avw.rom` rebuilds byte-identical
+  (`c7abc580b3285a33e439c0d6724a9d64dd3e93733a4fc2c1b80b0bfd91f9c580`).
 
 - **`disks/disks.xml` stopped calling CP/M Plus broken.** The entry read
   `CP/M Plus (CP/M 3.0) - NOT WORKING, under investigation.` It boots: booting

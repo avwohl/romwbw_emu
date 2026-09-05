@@ -798,12 +798,17 @@ public:
 
 // Disk size constants and MBR checking are now in emu_init.h/emu_init.cc
 
-// The RomWBW release this build emulates is part of the version identity:
-// a client has to pair the binary with a ROM and disk images cut from the
-// same release, so print it where the version is printed.
+// Which RomWBW releases this build can run is part of the version identity:
+// a user has to pair a ROM with disk images cut from the same release, so
+// print the list where the version is printed. It is a list rather than one
+// release because the version a guest sees is read out of the ROM at load
+// time; this binary is not pinned to any single one of them.
 static void print_version_banner() {
   fprintf(stderr, "RomWBW Emulator v%s (built %s)\n", EMU_VERSION, emu_build_date);
-  fprintf(stderr, "RomWBW compatibility: v%s (pinned)\n", ROMWBW_PIN_STR);
+  fprintf(stderr, "RomWBW releases this build can run: %s\n",
+          emu_romwbw_supported_list());
+  fprintf(stderr, "  (the version a guest sees is read from the ROM it loads,"
+                  " not compiled in)\n");
 }
 
 void print_usage(const char* prog) {
@@ -815,6 +820,11 @@ void print_usage(const char* prog) {
   fprintf(stderr, "  --romwbw=FILE     Enable RomWBW mode with ROM file (512KB ROM+RAM, Z80)\n");
   fprintf(stderr, "  --strict-io       Halt on unexpected I/O ports (for debugging)\n");
   fprintf(stderr, "  --debug           Enable debug output\n");
+  fprintf(stderr, "  --allow-untested-romwbw\n");
+  fprintf(stderr, "                    Load a ROM from a RomWBW release this build has\n");
+  fprintf(stderr, "                    not been checked against.  It may hang or print\n");
+  fprintf(stderr, "                    nothing if its CBIOS calls an HBIOS function this\n");
+  fprintf(stderr, "                    emulator does not implement.\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Boot options:\n");
   fprintf(stderr, "  --boot=CMD        Auto-boot with command (e.g., C, 2, 2.3)\n");
@@ -1012,6 +1022,8 @@ int main(int argc, char** argv) {
     // must work even when a malformed config file sits in the cwd)
     if (strcmp(argv[i], "--debug") == 0) {
       debug = true;
+    } else if (strcmp(argv[i], "--allow-untested-romwbw") == 0) {
+      emu_set_allow_untested_romwbw(true);
     } else if (strncmp(argv[i], "--romwbw=", 9) == 0) {
       binary = argv[i] + 9;
     } else if (strcmp(argv[i], "--strict-io") == 0) {
@@ -1447,6 +1459,20 @@ int main(int argc, char** argv) {
     if (!emu_load_rom(&memory, binary)) {
       return 1;
     }
+
+    // Say which release this run is, now that there is a ROM to ask. Every
+    // version the guest reports comes from these two bytes, and the disk
+    // images have to match them or the guest's CBIOS prints a mismatch
+    // warning - so the answer belongs on screen next to the disks.
+    {
+      emu_romwbw_release release;
+      char ver[EMU_ROMWBW_STR_MAX];
+      if (emu_romwbw_release_loaded(&memory, &release)) {
+        fprintf(stderr, "RomWBW v%s (from %s)\n",
+                emu_romwbw_release_str(release, ver, sizeof(ver)), binary);
+      }
+    }
+
     fprintf(stderr, "Starting execution at 0x%04X in ROM bank 0\n", start_addr);
 
     // If romldr path specified, load full RomWBW ROM (preserving bank 0)

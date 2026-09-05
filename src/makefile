@@ -122,9 +122,26 @@ romwbw_emu: romwbw_emu.o $(ROMWBW_OBJS)
 # VERSION file falls back to the in-source default instead of breaking make)
 romwbw_emu.o: $(wildcard $(THIS_DIR)../VERSION)
 
-# Pattern rule to compile .cc files into .o object files
+# Pattern rule to compile .cc files into .o object files.
+#
+# -MMD -MP writes a .d file next to each .o listing the headers that object
+# actually included, and the -include below feeds them back to make.  Without
+# this there were NO header dependencies at all: editing romwbw_pin.h - the
+# file whose whole job is to be the single source of truth about which RomWBW
+# releases this build runs - left every .o untouched, `make` reported nothing
+# to do, and the binary kept whatever was compiled in before.  A wrong answer
+# that survives a rebuild is the hardest kind to catch, and this file was the
+# one most likely to produce it.
+#
+# -MP emits a phony target for each header so that deleting or renaming one
+# does not wedge make with "No rule to make target".
 %.o: %.cc
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
+
+# Header dependencies recorded by the last compile.  Absent on a clean tree,
+# which is correct: with no .o files there is nothing whose dependencies could
+# be stale.  Wildcard, not a list, so a new source file needs no edit here.
+-include $(wildcard *.d)
 
 # Tests.  Two kinds, and they cannot share a link line:
 #
@@ -151,9 +168,20 @@ endif
 # The web frontend's JS is tested with node when node is present.  It is not a
 # build dependency - the wasm needs emcc, which this does not - so a machine
 # without node skips it rather than failing.
-test: $(addprefix test_,$(TESTS))
+# romwbw_emu is a prerequisite because roms/verify_romwbw_pin.sh (run below)
+# checks the built binary's supported-release list against the header, and it
+# reports "info  not built - skipping" rather than failing when the binary is
+# absent.  Without this, `make test` on a clean tree would silently not perform
+# the one check that catches a stale binary.  It also means `make test` proves
+# the CLI still links, which the four test programs do not.
+#
+# The loop below names the test binaries rather than using $^, which is what it
+# used to do: $^ is every prerequisite, so adding romwbw_emu to the list made
+# `make test` run the emulator with no arguments.  It printed its usage and
+# exited non-zero, and the suite reported TESTS FAILED with nothing wrong.
+test: romwbw_emu $(addprefix test_,$(TESTS))
 	@status=0; \
-	for t in $^; do ./$$t || status=1; echo; done; \
+	for t in $(addprefix test_,$(TESTS)); do ./$$t || status=1; echo; done; \
 	if command -v node >/dev/null 2>&1; then \
 	  node $(THIS_DIR)../tests/web_reload_disks.js || status=1; echo; \
 	  node $(THIS_DIR)../tests/web_console_output.js || status=1; echo; \
@@ -161,8 +189,17 @@ test: $(addprefix test_,$(TESTS))
 	  echo "SKIP  web JS tests (node not on PATH)"; echo; \
 	fi; \
 	sh $(THIS_DIR)../disks/verify_disk_utils.sh || status=1; echo; \
+	sh $(THIS_DIR)../roms/verify_romwbw_pin.sh || status=1; echo; \
 	if [ $$status -ne 0 ]; then echo "TESTS FAILED"; exit 1; fi; \
 	echo "ALL TESTS PASSED"
+
+# verify_romwbw_pin.sh runs here because nothing ran it.  Every ROM and disk
+# image in the tree, and the built binary, carry a RomWBW release, and until
+# now the only thing that checked them agreed was a human remembering to type
+# the script's name - which is the same class of mistake as the missing header
+# dependencies above, and it went unnoticed for as long.  It needs the binary
+# to check its supported-release list, and `test` has already built the
+# objects by the time it runs.
 
 test_vda_keyboard: $(THIS_DIR)../tests/vda_keyboard.cc $(DISPATCH_OBJS)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< $(DISPATCH_OBJS) $(LDLIBS) -o $@
@@ -177,7 +214,7 @@ test_cli_hostfile: $(THIS_DIR)../tests/cli_hostfile.cc emu_io_cli.o emu_io_commo
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< emu_io_cli.o emu_io_common.o -o $@
 
 clean:
-	@rm -f romwbw_emu $(addprefix test_,$(TESTS)) *.o *.lst *.ihx *.com *.cdb *.rel *.map *~
+	@rm -f romwbw_emu $(addprefix test_,$(TESTS)) *.o *.d *.lst *.ihx *.com *.cdb *.rel *.map *~
 
 # Which qkz80 this tree would build against, without building anything.  The
 # fallback chain above is three deep and only its last step says anything on

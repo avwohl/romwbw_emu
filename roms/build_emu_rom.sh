@@ -84,25 +84,27 @@ cp "$SOURCE_ROM" "$OUTPUT_ROM"
 # Overlay first 32KB with emu_hbios
 dd if="$EMU_HBIOS" of="$OUTPUT_ROM" bs=32768 count=1 conv=notrunc
 
-# Confirm bank 0 really carries the HCB with the pinned RomWBW version before
-# declaring success, and do not leave a broken image behind if it does not.
-# A ROM whose HCB is wrong starts the CPU and prints nothing at all.
+# Confirm bank 0 really carries the HCB with this tree's default RomWBW
+# release before declaring success, and do not leave a broken image behind if
+# it does not.  A ROM whose HCB is wrong starts the CPU and prints nothing at
+# all.  ROMWBW_DEFAULT_* is what THIS TREE builds, not a limit on what the
+# emulator can load - that is ROMWBW_SUPPORTED_RELEASES in the same header.
 PIN_H="$(dirname "$SCRIPT_DIR")/src/romwbw_pin.h"
 built_hcb=$(od -An -tx1 -j 259 -N 4 "$OUTPUT_ROM" | tr -d ' \n')
 want_hcb="57a8$(printf '%x%x%x%x' \
-    "$(sed -n 's/^#define ROMWBW_PIN_MAJOR \([0-9]*\).*/\1/p' "$PIN_H")" \
-    "$(sed -n 's/^#define ROMWBW_PIN_MINOR \([0-9]*\).*/\1/p' "$PIN_H")" \
-    "$(sed -n 's/^#define ROMWBW_PIN_UPDATE \([0-9]*\).*/\1/p' "$PIN_H")" \
-    "$(sed -n 's/^#define ROMWBW_PIN_PATCH \([0-9]*\).*/\1/p' "$PIN_H")")"
+    "$(sed -n 's/^#define ROMWBW_DEFAULT_MAJOR \([0-9]*\).*/\1/p' "$PIN_H")" \
+    "$(sed -n 's/^#define ROMWBW_DEFAULT_MINOR \([0-9]*\).*/\1/p' "$PIN_H")" \
+    "$(sed -n 's/^#define ROMWBW_DEFAULT_UPDATE \([0-9]*\).*/\1/p' "$PIN_H")" \
+    "$(sed -n 's/^#define ROMWBW_DEFAULT_PATCH \([0-9]*\).*/\1/p' "$PIN_H")")"
 if [ "$built_hcb" != "$want_hcb" ]; then
     echo ""
     echo "Error: the ROM just built has HCB bytes $built_hcb at 0x103,"
-    echo "expected $want_hcb for the pinned RomWBW release."
+    echo "expected $want_hcb for this tree's default RomWBW release."
     echo "Removing $OUTPUT_ROM so a broken image is not left behind."
     rm -f "$OUTPUT_ROM"
     exit 1
 fi
-echo "  Verified: HCB $built_hcb matches the pin"
+echo "  Verified: HCB $built_hcb matches this tree's default release"
 
 # Verify output
 OUTPUT_SIZE=$(stat -f%z "$OUTPUT_ROM" 2>/dev/null || stat -c%s "$OUTPUT_ROM" 2>/dev/null)

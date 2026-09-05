@@ -12,7 +12,7 @@
 # Requirements:
 # - um80 and ul80 assemblers (Z80 tools)
 # - the pinned RomWBW release unpacked at ~/esrc/RomWBW-v<pin>
-#   (the pin lives in src/romwbw_pin.h; run roms/verify_romwbw_pin.sh to
+#   (ROMWBW_DEFAULT_* in src/romwbw_pin.h; run roms/verify_romwbw_pin.sh to
 #   check a finished tree against it)
 #
 
@@ -22,14 +22,18 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="$(dirname "$SCRIPT_DIR")/src"
 OUTPUT_ROM="${1:-$SCRIPT_DIR/emu_avw.rom}"
 
-# The RomWBW release to build against comes from the pin, not from a literal
-# here: bank 0 is assembled from emu_hbios.asm, which stamps the pinned
+# The RomWBW release to build against comes from the header, not from a
+# literal here: bank 0 is assembled from emu_hbios.asm, which stamps that
 # version into the HCB, so banks 1-15 have to come from the same release or
 # the guest's CBIOS reports an HBIOS/CBIOS version mismatch.
+#
+# ROMWBW_DEFAULT_* is the release THIS TREE's artifacts are cut from.  The
+# emulator itself is no longer pinned to it - it runs any release in
+# ROMWBW_SUPPORTED_RELEASES - so this only chooses what gets built here.
 PIN_H="$SRC_DIR/romwbw_pin.h"
-ROMWBW_PIN=$(sed -n 's/^#define ROMWBW_PIN_STR "\(.*\)".*/\1/p' "$PIN_H" 2>/dev/null | head -1)
+ROMWBW_PIN=$(sed -n 's/^#define ROMWBW_DEFAULT_STR "\(.*\)".*/\1/p' "$PIN_H" 2>/dev/null | head -1)
 if [ -z "$ROMWBW_PIN" ]; then
-    echo "Error: cannot read ROMWBW_PIN_STR from $PIN_H"
+    echo "Error: cannot read ROMWBW_DEFAULT_STR from $PIN_H"
     exit 1
 fi
 
@@ -43,29 +47,29 @@ UL80="${UL80:-ul80}"
 
 echo "========================================"
 echo "Building emulator ROM from source"
-echo "  pinned RomWBW release: v$ROMWBW_PIN"
+echo "  RomWBW release to build: v$ROMWBW_PIN"
 echo "========================================"
 echo ""
 
-# Fall back to the copy of the pinned release's ROM kept in this repo, so a
-# fresh clone can rebuild bank 0 without downloading the 199MB Package.zip.
-# Only banks 1-15 are taken from it, and only after confirming it carries the
-# pinned version - an unpinned ROM here is exactly the mistake to catch.
+# Fall back to the copy of that release's ROM kept in this repo, so a fresh
+# clone can rebuild bank 0 without downloading the 199MB Package.zip.  Only
+# banks 1-15 are taken from it, and only after confirming it carries the same
+# version - a ROM from another release here is exactly the mistake to catch.
 if [ ! -f "$ROMWBW_ROM" ] && [ -f "$SCRIPT_DIR/SBC_simh_std.rom" ]; then
     bundled_ver=$(od -An -tx1 -j 261 -N 2 "$SCRIPT_DIR/SBC_simh_std.rom" |
                   tr -d ' \n')
     want_ver=$(printf '%x%x%x%x' \
-        "$(sed -n 's/^#define ROMWBW_PIN_MAJOR \([0-9]*\).*/\1/p' "$PIN_H")" \
-        "$(sed -n 's/^#define ROMWBW_PIN_MINOR \([0-9]*\).*/\1/p' "$PIN_H")" \
-        "$(sed -n 's/^#define ROMWBW_PIN_UPDATE \([0-9]*\).*/\1/p' "$PIN_H")" \
-        "$(sed -n 's/^#define ROMWBW_PIN_PATCH \([0-9]*\).*/\1/p' "$PIN_H")")
+        "$(sed -n 's/^#define ROMWBW_DEFAULT_MAJOR \([0-9]*\).*/\1/p' "$PIN_H")" \
+        "$(sed -n 's/^#define ROMWBW_DEFAULT_MINOR \([0-9]*\).*/\1/p' "$PIN_H")" \
+        "$(sed -n 's/^#define ROMWBW_DEFAULT_UPDATE \([0-9]*\).*/\1/p' "$PIN_H")" \
+        "$(sed -n 's/^#define ROMWBW_DEFAULT_PATCH \([0-9]*\).*/\1/p' "$PIN_H")")
     if [ "$bundled_ver" = "$want_ver" ]; then
         echo "Using the bundled RomWBW v$ROMWBW_PIN ROM: $SCRIPT_DIR/SBC_simh_std.rom"
         echo ""
         ROMWBW_ROM="$SCRIPT_DIR/SBC_simh_std.rom"
     else
         echo "Ignoring $SCRIPT_DIR/SBC_simh_std.rom: HCB version bytes are"
-        echo "$bundled_ver, expected $want_ver for the pinned v$ROMWBW_PIN."
+        echo "$bundled_ver, expected $want_ver for v$ROMWBW_PIN."
         echo ""
     fi
 fi
@@ -167,17 +171,17 @@ OUTPUT_SIZE=$(stat -c%s "$OUTPUT_ROM" 2>/dev/null || stat -f%z "$OUTPUT_ROM" 2>/
 echo "  Created: $OUTPUT_ROM ($OUTPUT_SIZE bytes)"
 
 # Never leave a broken ROM behind: confirm bank 0 really carries the HCB with
-# the pinned version before declaring success.
+# the release this run was building before declaring success.
 built_hcb=$(od -An -tx1 -j 259 -N 4 "$OUTPUT_ROM" | tr -d ' \n')
 want_hcb="57a8$(printf '%x%x%x%x' \
-    "$(sed -n 's/^#define ROMWBW_PIN_MAJOR \([0-9]*\).*/\1/p' "$PIN_H")" \
-    "$(sed -n 's/^#define ROMWBW_PIN_MINOR \([0-9]*\).*/\1/p' "$PIN_H")" \
-    "$(sed -n 's/^#define ROMWBW_PIN_UPDATE \([0-9]*\).*/\1/p' "$PIN_H")" \
-    "$(sed -n 's/^#define ROMWBW_PIN_PATCH \([0-9]*\).*/\1/p' "$PIN_H")")"
+    "$(sed -n 's/^#define ROMWBW_DEFAULT_MAJOR \([0-9]*\).*/\1/p' "$PIN_H")" \
+    "$(sed -n 's/^#define ROMWBW_DEFAULT_MINOR \([0-9]*\).*/\1/p' "$PIN_H")" \
+    "$(sed -n 's/^#define ROMWBW_DEFAULT_UPDATE \([0-9]*\).*/\1/p' "$PIN_H")" \
+    "$(sed -n 's/^#define ROMWBW_DEFAULT_PATCH \([0-9]*\).*/\1/p' "$PIN_H")")"
 if [ "$built_hcb" != "$want_hcb" ]; then
     echo ""
     echo "Error: the ROM just built has HCB bytes $built_hcb at 0x103,"
-    echo "expected $want_hcb for the pinned RomWBW v$ROMWBW_PIN."
+    echo "expected $want_hcb for RomWBW v$ROMWBW_PIN."
     echo "Removing $OUTPUT_ROM so a broken image is not left behind."
     rm -f "$OUTPUT_ROM"
     exit 1

@@ -145,6 +145,22 @@ jobs:
             grep -E '^(PASS|FAIL|SKIP)' /tmp/test.log || true
             exit 1
           }
+          # And that the RomWBW release check ran at all. It went years without
+          # being run by anything - not `make test`, not any job here - so the
+          # thing worth asserting is not that it passed but that it happened.
+          grep -qE '^PASS: every artifact names a RomWBW release' /tmp/test.log || {
+            echo "roms/verify_romwbw_pin.sh did not run, or did not pass; got:"
+            grep -E '^(PASS|FAIL|warn)' /tmp/test.log || true
+            exit 1
+          }
+          # The binary's supported list is only checked when the binary exists.
+          # `make test` does not build romwbw_emu, so a tree where it happens
+          # not to be built reports "info not built" and the staleness check
+          # silently does not happen - which is the same shape of gap.
+          if grep -q 'info  not built' /tmp/test.log; then
+            echo "romwbw_emu was not built, so its supported-release list was not checked"
+            exit 1
+          fi
 
   # Apple clang, which is what ioscpm compiles this same core with. This runs the
   # four compiled test programs by name through the makefile's own targets rather

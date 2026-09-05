@@ -27,8 +27,140 @@ static const size_t HCB_VERSION = 0x105;  // major<<4 | minor
 static const size_t HCB_UPDATE = 0x106;   // update<<4 | patch
 static const size_t HCB_PLATFORM = 0x107; // 0 = EMU, non-zero = real hardware
 
+//=============================================================================
+// RomWBW Release Identification
+//=============================================================================
+
+// The releases this core has been checked against, expanded from the one list
+// in romwbw_pin.h so the table and the message below cannot disagree.
+namespace {
+
+struct SupportedRelease {
+  uint8_t ver;
+  uint8_t upd;
+  const char* note;
+};
+
+const SupportedRelease kSupportedReleases[] = {
+#define EMU_SUPPORTED_ROW(MAJ, MIN, UPD, PAT, NOTE) \
+  {(uint8_t)(((MAJ) << 4) | (MIN)), (uint8_t)(((UPD) << 4) | (PAT)), NOTE},
+    ROMWBW_SUPPORTED_RELEASES(EMU_SUPPORTED_ROW)
+#undef EMU_SUPPORTED_ROW
+};
+
+const size_t kSupportedCount = sizeof(kSupportedReleases) / sizeof(kSupportedReleases[0]);
+
+bool g_allow_untested_romwbw = false;
+
+}  // namespace
+
+bool emu_romwbw_release_of_image(const uint8_t* rom, size_t size,
+                                 emu_romwbw_release* out) {
+  if (!rom || !out || size <= HCB_UPDATE) return false;
+  // No marker means there is no HCB where the version would be, and reading
+  // two bytes out of the middle of an arbitrary file is how you get a
+  // confident wrong answer.
+  if (rom[HCB_MARKER0] != 'W' || rom[HCB_MARKER1] != 0xA8) return false;
+  out->ver = rom[HCB_VERSION];
+  out->upd = rom[HCB_UPDATE];
+  return true;
+}
+
+bool emu_romwbw_release_loaded(const banked_mem* memory,
+                               emu_romwbw_release* out) {
+  if (!memory || !out) return false;
+  // read_bank() is the ROM accessor that does not care whether the caller
+  // holds a non-const banked_mem, and bank 0 is where the HCB lives.
+  if (memory->read_bank(0x00, (uint16_t)HCB_MARKER0) != 'W' ||
+      memory->read_bank(0x00, (uint16_t)HCB_MARKER1) != 0xA8) {
+    return false;
+  }
+  out->ver = memory->read_bank(0x00, (uint16_t)HCB_VERSION);
+  out->upd = memory->read_bank(0x00, (uint16_t)HCB_UPDATE);
+  return true;
+}
+
+const char* emu_romwbw_release_str(emu_romwbw_release r, char* buf, size_t n) {
+  if (!buf || n == 0) return "";
+  const int major = r.ver >> 4;
+  const int minor = r.ver & 0x0F;
+  const int update = r.upd >> 4;
+  const int patch = r.upd & 0x0F;
+  // RomWBW writes "3.5.1" for patch 0 and only shows a fourth component when
+  // there is one, so a version printed here matches the CBIOS banner and the
+  // release tag rather than being a fourth spelling of the same thing.
+  if (patch == 0) {
+    snprintf(buf, n, "%d.%d.%d", major, minor, update);
+  } else {
+    snprintf(buf, n, "%d.%d.%d.%d", major, minor, update, patch);
+  }
+  return buf;
+}
+
+bool emu_romwbw_release_supported(emu_romwbw_release r) {
+  for (size_t i = 0; i < kSupportedCount; i++) {
+    if (kSupportedReleases[i].ver == r.ver && kSupportedReleases[i].upd == r.upd) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const char* emu_romwbw_supported_list() {
+  static char list[128];
+  static bool built = false;
+  if (built) return list;
+
+  list[0] = '\0';
+  size_t used = 0;
+  for (size_t i = 0; i < kSupportedCount; i++) {
+    char one[EMU_ROMWBW_STR_MAX];
+    emu_romwbw_release r = {kSupportedReleases[i].ver, kSupportedReleases[i].upd};
+    emu_romwbw_release_str(r, one, sizeof(one));
+    // Truncating the list would understate what this binary can run, so stop
+    // at the last entry that fits whole rather than emitting half a version.
+    const char* sep = (used == 0) ? "" : ", ";
+    size_t need = strlen(sep) + strlen(one);
+    if (used + need + 1 > sizeof(list)) break;
+    memcpy(list + used, sep, strlen(sep));
+    used += strlen(sep);
+    memcpy(list + used, one, strlen(one));
+    used += strlen(one);
+    list[used] = '\0';
+  }
+  built = true;
+  return list;
+}
+
+void emu_set_allow_untested_romwbw(bool allow) { g_allow_untested_romwbw = allow; }
+
+bool emu_allow_untested_romwbw() { return g_allow_untested_romwbw; }
+
+// The release to fall back on when a guest-visible site is asked for a
+// version and no ROM is loaded. Reaching this is a bug in the caller - the
+// whole init sequence runs after emu_load_rom() - so every use logs first.
+// It exists so that such a bug produces this tree's own default rather than
+// stamping 00 00 into page zero, which a guest reads as RomWBW v0.0.0.
+static emu_romwbw_release emu_romwbw_release_or_default(const banked_mem* memory,
+                                                        const char* site) {
+  emu_romwbw_release r;
+  if (emu_romwbw_release_loaded(memory, &r)) return r;
+
+  char buf[EMU_ROMWBW_STR_MAX];
+  emu_romwbw_release fallback = {(uint8_t)ROMWBW_DEFAULT_VER_BYTE,
+                                 (uint8_t)ROMWBW_DEFAULT_UPD_BYTE};
+  emu_error("[EMU_INIT] %s: no HBIOS configuration block in ROM bank 0 - the "
+            "ROM is not loaded yet. Reporting v%s to the guest; load the ROM "
+            "before initialisation.\n",
+            site, emu_romwbw_release_str(fallback, buf, sizeof(buf)));
+  return fallback;
+}
+
 const char* emu_validate_rom_hcb(const uint8_t* rom, size_t size) {
-  static char msg[256];
+  // Large enough for the unsupported-release message, which interpolates the
+  // whole supported list plus the release found twice.  -Wformat-truncation
+  // catches this at 256.
+  static char msg[512];
 
   if (!rom || size <= HCB_PLATFORM) {
     return "ROM is too small to contain an HBIOS configuration block";
@@ -45,18 +177,37 @@ const char* emu_validate_rom_hcb(const uint8_t* rom, size_t size) {
     return msg;
   }
 
-  // The CBIOS in a boot slice compares its own version against the HBIOS
-  // version; a mismatch is at best a warning from the guest and at worst a
-  // ROM that never reaches the boot loader. Name both versions so the fix
-  // (use a matching ROM, or re-pin) is obvious.
-  if (rom[HCB_VERSION] != ROMWBW_PIN_VER_BYTE ||
-      rom[HCB_UPDATE] != ROMWBW_PIN_UPD_BYTE) {
-    snprintf(msg, sizeof(msg),
-             "ROM is built for RomWBW v%d.%d.%d, but this emulator is pinned "
-             "to v%s - use a matching ROM or change the pin in src/romwbw_pin.h",
-             rom[HCB_VERSION] >> 4, rom[HCB_VERSION] & 0x0F,
-             rom[HCB_UPDATE] >> 4, ROMWBW_PIN_STR);
-    return msg;
+  // Which RomWBW release this ROM is, and whether this core has been checked
+  // against it. The version itself is no longer a compile-time constant -
+  // everything guest-visible reads it back out of this ROM - so what is left
+  // to refuse is a release nobody has run. Bank 0 of an emu_*.rom is our
+  // HBIOS proxy and the C++ dispatcher behind it implements a specific set of
+  // functions; a release whose CBIOS calls something it does not implement
+  // would load and then hang or misbehave, which is far harder to diagnose
+  // than a refusal at load time.
+  emu_romwbw_release release;
+  if (!emu_romwbw_release_of_image(rom, size, &release)) {
+    // Unreachable: the marker test above already returned. Kept so that a
+    // later reordering cannot silently skip the version check.
+    return "ROM has no readable HBIOS configuration block";
+  }
+  if (!emu_romwbw_release_supported(release)) {
+    char found[EMU_ROMWBW_STR_MAX];
+    emu_romwbw_release_str(release, found, sizeof(found));
+    if (!emu_allow_untested_romwbw()) {
+      snprintf(msg, sizeof(msg),
+               "ROM is built for RomWBW v%s, which this emulator has not been "
+               "checked against (it can run %s) - use one of those, or add "
+               "v%s to ROMWBW_SUPPORTED_RELEASES in src/romwbw_pin.h once you "
+               "have booted it",
+               found, emu_romwbw_supported_list(), found);
+      return msg;
+    }
+    emu_error("[EMU_INIT] Warning: loading RomWBW v%s anyway - this emulator "
+              "has only been checked against %s. If the guest hangs or prints "
+              "nothing, an HBIOS function it calls is probably not "
+              "implemented.\n",
+              found, emu_romwbw_supported_list());
   }
 
   // Non-fatal: a stock RomWBW ROM for real hardware has a real HBIOS in bank
@@ -275,18 +426,25 @@ void emu_setup_hbios_ident(banked_mem* memory) {
   // Physical offset in RAM = bank_index * 32KB + (addr - 0x8000)
   const uint32_t COMMON_BASE = 0x0F * banked_mem::BANK_SIZE;  // Bank 0x8F = index 15
 
+  // The version comes from the ROM that was just loaded, not from a constant.
+  // This is one of the two sites that exist only in emulated RAM: no verifier
+  // that reads bytes out of a built ROM can see it, so a stale copy here
+  // would surface as a guest reporting the wrong version and nothing else.
+  emu_romwbw_release release =
+      emu_romwbw_release_or_default(memory, "emu_setup_hbios_ident");
+
   // Create ident block at 0xFF00 in common area
   // Format: 'W', ~'W' (0xA8), combined version
   uint32_t ident_phys = COMMON_BASE + (0xFF00 - 0x8000);
   ram[ident_phys + 0] = 'W';       // Signature byte 1
   ram[ident_phys + 1] = ~'W';      // Signature byte 2 (0xA8)
-  ram[ident_phys + 2] = 0x35;      // Combined version: (major << 4) | minor = (3 << 4) | 5
+  ram[ident_phys + 2] = release.ver;  // (major << 4) | minor
 
   // Also create ident block at 0xFE00 (some REBOOT versions may look there)
   uint32_t ident_phys2 = COMMON_BASE + (0xFE00 - 0x8000);
   ram[ident_phys2 + 0] = 'W';
   ram[ident_phys2 + 1] = ~'W';
-  ram[ident_phys2 + 2] = 0x35;
+  ram[ident_phys2 + 2] = release.ver;
 
   // Store pointer to ident block at 0xFFFC (little-endian)
   uint32_t ptr_phys = COMMON_BASE + (0xFFFC - 0x8000);
@@ -319,10 +477,16 @@ bool emu_init_ram_bank(banked_mem* memory, uint8_t bank, uint16_t* initialized_b
 
   // Install CBIOS page zero stamp at 0x40 (required by ASSIGN, MODE, etc.)
   // Format: 'W', ~'W', version (major<<4|minor), update<<4, CBX pointer
-  memory->write_bank(bank, 0x40, 'W');        // Marker byte 1
-  memory->write_bank(bank, 0x41, ~'W');       // Marker byte 2 (0xA8)
-  memory->write_bank(bank, 0x42, 0x35);       // Version 3.5 (3<<4 | 5)
-  memory->write_bank(bank, 0x43, 0x10);       // Update 1, patch 0
+  //
+  // The other RAM-only version site. ASSIGN and MODE read these two bytes out
+  // of page zero, so a wrong value here is visible to the user as a wrong
+  // version in a guest utility and invisible to everything else.
+  emu_romwbw_release release =
+      emu_romwbw_release_or_default(memory, "emu_init_ram_bank");
+  memory->write_bank(bank, 0x40, 'W');            // Marker byte 1
+  memory->write_bank(bank, 0x41, ~'W');           // Marker byte 2 (0xA8)
+  memory->write_bank(bank, 0x42, release.ver);    // major<<4 | minor
+  memory->write_bank(bank, 0x43, release.upd);    // update<<4 | patch
   // CBX pointer at 0x44-0x45: point to our CBX block at 0x50
   memory->write_bank(bank, 0x44, 0x50);       // Low byte
   memory->write_bank(bank, 0x45, 0x00);       // High byte

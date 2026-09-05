@@ -456,18 +456,31 @@ one to `--romwbw` now prints a warning rather than failing silently.
 
 ## Version Compatibility
 
-The shared HBIOS emulates **one** RomWBW release, not RomWBW 3.x in general.
-That release is pinned in [`../src/romwbw_pin.h`](../src/romwbw_pin.h)
-(currently v3.5.1) and everything version-dependent derives from it: the
-version `HBF_SYSVER` reports, the NVRAM checksum seed, the HCB stamped into
-`emu_hbios.asm`, and the ROM `roms/build_from_source.sh` overlays.
+The shared HBIOS emulates a **set** of RomWBW releases, not RomWBW 3.x in
+general and no longer just one. The set is `ROMWBW_SUPPORTED_RELEASES` in
+[`../src/romwbw_pin.h`](../src/romwbw_pin.h) - today v3.5.1 and v3.6.0 - and
+the release actually in play is read out of the loaded ROM's HCB at run time.
+
+That is a deliberate inversion of what this section used to say. The version
+is now *derived* from the ROM at every site that reports it (`HBF_SYSVER`,
+the NVRAM checksum seed, the HBIOS ident block, the CBIOS page-zero stamp)
+rather than *stored* anywhere, because two of those sites exist only in
+emulated RAM: a stored copy that was never updated is invisible to every
+verifier in this tree and surfaces only as a guest printing the wrong
+version. Deriving it removes the possibility.
+
+`ROMWBW_DEFAULT_*` in the same header is a different thing: the release this
+tree's own `roms/` and `disks/` artifacts are cut from, used by the build
+scripts. It does not constrain what the binary can load.
 
 A guest's CBIOS compares its own build against the version this core
-reports, so a ROM or a boot slice from a different release prints
-`*** WARNING: HBIOS/CBIOS Version Mismatch ***` - or never reaches the boot
-loader at all. `roms/verify_romwbw_pin.sh` checks a whole tree against the
-pin; see the "RomWBW version pin" section of `../DOWNSTREAM.md` for what
-re-pinning would involve.
+reports, so a ROM paired with a boot slice from a *different* release prints
+`*** WARNING: HBIOS/CBIOS Version Mismatch ***`. Since the emulator now
+loads either release happily, that warning is the only thing left enforcing
+the pairing. `roms/verify_romwbw_pin.sh` checks a whole tree - every
+artifact's release, the pairing between ROMs and disks, and the binary's
+supported list - and `make -C src test` runs it. See the "RomWBW Version"
+section of `../DOWNSTREAM.md` for what adding a release involves.
 
 Key compatibility points:
 

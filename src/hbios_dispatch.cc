@@ -698,11 +698,18 @@ void HBIOSDispatch::recalcNvramChecksum() {
   // Calculate NVRAM checksum (byte 4)
   // The checksum is XOR of bytes 0-3 XOR with RomWBW version bytes
   // Checksum = (byte0 ^ byte1 ^ byte2 ^ byte3) ^ ((RMJ << 4) | RMN) ^ ((RUP << 4) | RTP)
-  // The version comes from the pin in romwbw_pin.h - SYSCONF in the pinned
-  // ROM computes the same seed, so the two must not drift apart.
+  //
+  // The version comes from the loaded ROM: SYSCONF, running inside that ROM,
+  // seeds its checksum the same way, and a seed computed from a different
+  // release makes every stored switch look corrupt. Every caller runs during
+  // HBIOS dispatch, so the ROM is loaded by definition; the fallback only
+  // guards against a future caller that is not.
   uint8_t xsum = nvram_switches[0] ^ nvram_switches[1] ^ nvram_switches[2] ^ nvram_switches[3];
-  xsum ^= ROMWBW_PIN_VER_BYTE;  // RMJ.RMN
-  xsum ^= ROMWBW_PIN_UPD_BYTE;  // RUP.RTP
+  emu_romwbw_release release = {(uint8_t)ROMWBW_DEFAULT_VER_BYTE,
+                                (uint8_t)ROMWBW_DEFAULT_UPD_BYTE};
+  emu_romwbw_release_loaded(memory, &release);
+  xsum ^= release.ver;  // RMJ.RMN
+  xsum ^= release.upd;  // RUP.RTP
   nvram_switches[4] = xsum;
   nvram_dirty = true;
 }
@@ -1530,11 +1537,17 @@ void HBIOSDispatch::handleSYS() {
     }
 
     case HBF_SYSVER: {
-      // Get HBIOS version - must match the pinned RomWBW release, because
-      // the CBIOS in a boot slice compares this against its own build and
-      // prints "HBIOS/CBIOS Version Mismatch" when they differ.
+      // Get HBIOS version - read from the loaded ROM, because the CBIOS in a
+      // boot slice compares this against its own build and prints
+      // "HBIOS/CBIOS Version Mismatch" when they differ. Answering from a
+      // compile-time constant is what made one binary able to boot only one
+      // RomWBW release; answering from the ROM is what lets it boot any
+      // release it was built to run, and still warn on a mismatched disk.
       // Format: D=major/minor (high/low nibble), E=update/patch (high/low nibble)
-      cpu->regs.DE.set_pair16(ROMWBW_PIN_DE);
+      emu_romwbw_release release = {(uint8_t)ROMWBW_DEFAULT_VER_BYTE,
+                                    (uint8_t)ROMWBW_DEFAULT_UPD_BYTE};
+      emu_romwbw_release_loaded(memory, &release);
+      cpu->regs.DE.set_pair16((uint16_t)((release.ver << 8) | release.upd));
       cpu->regs.HL.set_low(0x01);  // Platform ID = SBC
       break;
     }

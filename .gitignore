@@ -3,6 +3,8 @@
 **.com
 **.z[1-8]
 *.o
+# Header dependency files written by the compiler's -MMD (src/makefile)
+*.d
 *.a
 *.so
 *.dylib

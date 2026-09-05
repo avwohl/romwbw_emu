@@ -138,27 +138,53 @@ hd1k_zsdos.img		8MB	ZSDOS system disk
 
 **Before you hand one of these to a mobile port:** the two images this repository ships - `hd1k_combo.img` and `hd1k_infocom.img` - carry `w8.com`, and `W8 <cpmfile> <hostpath>` passes that host path to the front end verbatim. So does any image from elsewhere that was built with a host-path `W8`. An `ioscpm` build before 52 must not be given one. That build stored the path unsanitised as the export filename and then removed the destination first, so `W8 ANYFILE.TXT ..` deleted the app's whole `Documents` folder - every disk image the user had downloaded, imported or created. The `w8.com` in this repository's images refuses a host path unless the emulator answers the `HBF_HOST_CAPS` probe (`disks/verify_disk_utils.sh` asserts the probe is there), which turns that case into a refusal rather than a deletion - but it is a guard inside `W8`, not a boundary: a CP/M program that calls the HBIOS host-file function directly skips it entirely. Update the port, then use the image. The full ordering across the ports is in [docs/RELEASE_ORDER_2026-08-25.md](docs/RELEASE_ORDER_2026-08-25.md).
 
-Of these, `hd1k_combo.img` and `hd1k_infocom.img` are included in this repository under `disks/`; the others must be obtained from the RomWBW release. If downloading from RomWBW directly, use the [RomWBW v3.5.1 release](https://github.com/wwarthen/RomWBW/releases/tag/v3.5.1) Package.zip specifically: the bundled ROM and the emulator's built-in HBIOS identify as v3.5.1, and disk images from a different RomWBW release contain boot slices with a mismatched CBIOS (booting them prints a HBIOS/CBIOS version-mismatch warning). Using a newer release's disks for data files only, without booting from them, is fine.
+Of these, `hd1k_combo.img` and `hd1k_infocom.img` are included in this repository under `disks/`; the others must be obtained from a RomWBW release. The images bundled here are v3.5.1, and the ROMs in `roms/` are cut from v3.5.1, so pair them with the [RomWBW v3.5.1 release](https://github.com/wwarthen/RomWBW/releases/tag/v3.5.1) Package.zip. A disk from a *different* release boots against a ROM from that same release - the emulator runs either - but mixing the two prints a HBIOS/CBIOS version-mismatch warning. Using another release's disks for data files only, without booting from them, is fine.
 
-### RomWBW Version Pin
+Matched ROM and disk sets for every supported release, built and published together, are at [avwohl/romwbw_disks](https://github.com/avwohl/romwbw_disks).
 
-v3.5.1 is not a passing detail - it is a pin, declared once in
-[`src/romwbw_pin.h`](src/romwbw_pin.h) and used to derive the HBIOS version
-this emulator reports, the HCB stamped into `src/emu_hbios.asm`, and the ROM
-that `roms/build_from_source.sh` builds against. `romwbw_emu --version`
-prints it, and a ROM built for a different release is now rejected at load
-time with a message naming both versions instead of starting a CPU that
-never produces output.
+### RomWBW Version
 
-To check that a ROM and disk-image set match the pin - worth doing before
-shipping a build, or when a downloaded image misbehaves:
+**There is no longer a single pinned release.** The version this emulator
+reports to the guest is read out of the loaded ROM's HBIOS Configuration
+Block at run time, so one binary boots any release listed in
+`ROMWBW_SUPPORTED_RELEASES` ([`src/romwbw_pin.h`](src/romwbw_pin.h)) - today
+v3.5.1 and v3.6.0. `romwbw_emu --version` prints the list:
+
+```
+RomWBW releases this build can run: 3.5.1, 3.6.0
+  (the version a guest sees is read from the ROM it loads, not compiled in)
+```
+
+Five things report a version to the guest, and all five now derive it from
+the ROM rather than from a constant: `HBF_SYSVER`, the NVRAM checksum seed,
+the HBIOS ident block, the CBIOS page-zero stamp at `0x42`/`0x43`, and the
+load-time check itself. Two of those exist only in emulated RAM, where no
+verifier that reads bytes out of a built ROM can see them.
+
+What is still refused is a release nobody has checked this core against.
+Banks 1-15 of an `emu_*.rom` are upstream RomWBW, but bank 0 is ours, backed
+by a C++ dispatcher implementing a specific set of HBIOS functions; a release
+whose CBIOS calls something it does not implement would load and then hang.
+`--allow-untested-romwbw` overrides that with a warning.
+
+**The pairing rule did not go away.** A ROM and the boot slice of a disk
+image still have to be the same release, or the guest prints
+
+```
+*** WARNING: HBIOS/CBIOS Version Mismatch ***
+```
+
+That warning is now the only thing enforcing it, since the emulator will
+happily load either release. To check a tree before shipping a build, or
+when a downloaded image misbehaves:
 
 ```bash
 ./roms/verify_romwbw_pin.sh
 ```
 
-It checks every ROM in `roms/`, every image in `disks/`, and the built
-binary, and exits non-zero listing anything that disagrees.
+It checks every ROM in `roms/`, every image in `disks/`, the pairing between
+them, and the built binary, and exits non-zero listing anything that
+disagrees. `make -C src test` runs it.
 
 ### Disk Format Detection
 
@@ -361,7 +387,7 @@ build needs emscripten and the same sibling cpmemu checkout.
 - **File Transfer:** R8/W8 utilities copy files between the host and CP/M (CLI paths or browser picker/download)
 - **Settings file:** A JSON machine description in place of a long command line
 - **Debugger:** A `sim>` prompt with breakpoints, single-step, register and memory dumps and a symbol table (there is no disassembler - `dm` prints bytes)
-- **RomWBW pin:** Built and checked against RomWBW v3.5.1 (`roms/verify_romwbw_pin.sh`)
+- **RomWBW releases:** Boots v3.5.1 and v3.6.0 from one binary - the version is read from the loaded ROM, not compiled in (`roms/verify_romwbw_pin.sh`)
 - **WebAssembly:** Run RomWBW in any modern browser
 
 ## Boot Configuration

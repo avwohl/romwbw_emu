@@ -63,14 +63,75 @@ static constexpr uint8_t DIODEV_HDSK = 0x09;      // Hard disk
 static constexpr uint8_t DIODEV_EMPTY = 0xFF;     // Empty slot
 
 //=============================================================================
+// RomWBW Release Identification
+//=============================================================================
+//
+// The RomWBW release in play is a property of the ROM that was loaded, not of
+// this binary. Every guest-visible use of it - HBF_SYSVER, the NVRAM checksum
+// seed, the HBIOS ident block, the CBIOS page-zero stamp - reads it back out
+// of the loaded ROM through the functions below rather than holding a copy.
+// That is on purpose: two of those sites exist only in emulated RAM, where no
+// verifier that inspects ROM bytes can see them, so a stored copy that was
+// never updated would be invisible until a guest printed the wrong version.
+//
+// See src/romwbw_pin.h for which releases this core is checked against.
+
+// A RomWBW release, in the two packed bytes RomWBW itself uses:
+//   ver = major<<4 | minor, upd = update<<4 | patch.
+// v3.5.1 is {0x35, 0x10}; v3.6.0 is {0x36, 0x00}.
+struct emu_romwbw_release {
+  uint8_t ver;
+  uint8_t upd;
+};
+
+// Enough room for "255.15.15.15" and its terminator.
+static constexpr size_t EMU_ROMWBW_STR_MAX = 16;
+
+// Read the release a ROM IMAGE declares, out of its HCB at 0x105/0x106.
+// Returns false - leaving *out untouched - when the image is too short or
+// carries no 'W' 0xA8 HCB marker, i.e. when there is no version to read.
+// Use this to inspect an image before offering it in a picker.
+bool emu_romwbw_release_of_image(const uint8_t* rom, size_t size,
+                                 emu_romwbw_release* out);
+
+// The same, for the ROM already loaded into bank 0 of `memory`. This is the
+// call every guest-visible site uses. It returns false before a ROM is
+// loaded, which is a caller bug rather than a condition to paper over: the
+// whole init sequence runs after emu_load_rom().
+bool emu_romwbw_release_loaded(const banked_mem* memory,
+                               emu_romwbw_release* out);
+
+// Format as "3.5.1" (or "3.6.0.2" when the patch nibble is non-zero) into
+// buf, which needs EMU_ROMWBW_STR_MAX bytes. Returns buf.
+const char* emu_romwbw_release_str(emu_romwbw_release r, char* buf, size_t n);
+
+// Has this core been checked against that release? The list is
+// ROMWBW_SUPPORTED_RELEASES in src/romwbw_pin.h.
+bool emu_romwbw_release_supported(emu_romwbw_release r);
+
+// The supported releases as "3.5.1, 3.6.0", for messages. Static storage.
+const char* emu_romwbw_supported_list();
+
+// Load a release this core has never been checked against anyway.
+//
+// Off by default, and it stays a deliberate act: the refusal is the only
+// thing standing between a user and a ROM whose CBIOS may call an HBIOS
+// function this dispatcher does not implement, which fails as a hang or as
+// wrong output rather than as an error. A port that exposes this should say
+// "untested", not "advanced". emu_validate_rom_hcb() warns loudly and
+// proceeds when it is set.
+void emu_set_allow_untested_romwbw(bool allow);
+bool emu_allow_untested_romwbw();
+
+//=============================================================================
 // ROM Loading
 //=============================================================================
 
-// Check a loaded ROM's HBIOS configuration block against the pinned RomWBW
-// release (src/romwbw_pin.h). Returns nullptr when the ROM is usable, or a
-// message naming the problem: a missing/corrupt HCB marker, or a ROM built
-// for a different RomWBW release than this core emulates. A stock hardware
-// ROM (CB_PLATFORM != 0) only logs a warning and still returns nullptr.
+// Check a ROM's HBIOS configuration block. Returns nullptr when the ROM is
+// usable, or a message naming the problem: a missing/corrupt HCB marker, or a
+// RomWBW release this core has not been checked against (see
+// ROMWBW_SUPPORTED_RELEASES in src/romwbw_pin.h). A stock hardware ROM
+// (CB_PLATFORM != 0) only logs a warning and still returns nullptr.
 // The returned pointer is to static storage, valid until the next call.
 // Both emu_load_rom() and emu_load_rom_from_buffer() call this and fail the
 // load on a non-null result, so ports get the check for free.
