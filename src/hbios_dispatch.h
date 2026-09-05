@@ -250,6 +250,19 @@ enum HBiosSysGetFunc {
   SYSGET_DEVLIST  = 0xFD,  // EMU: List available devices
 };
 
+// SNDQUERY subfunctions (E register for BF_SNDQUERY).
+// From RomWBW Source/HBIOS/hbios.inc: BF_SNDQ_STATUS is the base and the rest
+// are offsets from it. Only CHCNT and DEV have callers in the 3.6.0 tree - the
+// ROM device inventory asks for both - but the whole set is named so a future
+// subfunction is added rather than silently answered wrong.
+enum HBiosSndQueryFunc {
+  SNDQ_STATUS = 0,  // Device status
+  SNDQ_CHCNT  = 1,  // Count of channels: B := tone, C := noise
+  SNDQ_VOLUME = 2,  // 8 bit number
+  SNDQ_PERIOD = 3,  // 16 bit number
+  SNDQ_DEV    = 4,  // Device type code in B, I/O ports in DE and HL
+};
+
 // SYSSET subfunctions (C register for SYSSET)
 enum HBiosSysSetFunc {
   SYSSET_SWITCH   = 0xC0,  // Set non-volatile switch value

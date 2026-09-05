@@ -889,11 +889,19 @@ void HBIOSDispatch::handleCIO() {
       break;
 
     case HBF_CIOQUERY: {
-      // Query - return capabilities
-      // D = device type (0 = UART)
-      // E = device number
-      cpu->regs.DE.set_high(0x00);  // UART
-      cpu->regs.DE.set_low(unit);
+      // Query the LINE CONFIGURATION, which is not the same question as
+      // HBF_CIODEVICE below and used to be answered as though it were.
+      //
+      // RomWBW returns an encoded baud rate and framing here; a caller decodes
+      // D's low 5 bits as a baud code against a 75-baud base and E as data bits
+      // (Source/HBIOS/invntdev.asm:238-256). Answering with a device type and a
+      // unit number meant D=0, E=0, which decodes as a real configuration -
+      // "75,5,N,1" - rather than as an absent one.
+      //
+      // There is no serial line here to describe: the console is a host
+      // terminal. $FFFF is how RomWBW spells "no config defined", and the
+      // caller tests for exactly it: LD A,D / AND E / INC A / JP Z,PS_PRTNUL.
+      cpu->regs.DE.set_pair16(0xFFFF);
       break;
     }
 
@@ -905,7 +913,15 @@ void HBIOSDispatch::handleCIO() {
     }
 
     default:
-      emu_fatal("[HBIOS CIO] Unhandled function 0x%02X (unit=%d)\n", func, unit);
+      // A guest asking for a function we do not implement is not a reason to
+      // kill the host. This called emu_fatal() until 2026-09-05, so an
+      // unimplemented CIO function ended the process with SIGABRT and took the
+      // guest's session with it. HBR_NOFUNC is what RomWBW returns and what
+      // callers are written to handle; the log keeps the gap discoverable.
+      emu_error("[HBIOS CIO] Unhandled function 0x%02X (unit=%d) - returning "
+                "HBR_NOFUNC\n", func, unit);
+      result = HBR_NOFUNC;
+      break;
   }
 
   setResult(result);
@@ -1303,7 +1319,14 @@ void HBIOSDispatch::handleDIO() {
       if (is_memdisk) {
         cpu->regs.DE.set_high(0x00);  // DIODEV_MD (memory disk)
         cpu->regs.DE.set_low(md_unit); // Device number (0=MD0, 1=MD1)
-        dev_attr = 0x00;  // Not high capacity, not removable
+        // The low nibble is the device CLASS and it was left at 0, which reads
+        // as a hard disk. RomWBW branches on it to decide the unit to print a
+        // capacity in: 4 = ROM disk, 5 = RAM disk, 7 = flash, all shown in KB;
+        // anything else is a hard disk shown in MB
+        // (Source/HBIOS/invntdev.asm PS_PRTDC). A 256KB RAM disk was therefore
+        // reported as a 0MB hard disk. MD0 is the RAM disk and MD1 the ROM
+        // disk here, so ask the disk rather than the unit number.
+        dev_attr = md_disks[md_unit].is_rom ? 0x04 : 0x05;
       } else if (is_harddisk) {
         cpu->regs.DE.set_high(0x09);  // DIODEV_HDSK (hard disk)
         cpu->regs.DE.set_low(hd_unit); // Device number within type
@@ -1346,15 +1369,30 @@ void HBIOSDispatch::handleDIO() {
       break;
 
     case HBF_DIOCAP: {
-      // Get capacity (in sectors) - report full disk capacity
+      // Get capacity in sectors, returned as DE:HL - DE is the HIGH word and HL
+      // the LOW word, the same order HBF_DIOSEEK above documents and reads back.
+      //
+      // These two words were the wrong way round until 2026-09-05, and nothing
+      // noticed for as long as the only caller was code we replace: under
+      // RomWBW 3.5.1 the device inventory ran inside the HBIOS bank, which our
+      // proxy substitutes wholesale. RomWBW 3.6.0 moved it into a ROM app
+      // (Source/HBIOS/invntdev.asm), so it now runs against this dispatcher and
+      // reads what we actually return - "RST 08 ; DE:HL := BLOCKS", then
+      // RES 7,D to clear the LBA bit, then an 11-bit shift to megabytes.
+      //
+      // Swapped, the published 49MB combo (100,352 sectors, 0x00018800) came
+      // back as 0x88000001, which after RES 7,D and >>11 prints as 65536MB. The
+      // 256KB RAM disk printed 16384MB and the 384KB ROM disk 24576MB.
+      // COPYSL.COM reads the same value from CP/M, so this was never confined
+      // to a diagnostic screen.
       if (is_memdisk) {
         uint32_t sectors = md_disks[md_unit].total_sectors();
-        cpu->regs.DE.set_pair16(sectors & 0xFFFF);
-        cpu->regs.HL.set_pair16((sectors >> 16) & 0xFFFF);
+        cpu->regs.DE.set_pair16((sectors >> 16) & 0xFFFF);
+        cpu->regs.HL.set_pair16(sectors & 0xFFFF);
       } else if (is_harddisk) {
         uint32_t sectors = disks[hd_unit].total_sectors();
-        cpu->regs.DE.set_pair16(sectors & 0xFFFF);
-        cpu->regs.HL.set_pair16((sectors >> 16) & 0xFFFF);
+        cpu->regs.DE.set_pair16((sectors >> 16) & 0xFFFF);
+        cpu->regs.HL.set_pair16(sectors & 0xFFFF);
       } else {
         // No device at this unit - return 0 capacity and error
         cpu->regs.DE.set_pair16(0);
@@ -1375,8 +1413,16 @@ void HBIOSDispatch::handleDIO() {
     }
 
     default:
-      emu_fatal("[HBIOS DIO] Unhandled function 0x%02X (unit=%d is_md=%d is_hd=%d hd_unit=%d)\n",
+      // As for CIO above: report it, do not abort. BF_DIOVERIFY (0x15) is the
+      // one a real RomWBW guest could plausibly reach - every stock driver
+      // stubs it to ERR_NOTIMPL rather than omitting it - and killing the
+      // emulator would have been a far worse answer than the error RomWBW
+      // itself gives.
+      emu_error("[HBIOS DIO] Unhandled function 0x%02X (unit=%d is_md=%d is_hd=%d "
+                "hd_unit=%d) - returning HBR_NOFUNC\n",
                 func, raw_unit, is_memdisk, is_harddisk, hd_unit);
+      result = HBR_NOFUNC;
+      break;
   }
 
   setResult(result);
@@ -2028,7 +2074,10 @@ void HBIOSDispatch::handleSYS() {
     }
 
     default:
-      emu_fatal("[HBIOS SYS] Unhandled function 0x%02X (subfunc=%d)\n", func, subfunc);
+      emu_error("[HBIOS SYS] Unhandled function 0x%02X (subfunc=%d) - returning "
+                "HBR_NOFUNC\n", func, subfunc);
+      result = HBR_NOFUNC;
+      break;
   }
 
   setResult(result);
@@ -2055,10 +2104,38 @@ void HBIOSDispatch::handleVDA() {
       emu_video_set_cursor(0, 0);  // Sync Swift cursor
       break;
 
+    case HBF_VDADEV: {
+      // Device info: D := device type, E := device number, H := attributes.
+      // (Source/HBIOS/invntdev.asm:345-346, whose comment says "DISK
+      // ATTRIBUTES" - that is a copy-paste in RomWBW, it is the video unit.)
+      //
+      // This had no case at all until 2026-09-05, which was invisible while the
+      // only caller lived in the HBIOS bank our proxy replaces. RomWBW 3.6.0
+      // moved the device inventory into a ROM app, and an unhandled VDA
+      // function here does not report failure - it falls through returning
+      // success with the caller's registers untouched. invntdev then used the
+      // leftover D as an index into a 9-entry name table with no bound check
+      // and printed the video adapter as "AY-3-8910", a sound chip.
+      //
+      // VDADEV_VDU is the generic character display in RomWBW's table, which is
+      // what this emulator presents: a text-mode terminal with no accelerator.
+      cpu->regs.DE.set_high(0x00);   // VDADEV_VDU
+      // The unit is in C, as it is for every VDA call.
+      cpu->regs.DE.set_low(cpu->regs.BC.get_low());
+      cpu->regs.HL.set_high(0x00);   // No attributes claimed
+      break;
+    }
+
     case HBF_VDAQRY: {
-      // Query - return rows/cols
-      cpu->regs.DE.set_high((uint8_t)vda_cols);
-      cpu->regs.DE.set_low((uint8_t)vda_rows);
+      // Query video config: D := ROWS, E := COLS. That order is RomWBW's, not a
+      // choice - Source/HBIOS/invntdev.asm:371-378 reads it back as
+      // "RST 08 ; D:=ROWS, E:=COLS" and prints E, 'x', D.
+      //
+      // These were swapped until 2026-09-05, which printed the geometry
+      // transposed - "Text,25x80" for an 80x25 screen. Harmless on that
+      // diagnostic line and not harmless to a guest that sizes a window from it.
+      cpu->regs.DE.set_high((uint8_t)vda_rows);
+      cpu->regs.DE.set_low((uint8_t)vda_cols);
       break;
     }
 
@@ -2282,10 +2359,34 @@ void HBIOSDispatch::handleSND() {
       emu_dsky_beep(100);
       break;
 
-    case HBF_SNDQUERY:
-      // Query sound capabilities
-      cpu->regs.DE.set_pair16(0x0001);  // 1 channel supported
+    case HBF_SNDQUERY: {
+      // The subfunction is in E and was ignored, so every query answered the
+      // same way and left B and C holding whatever the caller passed in. On
+      // RomWBW 3.6.0's device inventory that printed "85+0 CHANNELS" - 85 being
+      // 0x55, BF_SNDQUERY itself, read back out of B as though it were data.
+      uint8_t subfunc = cpu->regs.DE.get_low();
+      switch (subfunc) {
+        case SNDQ_CHCNT:
+          // B := tone channels, C := noise channels
+          // (Source/HBIOS/invntdev.asm:424-433 prints them as "B+C CHANNELS".)
+          cpu->regs.BC.set_high(4);
+          cpu->regs.BC.set_low(0);
+          break;
+        case SNDQ_DEV:
+          // B := device type code, DE and HL := I/O ports. There is no sound
+          // chip here - nothing reads snd_period or snd_volume back out - so
+          // report the driver as software with no ports rather than naming a
+          // chip that is not being emulated.
+          cpu->regs.BC.set_high(0);
+          cpu->regs.DE.set_pair16(0);
+          cpu->regs.HL.set_pair16(0);
+          break;
+        default:
+          result = HBR_NOFUNC;
+          break;
+      }
       break;
+    }
 
     default:
       if (debug_log) {

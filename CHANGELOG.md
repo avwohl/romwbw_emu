@@ -112,6 +112,62 @@ what replaced the dependency pins, so it is a step rather than a courtesy.
   the reader to `gh release upload <tag> --clobber` against `v1.4.5` - the one
   action the plan forbids absolutely.
 
+### Six dispatcher bugs RomWBW 3.6.0 made reachable
+
+3.6.0 moved the boot loader's device inventory out of the HBIOS bank and into a
+ROM app (`Source/HBIOS/invntdev.asm`). Our proxy REPLACES the HBIOS bank, so that
+code used to be ours and never touched this dispatcher; now it runs against it,
+and it reads back six answers that were wrong all along. Pressing `D` at the
+3.6.0 boot prompt printed, on the published images:
+
+    Char 0      UART0:      RS-232            75,5,N,1
+    Disk 0      MD0:        Hard Disk         16384MB,LBA
+    Disk 1      MD1:        Hard Disk         24576MB,LBA
+    Disk 2      HDSK0:      Hard Disk         65536MB,LBA
+    Video 0     AY-3-89101: CRT               Text,25x80
+    Sound 0     SND0:       SIO               85+0 CHANNELS
+
+and now prints:
+
+    Char 0      UART0:      RS-232            --
+    Disk 0      MD0:        RAM Disk          256KB,LBA
+    Disk 1      MD1:        ROM Disk          384KB,LBA
+    Disk 2      HDSK0:      Hard Disk         49MB,LBA
+    Video 0     VDU0:       CRT               Text,80x25
+    Sound 0     SND0:       SN76489           4+0 CHANNELS
+
+- **`BF_DIOCAP` returned DE and HL swapped.** RomWBW's contract is `DE:HL` with
+  DE the high word - which `HBF_DIOSEEK` in this same file already documents and
+  reads back correctly. The 49 MB combo (100,352 sectors, `0x00018800`) came back
+  as `0x88000001`, printing 65536MB. Not confined to a diagnostic screen:
+  `COPYSL.COM` reads the same value from CP/M.
+- **`BF_DIODEVICE` left the device-class nibble at zero**, so both memory disks
+  reported as hard disks and were sized in MB. RomWBW branches on it: 4 = ROM,
+  5 = RAM, 7 = flash, all shown in KB.
+- **`BF_VDAQRY` had rows and columns the wrong way round** - `D := ROWS,
+  E := COLS` per `invntdev.asm:371-378` - printing the geometry transposed.
+- **`BF_VDADEV` had no case at all.** An unhandled VDA function does not report
+  failure; it returns success with the caller's registers untouched, so
+  `invntdev` used leftover `D` as an index into a 9-entry name table with no
+  bound check and named the video adapter after a sound chip.
+- **`BF_SNDQUERY` ignored the subfunction in E** and never set B or C, so the
+  channel count printed as `85+0` - 85 being `0x55`, `BF_SNDQUERY` itself, read
+  back out of B as though it were data.
+- **`BF_CIOQUERY` answered the wrong question**, returning a device type and unit
+  where RomWBW returns an encoded line configuration. `D=0, E=0` decodes as a
+  real setting, 75 baud and 5 data bits, rather than as an absent one. There is
+  no serial line here to describe, and `$FFFF` is how RomWBW spells that.
+
+### Fixed
+
+- **An unimplemented CIO, DIO or SYS function killed the emulator.** All three
+  default arms called `emu_fatal()`, so a guest asking for a function we do not
+  implement ended the process with SIGABRT and took the session with it. They
+  return `HBR_NOFUNC` now - what RomWBW returns and what callers are written to
+  handle - and log loudly instead. `BF_DIOVERIFY` (0x15) is the one a real guest
+  could plausibly reach: every stock RomWBW driver stubs it to `ERR_NOTIMPL`
+  rather than omitting it.
+
 ### Removed
 
 ### The RomWBW 3.6.0 dev snapshot is gone from `archive/`
