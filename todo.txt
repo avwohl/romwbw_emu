@@ -136,6 +136,16 @@ is that file's version attribute whose bump fires the disk-wipe hazard.
   a hash that disagrees with the catalog naming it.  romwbw_disks' todo.txt has
   that one as an open decision.
 
+  UPDATE 2026-09-05: disks/disks.xml is DELETED.  The observation above stands as
+  the reason it was worthless - version="6", 21 entries, no per-disk version or
+  checksum - and to it: 19 of the 21 filenames it listed name images this
+  repository does not track, and one of the two it does track (hd1k_infocom.img)
+  it never listed.  It was an inventory of nothing.  Nothing in the tree read it:
+  verify_romwbw_pin.sh finds only *.rom/*.bin/*.img, both disk scripts hardcode
+  the two-image list, and release.yml never stages disks/.  What the ports fetch
+  is a different file entirely - ioscpm's published catalog - and that is what
+  tools/check-disk-pins.sh reads, over HTTP, so it is untouched by this.
+
 - [MAC/LINUX] the last integer-narrowing warnings in a clean build are not this
 repository's to fix.  qkz80_MK_INT16 in cpmemu's qkz80_types.h builds an int
 and hands it to a qkz80_uint16 parameter, so qkz80_reg_pair.h is reported twice

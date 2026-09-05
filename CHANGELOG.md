@@ -29,57 +29,6 @@ what replaced the dependency pins, so it is a step rather than a courtesy.
 
 ### Added
 
-- **One binary now boots more than one RomWBW release.** The compile-time pin is
-  gone. `emu_validate_rom_hcb()` compared a loaded ROM's HCB version bytes
-  against `ROMWBW_PIN_VER_BYTE`/`ROMWBW_PIN_UPD_BYTE` and failed the load on any
-  difference, so a build pinned to 3.5.1 physically could not load a 3.6.0 ROM -
-  which is why every downstream client could *fetch* two RomWBW versions and run
-  only one. The version is now read out of the loaded ROM at run time, and this
-  build boots v3.5.1 and v3.6.0. `--version` says so:
-
-      RomWBW releases this build can run: 3.5.1, 3.6.0
-        (the version a guest sees is read from the ROM it loads, not compiled in)
-
-  Five sites report a version to the guest and every one of them now derives it
-  from the ROM rather than holding a copy: `HBF_SYSVER`
-  (`hbios_dispatch.cc:1537`), the NVRAM checksum seed (`:697-707`), the HBIOS
-  ident block (`emu_init.cc:283`, `:289`), the CBIOS page-zero stamp at
-  `0x42`/`0x43` (`:324-325`), and the load-time check itself. **The last two
-  exist only in emulated RAM.** Nothing in this tree inspects emulated RAM, so a
-  stored copy that was never updated would have been invisible to every verifier
-  here and would have surfaced only as a guest printing the wrong version.
-  Deriving rather than storing is what makes that unrepresentable: there is no
-  cached value and no initialisation order to get wrong, only `read_bank(0,
-  0x105)`.
-
-  Verified by running it, not by reading it. A CP/M program assembled for the
-  purpose (`R8`-imported, reading `0x42`/`0x43`, `0xFE02`, the block `0xFFFC`
-  points at, and `HBF_SYSVER`) reports `3510` under a 3.5.1 ROM and `3600` under
-  a 3.6.0 ROM, on all four - which is the only way those two RAM-only sites can
-  be checked at all. Both releases boot CP/M 2.2, banked CP/M 3, ZPM3, Z3PLUS,
-  ZSDOS and NZCOM; `R8`/`W8` round-trip a file byte-identically under both; the
-  boot loader prints `NV Switches Found` under both, so the checksum seed agrees
-  with the ROM's own SYSCONF.
-
-- **`ROMWBW_SUPPORTED_RELEASES`, and a refusal that means something.** A release
-  this core has never been checked against is still refused, because bank 0 is
-  our HBIOS proxy and a release whose CBIOS calls a function the dispatcher does
-  not implement would load and then hang - much worse than a refusal. The
-  message names the release and what this build can run:
-
-      ROM is built for RomWBW v3.7.0, which this emulator has not been checked
-      against (it can run 3.5.1, 3.6.0) - use one of those, or add v3.7.0 to
-      ROMWBW_SUPPORTED_RELEASES in src/romwbw_pin.h once you have booted it
-
-  `emu_set_allow_untested_romwbw(true)`, or `--allow-untested-romwbw`, overrides
-  it with a warning. Adding a release is a claim that somebody ran it, and each
-  `X()` entry carries the date it was checked.
-
-- **New public API in `emu_init.h`** for ports that show a version:
-  `emu_romwbw_release_of_image()` (inspect an image before offering it in a
-  picker), `emu_romwbw_release_loaded()`, `emu_romwbw_release_str()`,
-  `emu_romwbw_release_supported()` and `emu_romwbw_supported_list()`.
-
 ### Fixed
 
 - **`src/makefile` had no header dependencies at all.** The pattern rule was
@@ -162,6 +111,82 @@ what replaced the dependency pins, so it is a step rather than a courtesy.
   evidence, and a warning records that `ioscpm/docs/DISK_W8FIX_RUNBOOK.md` tells
   the reader to `gh release upload <tag> --clobber` against `v1.4.5` - the one
   action the plan forbids absolutely.
+
+### Removed
+
+### `disks/disks.xml` is deleted: it was an inventory of nothing
+
+`version="6"`, 21 `<disk>` entries, zero `<sha256>` elements - and the numbers are
+the argument. Nineteen of the twenty-one filenames it listed name images this
+repository does not track, and `hd1k_infocom.img`, one of the two it does track,
+it never listed at all. It described neither what is here nor what any client
+fetches.
+
+Nothing read it. `roms/verify_romwbw_pin.sh` is the only thing that walks the
+tree and its two `find` expressions take `*.rom`/`*.bin` and `*.img` only, so a
+`.xml` never enters either scratch list. `disks/verify_disk_utils.sh` and
+`disks/rebuild_disk_utils.sh` both hardcode
+`disks/hd1k_combo.img:wbw_hd1k_0 disks/hd1k_infocom.img:wbw_hd1k` rather than
+globbing the directory. `release.yml`'s staging step never enters `disks/`, so no
+`.deb` or `.rpm` carried it. Confirmed after deleting: `make -C src test` passes
+with the three counts CI asserts unchanged - 4 disk-resident binaries, 2 shipped
+`w8.com` with the interlock, every artifact naming a supported release.
+
+The catalog the three ports actually fetched was always ioscpm's published one,
+`version="13"` with a per-disk `sha256`, and `tools/check-disk-pins.sh` reads that
+over HTTP. It is untouched by this and was never pointed here.
+
+
+- **One binary now boots more than one RomWBW release.** The compile-time pin is
+  gone. `emu_validate_rom_hcb()` compared a loaded ROM's HCB version bytes
+  against `ROMWBW_PIN_VER_BYTE`/`ROMWBW_PIN_UPD_BYTE` and failed the load on any
+  difference, so a build pinned to 3.5.1 physically could not load a 3.6.0 ROM -
+  which is why every downstream client could *fetch* two RomWBW versions and run
+  only one. The version is now read out of the loaded ROM at run time, and this
+  build boots v3.5.1 and v3.6.0. `--version` says so:
+
+      RomWBW releases this build can run: 3.5.1, 3.6.0
+        (the version a guest sees is read from the ROM it loads, not compiled in)
+
+  Five sites report a version to the guest and every one of them now derives it
+  from the ROM rather than holding a copy: `HBF_SYSVER`
+  (`hbios_dispatch.cc:1537`), the NVRAM checksum seed (`:697-707`), the HBIOS
+  ident block (`emu_init.cc:283`, `:289`), the CBIOS page-zero stamp at
+  `0x42`/`0x43` (`:324-325`), and the load-time check itself. **The last two
+  exist only in emulated RAM.** Nothing in this tree inspects emulated RAM, so a
+  stored copy that was never updated would have been invisible to every verifier
+  here and would have surfaced only as a guest printing the wrong version.
+  Deriving rather than storing is what makes that unrepresentable: there is no
+  cached value and no initialisation order to get wrong, only `read_bank(0,
+  0x105)`.
+
+  Verified by running it, not by reading it. A CP/M program assembled for the
+  purpose (`R8`-imported, reading `0x42`/`0x43`, `0xFE02`, the block `0xFFFC`
+  points at, and `HBF_SYSVER`) reports `3510` under a 3.5.1 ROM and `3600` under
+  a 3.6.0 ROM, on all four - which is the only way those two RAM-only sites can
+  be checked at all. Both releases boot CP/M 2.2, banked CP/M 3, ZPM3, Z3PLUS,
+  ZSDOS and NZCOM; `R8`/`W8` round-trip a file byte-identically under both; the
+  boot loader prints `NV Switches Found` under both, so the checksum seed agrees
+  with the ROM's own SYSCONF.
+
+- **`ROMWBW_SUPPORTED_RELEASES`, and a refusal that means something.** A release
+  this core has never been checked against is still refused, because bank 0 is
+  our HBIOS proxy and a release whose CBIOS calls a function the dispatcher does
+  not implement would load and then hang - much worse than a refusal. The
+  message names the release and what this build can run:
+
+      ROM is built for RomWBW v3.7.0, which this emulator has not been checked
+      against (it can run 3.5.1, 3.6.0) - use one of those, or add v3.7.0 to
+      ROMWBW_SUPPORTED_RELEASES in src/romwbw_pin.h once you have booted it
+
+  `emu_set_allow_untested_romwbw(true)`, or `--allow-untested-romwbw`, overrides
+  it with a warning. Adding a release is a claim that somebody ran it, and each
+  `X()` entry carries the date it was checked.
+
+- **New public API in `emu_init.h`** for ports that show a version:
+  `emu_romwbw_release_of_image()` (inspect an image before offering it in a
+  picker), `emu_romwbw_release_loaded()`, `emu_romwbw_release_str()`,
+  `emu_romwbw_release_supported()` and `emu_romwbw_supported_list()`.
 
 ## [1.38] - 2026-09-01
 
