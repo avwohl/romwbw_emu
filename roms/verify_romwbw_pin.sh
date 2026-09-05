@@ -155,8 +155,9 @@ echo
 # than no check. Results go through a temp file so the loop below is not a
 # subshell and the fail/warn counters survive it.
 # archive/ is skipped along with .git: it exists to hold superseded material
-# on purpose (the RomWBW v3.6.0 stock ROM lives there awaiting an upgrade),
-# so flagging it would make a correct tree fail forever.
+# on purpose - archive/cpm22/ still carries an assembled cpm22.bin, which this
+# script's *.bin search would otherwise pick up and fail on forever, because a
+# 1970s CP/M binary has no HBIOS configuration block to name a release.
 #
 # So is any sibling checkout sitting in the tree root, and that one is not
 # cosmetic. Every job in .github/workflows/test.yml and release.yml does

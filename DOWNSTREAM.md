@@ -483,10 +483,15 @@ as required reading; RomWBW ships no `Source/HBIOS/proto.asm` in any release
 `Source/Doc/SystemGuide.md`. Booting the release and exercising the host
 block is the check that actually found nothing wrong with v3.6.0.
 
-**Do not build from `archive/romwbw-v3.6.0/SBC_simh_std_v360.rom`.** It is a
-`v3.6.0-dev.46` snapshot from 2025-12-12, not the release, and its HCB reads
-`36 00` exactly as the release does - so no version check can tell them
-apart.
+**`archive/romwbw-v3.6.0/SBC_simh_std_v360.rom` is gone, and must not come
+back.** It was a `v3.6.0-dev.46` snapshot from 2025-12-12, not the release, and
+its HCB read `36 00` exactly as the release does - so no version check could
+tell them apart, and none of the three that look at a ROM ever would. Deleted
+2026-09-05; recoverable as blob `141a027d` if it is ever wanted as evidence
+rather than as an input, sha256
+`4b387ec4137ce49d65044a7298855a9327b6182cc0c3aa2b8e90cb526bf1921c`. If your
+checkout still has it, delete it: build 3.6.0 from the upstream `Package.zip`,
+which `romwbw_disks/tools/fetch_romwbw.sh` pins by sha256.
 
 ## Console Output
 

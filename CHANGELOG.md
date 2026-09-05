@@ -114,6 +114,31 @@ what replaced the dependency pins, so it is a step rather than a courtesy.
 
 ### Removed
 
+### The RomWBW 3.6.0 dev snapshot is gone from `archive/`
+
+`archive/romwbw-v3.6.0/SBC_simh_std_v360.rom` was a `v3.6.0-dev.46` build from
+2025-12-12, not the release. RomWBW's packed version has no field for a
+pre-release suffix, so its HCB read `36 00` exactly as the real release does and
+no version-byte check could tell them apart - not `emu_validate_rom_hcb`, not
+`roms/verify_romwbw_pin.sh`, not `romwbw_disks`' stock-ROM check. Splice its
+banks 1-15 into an emulator ROM and you get a 512 KB file that passes every
+check, loads, boots, and quietly carries a December development build of the
+ROM-resident loader and applications while claiming to be 3.6.0.
+
+Nothing read it: `verify_romwbw_pin.sh` prunes `archive/`, and the proof is that
+its output is byte-identical before and after the deletion. That prune stays,
+for a reason the old comment got wrong - it said `archive/` held the 3.6.0 ROM
+"awaiting an upgrade", when what actually needs skipping is
+`archive/cpm22/cpm22asm/cpm22.bin`, a 1970s CP/M binary with no HBIOS
+configuration block for the `*.bin` search to read. The comment says that now.
+
+Recoverable as blob `141a027d` if it is ever wanted as evidence rather than as a
+build input; sha256
+`4b387ec4137ce49d65044a7298855a9327b6182cc0c3aa2b8e90cb526bf1921c`.
+`DOWNSTREAM.md` now says it is gone rather than warning people off building from
+it. 3.6.0 is built from the upstream `Package.zip`, which
+`romwbw_disks/tools/fetch_romwbw.sh` pins by sha256.
+
 ### `disks/disks.xml` is deleted: it was an inventory of nothing
 
 `version="6"`, 21 `<disk>` entries, zero `<sha256>` elements - and the numbers are
