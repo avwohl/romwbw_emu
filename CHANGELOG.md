@@ -155,8 +155,20 @@ and now prints:
   back out of B as though it were data.
 - **`BF_CIOQUERY` answered the wrong question**, returning a device type and unit
   where RomWBW returns an encoded line configuration. `D=0, E=0` decodes as a
-  real setting, 75 baud and 5 data bits, rather than as an absent one. There is
-  no serial line here to describe, and `$FFFF` is how RomWBW spells that.
+  real setting, 75 baud and 5 data bits, rather than as an absent one.
+
+  This is the one item in this list that 3.6.0 did **not** make reachable.
+  `MODE.COM` ships on the published images and asks the same question, on 3.5.1
+  as well - it printed `COM0: 75,N,5,1` on both releases, and has since the
+  console was first emulated.
+
+  It also needed two answers rather than one, which is worth recording because
+  fixing half of it looked complete. `invntdev` ignores the status and tests the
+  value (`LD A,D / AND E / INC A / JP Z,PS_PRTNUL` - `$FFFF` means "no config
+  defined"); `MODE.COM` ignores the value and aborts on the status (`rst 08 /
+  ret nz`). Returning `$FFFF` with SUCCESS fixed the inventory and made MODE
+  print `COM0: 7372800,S,8,2` - worse than before. It now returns `$FFFF` **and**
+  `HBR_NOTIMPL`, so the inventory prints `--` and MODE exits quietly.
 
 ### Fixed
 

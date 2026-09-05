@@ -899,9 +899,24 @@ void HBIOSDispatch::handleCIO() {
       // "75,5,N,1" - rather than as an absent one.
       //
       // There is no serial line here to describe: the console is a host
-      // terminal. $FFFF is how RomWBW spells "no config defined", and the
-      // caller tests for exactly it: LD A,D / AND E / INC A / JP Z,PS_PRTNUL.
+      // terminal. Two shipped callers ask, and they check different things, so
+      // this answers both.
+      //
+      //   invntdev (the ROM device inventory) ignores the status and tests the
+      //   value: LD A,D / AND E / INC A / JP Z,PS_PRTNUL. $FFFF is how RomWBW
+      //   spells "no config defined", and it prints nothing for that unit.
+      //
+      //   MODE.COM ships on the published images and does the opposite - it
+      //   ignores the value and aborts on status: "rst 08 / ret nz". Returning
+      //   $FFFF with SUCCESS made it decode $FF as an encoded baud code of 31
+      //   and print "COM0: 7372800,S,8,2".
+      //
+      // So: the value invntdev wants, AND a status MODE.COM will stop on.
+      // Returning one without the other gives one of them garbage - which is
+      // how this was found, by fixing it for the inventory and then running
+      // MODE.
       cpu->regs.DE.set_pair16(0xFFFF);
+      result = HBR_NOTIMPL;
       break;
     }
 
