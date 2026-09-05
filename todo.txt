@@ -50,26 +50,28 @@ changing it needs a name parameter on emu_host_file_provide_data() and a change
 to the page's picker callback.  until then the browser answers 0xFF and R8
 prints what was typed, which is what it always did.
 
-- [RELEASE] step 4 is DONE and step 5 is what is left.  the refreshed images are
-published as ioscpm v1.4.12 (prerelease, 2026-09-01, 29 assets): hd1k_combo.img
-refreshed to sha256 89b8ae1a..., the other 19 re-uploaded byte-identical, and
-disks.xml's version attribute deliberately left at 13 so the invalidation wipe
-never fired.  v1.4.5 is untouched - still be19984e..., still 30 assets - and
-releases/latest is still v1.4.11.
-step 5's EDIT half is now done in all three ports and its SHIPPING half is done
-in none, which is the whole of what is left and is not this repository's to do.
-every tree reads v1.4.12: releaseTag in ioscpm's EmulatorViewModel.swift
-(0010591), RELEASE_TAG in cpmdroid's DiskCatalogRepository.kt (642b3b0, and it
-is that port's HEAD) and in z80cpmw's DiskCatalog.cpp (5ee0e5f, also HEAD).
-not one of those commits has a release tag on or after it, so every package a
-user can install still fetches v1.4.5 and still gets the R8 that erases on
-wildcards.  read the pin out of the artifact rather than the tree and it says
-so: `git -C ../z80cpmw show v1.0.22-beta:z80cpmw/DiskCatalog.cpp` is v1.4.5, and
-dbd53b1 records that 1.0.23 went to both channels carrying v1.4.5 too.
-nothing here needs a release for any of it.  this repository publishes no disk
-image - v1.38's eight assets are the .deb and .rpm pairs - and it fetches no
-catalog, so no romwbw_emu tag stands between the fix and a user.  the two
-commits past v1.38 are this file and tools/check-disk-pins.sh.
+- [RELEASE] the pin those three ports carried is GONE, and what is left is
+shipping.  Step 4 published the refreshed images as ioscpm v1.4.12 (prerelease,
+2026-09-01, 29 assets): hd1k_combo.img refreshed to sha256 89b8ae1a..., the
+other 19 re-uploaded byte-identical, and disks.xml's version attribute
+deliberately left at 13 so the invalidation wipe never fired.  v1.4.5 is
+untouched - still be19984e..., still 30 assets.
+then on 2026-09-05 all three ports moved off that catalog entirely.  releaseTag
+in ioscpm's EmulatorViewModel.swift, RELEASE_TAG in cpmdroid's
+DiskCatalogRepository.kt and in z80cpmw's DiskCatalog.cpp are DELETED, not
+repointed: each now fetches romwbw_disks' index-v0.json and reads base_url out
+of the catalog document.  so "which pin does this tree carry" has no answer in
+any of them any more, and any check that greps for a vN.N.N literal reports a
+correct tree as broken.
+what has NOT changed is the shipping half, and it is still the whole of what is
+left.  not one of those commits has a release tag on or after it, so every
+package a user can install still fetches v1.4.5 and still gets the R8 that
+erases on wildcards.  read it out of the artifact rather than the tree and it
+says so: `git -C ../z80cpmw show v1.0.22-beta:z80cpmw/DiskCatalog.cpp` is
+v1.4.5, and dbd53b1 records that 1.0.23 went to both channels carrying v1.4.5
+too.  nothing here needs a release for any of it: this repository publishes no
+disk image and fetches no catalog, so no romwbw_emu tag stands between the fix
+and a user.
 
 - [ANY] tools/check-disk-pins.sh exits 0 while not one shipped package of any
 port carries the repin, and that is structural rather than a bug in the
@@ -91,6 +93,15 @@ should not report on artifacts at all.
   human-maintained note.  Two of the three are not artifacts, so the honest shape
   is a gate that compares published store VERSIONS against the commit that moved
   each pin, not one that unzips packages.
+  AND AS OF 2026-09-05 THERE IS NO PIN TO GREP FOR.  pin_of() finds a vN.N.N
+  literal in each port's catalog source; all three ports deleted theirs when
+  they moved to romwbw_disks' index-v0.json, so the function now returns empty
+  for a CORRECT tree.  ioscpm and cpmdroid updated their own copies of the
+  script to understand an "index-v0" kind; this repository's copy has not been
+  looked at since, and whatever it grows into has to answer "does this source
+  still name the v0 index, is the legacy pin really gone, and does that index
+  still publish the release this build's core can run" rather than "which tag".
+  z80cpmw has no copy of the script at all.
 
 - [ANY] a green pin does not mean a user has the fixed R8, and the gate implies
 it does.  All three ports decide "already downloaded" by filename alone -
@@ -113,6 +124,17 @@ checksum, so nothing here can look at a release asset and tell whether its
 w8.com is current.  the catalog the three ports actually fetch is ioscpm's,
 `<disks version="13">`, 20 entries, and it DOES carry a per-disk sha256 - and it
 is that file's version attribute whose bump fires the disk-wipe hazard.
+
+  UPDATE 2026-09-05: v0 changes the shape of this but does not close it.  Asset
+  names now carry the release - hd1k_combo-v0-3.5.1.img - and every v0 catalog
+  entry has a sha256, so a client CAN tell a stale image from a current one
+  without a version attribute.  Whether it does is per client and still
+  unsettled: ioscpm keeps a ledger and will refresh unattended, z80cpmw computes
+  the verdict and calls nothing that acts on it, cpmdroid still compares
+  filenames.  And the migration renames rather than re-downloads, so a migrated
+  device keeps the bytes it had under the new name - which for hd1k_combo means
+  a hash that disagrees with the catalog naming it.  romwbw_disks' todo.txt has
+  that one as an open decision.
 
 - [MAC/LINUX] the last integer-narrowing warnings in a clean build are not this
 repository's to fix.  qkz80_MK_INT16 in cpmemu's qkz80_types.h builds an int
