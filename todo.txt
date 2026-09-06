@@ -106,37 +106,43 @@ shipped artifact says the same: the v1.38 deb's emu_avw.rom is c7abc580 in both
 roms/ and web/, unpacked and hashed rather than assumed, which is the ROM from
 before e47c948.
 
-- [ANY] tools/check-shipped-disks.sh exits 0 while not one shipped package of any
-port carries the repin, and that is structural rather than a bug in the
-comparison.  Its whole stated reason for existing is checking the built artifact,
-and artifacts_for() globs only local paths - dist/, bin/Release/,
-app/build/outputs, build/ - so on a machine where none of those exist it scans
-nothing, prints nothing, and the run still ends in "every artifact found agrees
-with its own tree".  Found nothing and checked nothing read identically.  At
-minimum the summary has to distinguish them; a gate that cannot see an artifact
-should not report on artifacts at all.
+- [ANY] tools/check-shipped-disks.sh cannot see a built artifact on any machine
+that cannot build one, and that is structural rather than a bug.  artifacts_for()
+globs local paths only - dist/, bin/Release/, app/build/outputs, build/,
+DerivedData - so on this machine the loop runs zero times.  MSVC, the Android SDK
+and Xcode are three different machines and no one of them has all three packages.
+  TWO PARTS OF THIS ARE NOW DONE, 2026-09-06.  The summary distinguished nothing
+from everything: it ended on "every artifact found agrees with its own tree" after
+inspecting zero packages, which reads as a pass of the half that never ran.  It now
+counts what it opened and says "NO PACKAGE WAS INSPECTED, and this is NOT a pass of
+the artifact half", with a different wording again for --tree-only.  Verified four
+ways: no artifact, --tree-only, a planted artifact naming the v0 index (counted,
+passes) and one that does not (counted, exits 1).
+  And pin_of() no longer reports NO PIN FOUND at a correct tree.  All three ports
+deleted their vN.N.N literal when they moved to romwbw_disks' index-v0.json.
+cpmdroid's copy had grown an "index-v0" kind that asks the right question - does
+this source still name the v0 index, is the legacy pin really gone, does that index
+still publish the RomWBW release this build's bundled ROM declares - and its header
+said the other four needed the same edit.  That copy is now canonical in all five
+repositories (md5 2dd4a7f63226c2723f65b5c95e560175), with ioscpm and z80cpmw moved
+into the index-v0 row.  Note z80cpmw's file is CatalogV0.cpp, not DiskCatalog.cpp
+where the old pin lived.
+  WHAT IS STILL OPEN is the artifact half itself, and the shape it should take has
+changed since this item was written.  This item said the three authorities were the
+iTunes lookup, the Play listing, and "for Windows a human-maintained note".  That
+last is obsolete: z80cpmw queries DisplayCatalog now, and doing so found its own
+CHANGELOG wrong by two releases.  All four ports measure their store, all four run
+that check daily in CI.  So the honest remaining question is not "unzip a package"
+but "does the store's version correspond to a commit whose source names the v0
+index", which is a join between two checks that already exist and neither performs.
   What it must NOT do is reach for the obvious fix.  Querying
   avwohl/{z80cpmw,cpmdroid} release APIs would answer the wrong question on both:
   cpmdroid's newest GitHub release is v1.14 from 2026-01-16 while Play serves
   1.25, so the gate would scan a package nine versions older than anything a user
-  has, and z80cpmw's Store channel leaves no GitHub release behind at all - its
-  CHANGELOG.md header says so and is the only record of what shipped.  The three
-  authorities that do answer it are the iTunes lookup API (ioscpm already wraps it
-  in tools/check-store-version.sh), the Play listing, and for Windows a
-  human-maintained note.  Two of the three are not artifacts, so the honest shape
-  is a gate that compares published store VERSIONS against the commit that moved
-  each pin, not one that unzips packages.
-  AND AS OF 2026-09-05 THERE IS NO PIN TO GREP FOR.  pin_of() finds a vN.N.N
-  literal in each port's catalog source; all three ports deleted theirs when
-  they moved to romwbw_disks' index-v0.json, so the function now returns empty
-  for a CORRECT tree.  ioscpm and cpmdroid updated their own copies of the
-  script to understand an "index-v0" kind; this repository's copy has not been
-  looked at since, and whatever it grows into has to answer "does this source
-  still name the v0 index, is the legacy pin really gone, and does that index
-  still publish the release this build's core can run" rather than "which tag".
-  z80cpmw HAS a copy: fa6af1c added one on 2026-09-03, byte-identical to this
-  repository's, so its pin_of() returns empty for a correct tree too and it has
-  not been taught the "index-v0" kind either.
+  has, and z80cpmw's Store channel leaves no GitHub release behind at all.
+  romwbw_emu is the exception and already proves the shape works: its
+  tools/check-store-version.sh --assets downloads the published .deb and reads
+  emu_avw.rom out of it, which is how the shipped ROM was measured as c7abc580.
 
 - [ANY] a green pin does not mean a user has the fixed R8, and the gate implies
 it does.  All three ports decide "already downloaded" by filename alone -
