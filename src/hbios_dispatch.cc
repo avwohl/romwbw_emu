@@ -1726,9 +1726,8 @@ void HBIOSDispatch::handleSYS() {
     }
 
     case HBF_SYSGETBNK: {
-      // Get current bank
-      // Output: L = current bank ID
-      cpu->regs.HL.set_low(memory->get_current_bank());
+      // C, not L. SYS_GETBNK is "LD A,(HB_INVBNK) / LD C,A / XOR A / RET".
+      cpu->regs.BC.set_low(memory->get_current_bank());
       break;
     }
 
@@ -1813,11 +1812,16 @@ void HBIOSDispatch::handleSYS() {
 
     case HBF_SYSFREE: {
       // Free memory from HBIOS heap
-      // Input: HL = address of block to free
-      // We don't actually track allocations, so just succeed
+      // Input: HL = address of block to free.
+      // RomWBW does not implement this either - SYS_FREE is literally
+      // "SYSCHKERR(ERR_NOTIMPL) / RET" - so answering success was a claim the
+      // release being impersonated does not make, and a caller that frees and
+      // then relies on the memory being reusable would be misled.
       if (debug_log) {
-        emu_log("[HBIOS SYSFREE] addr=0x%04X (no-op)\n", cpu->regs.HL.get_pair16());
+        emu_log("[HBIOS SYSFREE] addr=0x%04X (not implemented, as in RomWBW)\n",
+                cpu->regs.HL.get_pair16());
       }
+      result = HBR_NOTIMPL;
       break;
     }
 
@@ -1975,10 +1979,13 @@ void HBIOSDispatch::handleSYS() {
         }
 
         case SYSGET_CPUINFO:
-          // CPU info: H = CPU variant, L = speed in MHz, DE = speed in KHz
+          // H = CPU variant, L = MHz, DE = KHz, BC = oscillator.
+          // SYS_GETCPUINFO ends "LD BC,(HB_CPUOSC)"; BC was left as the caller
+          // passed it.
           cpu->regs.HL.set_high(0x00);      // Z80 variant
           cpu->regs.HL.set_low(4);          // 4 MHz
           cpu->regs.DE.set_pair16(4000);    // 4000 KHz
+          cpu->regs.BC.set_pair16(4000);    // oscillator, KHz
           break;
 
         case SYSGET_MEMINFO:
@@ -1994,14 +2001,21 @@ void HBIOSDispatch::handleSYS() {
           break;
 
         case SYSGET_CPUSPD:
-          // CPU speed & wait states: H = wait states, L = speed divisor
-          cpu->regs.HL.set_high(0);  // No wait states
-          cpu->regs.HL.set_low(1);   // Speed divisor 1 (full speed)
+          // L = speed (1 = full), DE = wait states. RomWBW's SBC path ends
+          // "LD DE,$FFFF ; UNKNOWN WAIT STATES" and DE was not being set at all,
+          // so the caller read back its own input as a wait-state count.
+          cpu->regs.HL.set_high(0);
+          cpu->regs.HL.set_low(1);          // Full speed
+          cpu->regs.DE.set_pair16(0xFFFF);  // Wait states unknown
           break;
 
         case SYSGET_PANEL:
-          // Front panel switches - match CLI (0 = no panel)
-          cpu->regs.HL.set_low(0x00);
+          // There is no front panel here, and RomWBW has a specific answer for
+          // that - SYS_GETPANEL1: "LD HL,0 / LD A,ERR_NOHW". Reporting success
+          // with a zero in L instead said "a panel, with no switches set", and
+          // only half of HL was written.
+          cpu->regs.HL.set_pair16(0x0000);
+          result = HBR_NOHW;
           break;
 
         case SYSGET_APPBNKS: {
@@ -2009,8 +2023,12 @@ void HBIOSDispatch::handleSYS() {
           // Read from HCB at CB_BIDAPP0 (0x1E0) and CB_APP_BNKS (0x1E1)
           uint8_t app_bank_start = memory->read_bank(0x80, 0x1E0);
           uint8_t app_bank_count = memory->read_bank(0x80, 0x1E1);
-          cpu->regs.DE.set_high(app_bank_start);
-          cpu->regs.DE.set_low(app_bank_count);
+          // H = first bank, L = count, E = $80 (the bank size, 256 * $80 = 32KB).
+          // These were being returned in D and E, so a caller following
+          // SYS_GETAPPBNKS read the count out of L and got whatever it passed in.
+          cpu->regs.HL.set_high(app_bank_start);
+          cpu->regs.HL.set_low(app_bank_count);
+          cpu->regs.DE.set_low(0x80);
           if (debug_log) {
             emu_log("[HBIOS APPBNKS] first=0x%02X count=%d\n", app_bank_start, app_bank_count);
           }

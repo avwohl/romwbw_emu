@@ -217,6 +217,19 @@ rather than against the previous release. 82 functions across nine handlers.
   seek position, which meant a reset between a seek and a read silently moved
   the read to sector 0.
 
+- **Six SYS subfunctions answered in the wrong registers, or claimed more than
+  RomWBW does.** Each checked against `hbios.asm`'s own handler:
+  `SYSGET_CPUINFO` never set BC, the oscillator frequency (`SYS_GETCPUINFO` ends
+  `LD BC,(HB_CPUOSC)`); `SYSGET_CPUSPD` never set DE, so a caller read its own
+  input back as a wait-state count where RomWBW says `LD DE,$FFFF ; UNKNOWN WAIT
+  STATES`; `SYSGET_PANEL` reported success with a zero, which means "a panel
+  with no switches set", where `SYS_GETPANEL1` answers `HL=0` and `ERR_NOHW` for
+  a machine that has none; `SYSGET_APPBNKS` returned the first bank and count in
+  D and E where `SYS_GETAPPBNKS` puts them in H and L (and sets `E=$80`);
+  `SYSGETBNK` returned the bank in L where `SYS_GETBNK` returns it in C; and
+  `SYSFREE` reported success where RomWBW's `SYS_FREE` is literally
+  `SYSCHKERR(ERR_NOTIMPL) / RET`.
+
 - **`BF_EXTSLICE` bounded the wrong end against the wrong thing.** It compared
   the slice's START against the whole medium; RomWBW computes the upper sector
   (`EXT_SLICE5A-5B`, "ADD HL,BC ; ADD SPS, GET REQUIRED CAPCITY (UPPER SECTOR)")
