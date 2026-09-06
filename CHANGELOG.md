@@ -247,6 +247,20 @@ rather than against the previous release. 82 functions across nine handlers.
   `BF_CIOQUERY` left HL, which `tty.asm` `TTY_QUERY` sets to `$FFFF` alongside
   DE.
 
+- **Three sound setters read the wrong register.** `hbios.inc` is explicit about
+  each - "BF_SNDVOL ... L CONTAINS VOLUME", "BF_SNDPRD ... HL CONTAINS DRIVER
+  SPECIFIC VALUE", "BF_SNDNOTE ... L CONTAINS NOTE" - and all three were reading
+  E or DE, so a guest setting a note set nothing at all. `BF_SNDNOTE` also
+  treated its argument as a MIDI note number and ran it through an
+  equal-tempered `440 * 2^((n-69)/12)`; the value is an index in **eighth
+  tones**, 48 to the octave, so every note landed in the wrong place by a
+  growing margin.
+
+  Nothing is audible either way - `snd_volume` and `snd_period` are stored and
+  never read outside the dispatcher, because there is no emitter. That is why
+  this went unnoticed, and it is the reason to fix it before one is added rather
+  than after.
+
 - **`BF_EXTSLICE` bounded the wrong end against the wrong thing.** It compared
   the slice's START against the whole medium; RomWBW computes the upper sector
   (`EXT_SLICE5A-5B`, "ADD HL,BC ; ADD SPS, GET REQUIRED CAPCITY (UPPER SECTOR)")

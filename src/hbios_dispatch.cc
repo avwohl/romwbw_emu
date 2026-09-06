@@ -2509,35 +2509,50 @@ void HBIOSDispatch::handleSND() {
         snd_volume[i] = 0;
         snd_period[i] = 0;
       }
-      snd_duration = 100;
+      snd_duration = 0;
       break;
 
+    // The three setters below all read the WRONG REGISTER. hbios.inc is
+    // explicit about each - "BF_SNDVOL ... L CONTAINS VOLUME", "BF_SNDPRD ...
+    // HL CONTAINS DRIVER SPECIFIC VALUE", "BF_SNDNOTE ... L CONTAINS NOTE" -
+    // and all three were reading E or DE, so a guest setting a note set
+    // nothing and a guest setting a volume set whatever happened to be in E.
+    //
+    // Nothing is audible either way: snd_volume and snd_period are stored and
+    // never read outside this file, because there is no emitter. That is why
+    // this went unnoticed, and it is exactly the reason to fix it now rather
+    // than when one is added.
     case HBF_SNDVOL:
       if (channel < 4) {
-        snd_volume[channel] = cpu->regs.DE.get_low();
+        snd_volume[channel] = cpu->regs.HL.get_low();
       }
       break;
 
     case HBF_SNDPRD:
       if (channel < 4) {
-        snd_period[channel] = cpu->regs.DE.get_pair16();
+        snd_period[channel] = cpu->regs.HL.get_pair16();
       }
       break;
 
     case HBF_SNDNOTE: {
-      // Set note (MIDI note number)
-      // Convert to period: period = 1000000 / frequency
-      // MIDI note to freq: freq = 440 * 2^((note-69)/12)
-      uint8_t note = cpu->regs.DE.get_low();
-      if (channel < 4 && note > 0) {
-        double freq = 440.0 * pow(2.0, (note - 69) / 12.0);
-        snd_period[channel] = (uint16_t)(1000000.0 / freq);
+      // L is a note index in EIGHTH TONES - 48 steps to the octave, four to a
+      // semitone. It is NOT a MIDI note number, which is what the equal
+      // tempered 440 * 2^((n-69)/12) here assumed, and which would have put
+      // every note in the wrong place by a growing margin.
+      uint8_t note = cpu->regs.HL.get_low();
+      if (channel < 4) {
+        int octave = note / 48;
+        int step = note % 48;
+        // A4 = 440Hz sits at step 9 of octave 4 in this scale.
+        double semitones = (octave - 4) * 12.0 + (step / 4.0) - 9.0;
+        double freq = 440.0 * pow(2.0, semitones / 12.0);
+        snd_period[channel] = freq > 0 ? (uint16_t)(1000000.0 / freq) : 0;
       }
       break;
     }
 
     case HBF_SNDDUR:
-      snd_duration = cpu->regs.DE.get_pair16();
+      snd_duration = cpu->regs.HL.get_pair16();
       break;
 
     case HBF_SNDPLAY:
