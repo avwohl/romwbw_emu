@@ -1,0 +1,92 @@
+name: Store version
+
+# WHAT THIS ASKS, and why it is not a test. Every other check in this family
+# reads the tree. This one reads the release channel and compares it with what
+# the tree SAYS about it: the version in this repository, the CHANGELOG
+# sentence, and the `shipped:` field in z80cpmw/FEATURE_PARITY.md that the
+# whole parity column is scored against.
+#
+# It exists because those claims were wrong. On 2026-09-06 z80cpmw's changelog
+# said the Microsoft Store served 1.0.23; DisplayCatalog said 1.0.25, two
+# releases later, and a parity re-read had already been done against the wrong
+# commit on the strength of that sentence. Nothing in the tree could have caught
+# it, because the tree was the thing that was wrong.
+#
+# SCHEDULE, not just push. A store moves without anybody committing here - that
+# is the entire failure mode - so the daily run is the point and the push
+# trigger is a convenience for the files that carry the claims.
+#
+# EXIT CODES, and the one judgement call in this file:
+#   0  measured, and nothing here contradicts it            -> green
+#   1  something records a shipped state the store denies   -> RED, fix the claim
+#   2  could not verify (network, rate limit, page shape)   -> green with a
+#      warning annotation and a NOT VERIFIED line in the job summary.
+#
+# Exit 2 does not fail the job, and that is deliberate rather than lazy. These
+# reach third parties that go down, rate-limit and change page shapes; a build
+# that goes red every time one of them hiccups gets ignored, and an ignored
+# gate is worse than none. It does not report success either - the annotation
+# and the summary both say NOT VERIFIED, so a run that never manages to measure
+# is visible rather than silently green. Exit 2 is retried once first, because
+# most of them are transient.
+
+on:
+  schedule:
+    - cron: '37 7 * * *'
+  workflow_dispatch:
+  push:
+    paths:
+      - 'tools/check-store-version.sh'
+      - '.github/workflows/store-version.yml'
+      - 'CHANGELOG.md'
+      - 'VERSION'
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out romwbw_emu
+        uses: actions/checkout@v4
+        with:
+          path: romwbw_emu
+
+      # The script compares against z80cpmw/FEATURE_PARITY.md as a SIBLING
+      # directory, the way the checkouts sit on a developer's machine.
+      # actions/checkout cannot write outside the workspace, so both repos are
+      # checked out into it side by side rather than one above the other.
+      # Without this the parity comparison is skipped and the run measures
+      # less than a local one does - silently, which is why it is here.
+      - name: Check out z80cpmw beside it, for the parity field
+        uses: actions/checkout@v4
+        with:
+          repository: avwohl/z80cpmw
+          path: z80cpmw
+
+      - name: Measure the release channel
+        run: |
+          set +e
+          for attempt in 1 2; do
+            sh romwbw_emu/tools/check-store-version.sh > out.txt 2>&1
+            rc=$?
+            [ "$rc" != 2 ] && break
+            [ "$attempt" = 1 ] && { echo "could not verify; retrying once"; sleep 20; }
+          done
+          cat out.txt
+          {
+            echo '### Store version'
+            echo
+            echo '```'
+            cat out.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "$rc" in
+            0) echo "measured, and nothing here contradicts it" ;;
+            2) echo "NOT VERIFIED - the release channel could not be measured" >> "$GITHUB_STEP_SUMMARY"
+               echo "::warning::NOT VERIFIED: could not measure the release channel (exit 2)" ;;
+            *) echo "::error::a recorded shipped state contradicts the release channel"
+               exit 1 ;;
+          esac
