@@ -192,6 +192,25 @@ rather than against the previous release. 82 functions across nine handlers.
   what `HBF_DIOMEDIA` two hundred lines away was already doing correctly.
   `STAT` now reports 256K and 384K the right way round.
 
+- **`BF_EXTSLICE` bounded the wrong end against the wrong thing.** It compared
+  the slice's START against the whole medium; RomWBW computes the upper sector
+  (`EXT_SLICE5A-5B`, "ADD HL,BC ; ADD SPS, GET REQUIRED CAPCITY (UPPER SECTOR)")
+  and compares it against the `0x2E` partition's own size, which it reads from
+  the MBR alongside the offset - `EXT_SLICE3B` does `LD BC,8 ; 8 BYTES - LBA
+  OFFSET AND SIZE / LDIR`. Reading only the offset is what left the check with
+  nothing but the medium to compare against. Checking the start admits a slice
+  that begins inside the medium and runs off the end; checking the medium rather
+  than the partition admits one that runs into whatever follows the RomWBW
+  partition, and CBIOS then maps a drive letter onto a foreign filesystem. The
+  probe now records the partition's sector count and the check bounds the slice
+  end against it, falling back to the medium when there is no `0x2E` entry -
+  which is `EXT_SLICE3C`'s own fallback.
+
+  Its rejection message also stopped going to `stderr`. Walking slices until one
+  is refused is how `invntslc` terminates its loop, so the emulator's normal
+  end-of-scan was printing `[EXTSLICE] ... REJECTED` into the middle of the `S`
+  Slice Inventory listing on every use.
+
 - **`BF_SYSRESET` subfunction `0x00` did nothing.** That is the INTERNAL reset,
   not a reboot: it releases heap the drivers are not using, and RomWBW's warm
   reset performs it first (`SYS_RESWARM` opens `CALL SYS_RESINT`). CBIOS calls

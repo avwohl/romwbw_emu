@@ -2595,7 +2595,17 @@ void HBIOSDispatch::handleEXT() {
                                       (mbr[offset + 9] << 8) |
                                       (mbr[offset + 10] << 16) |
                                       (mbr[offset + 11] << 24);
+                  // The entry's SIZE as well as its offset. RomWBW copies both
+                  // in one go - EXT_SLICE3B does "LD BC,8 ; 8 BYTES - LBA
+                  // OFFSET AND SIZE / LDIR" - and then bounds a slice against
+                  // the partition. Reading only the offset is what left the
+                  // bounds check below comparing against the whole medium.
+                  uint32_t part_sectors = mbr[offset + 12] |
+                                          (mbr[offset + 13] << 8) |
+                                          (mbr[offset + 14] << 16) |
+                                          (mbr[offset + 15] << 24);
                   disk.partition_base_lba = part_lba;
+                  disk.partition_sectors = part_sectors;
                   disk.slice_size = 16384;  // hd1k: 8MB slices
                   disk.is_hd1k = true;
                   detected_format = true;
@@ -2620,17 +2630,39 @@ void HBIOSDispatch::handleEXT() {
           }
         }
 
-        // Calculate slice LBA offset - no artificial slice limit
-        // Only reject if slice would exceed actual disk capacity
+        // Bound the slice's END, against the PARTITION where there is one.
+        //
+        // This compared the slice's START against the whole medium, which is
+        // wrong twice over. RomWBW computes the upper sector - EXT_SLICE5A-5B
+        // "ADD HL,BC ; ADD SPS, GET REQUIRED CAPCITY (UPPER SECTOR)" - and
+        // compares it against the 0x2E partition's own size. Checking the start
+        // admits a slice that begins inside the medium and runs off the end;
+        // checking against the medium rather than the partition admits a slice
+        // that runs into whatever follows the RomWBW partition, and CBIOS then
+        // maps a drive letter onto a foreign filesystem.
+        //
+        // With no 0x2E entry there is no partition to bound against and the
+        // medium is the limit, which is the fallback EXT_SLICE3C takes.
         uint32_t disk_sectors = disk.total_sectors();
         uint32_t slice_start_sector = disk.partition_base_lba + ((uint32_t)slice * disk.slice_size);
+        uint64_t slice_end_sector = (uint64_t)slice_start_sector + disk.slice_size;
 
-        if (slice_start_sector >= disk_sectors) {
-          // Slice beyond actual disk capacity
+        uint64_t limit = disk_sectors;
+        if (disk.partition_sectors != 0) {
+          uint64_t part_end = (uint64_t)disk.partition_base_lba + disk.partition_sectors;
+          if (part_end < limit) limit = part_end;
+        }
+
+        if (slice_end_sector > limit) {
+          // Slice runs past the end of its partition, or of the medium
           media_id = 0;  // MID_NONE - signals no valid media
           result = HBR_FAILED;
-          emu_error("[EXTSLICE] unit=0x%02X slice=%d REJECTED (beyond disk capacity)\n",
-                  disk_unit, slice);
+          if (debug_log) {
+            debug_log("[HBIOS EXTSLICE] unit=0x%02X slice=%d rejected "
+                      "(end %llu > limit %llu)\n", disk_unit, slice,
+                      (unsigned long long)slice_end_sector,
+                      (unsigned long long)limit);
+          }
         } else {
           slice_lba = slice_start_sector;
 

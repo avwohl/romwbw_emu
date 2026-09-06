@@ -372,6 +372,10 @@ struct HBDisk {
   uint32_t partition_base_lba = 0;   // Start of RomWBW partition (2048 for hd1k, 0 for hd512)
   uint32_t slice_size = 16640;       // Sectors per slice (16384 for hd1k, 16640 for hd512)
   bool is_hd1k = false;              // True for hd1k format (MID_HDNEW=10), false for hd512 (MID_HD=4)
+  // Sectors in the 0x2E partition, from the MBR entry's own size field. 0 when
+  // no 0x2E entry was found, which means "bound against the media instead" -
+  // the same fallback RomWBW's EXT_SLICE3C takes.
+  uint32_t partition_sectors = 0;
 
   // Manifest disk flag - set true for disks managed by app manifest (can be auto-updated)
   // UI should warn user before writing to manifest disks since changes may be lost
