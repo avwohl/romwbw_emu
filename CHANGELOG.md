@@ -172,6 +172,33 @@ and now prints:
 
 ### Fixed
 
+- **The memory disks vanished from the drive map, and the earlier fix in this
+  same entry caused it.** `BF_DIODEVICE`'s attribute byte carries the device
+  class in its low nibble AND bit 4, "LBA capable", and CBIOS requires bit 4
+  before it will put a unit in the drive map at all. Setting only the class
+  nibble fixed the capacity display and broke the map: `ASSIGN /B=AOB` on the
+  shipped combo printed just `A:=HDSK0:0`, silently dropping both memory disks.
+  Fixing half of a bit field looked exactly like fixing the bug.
+
+  The values now come from RomWBW's own drivers rather than being assembled by
+  hand here - `MD_AROM` `%00010100` and `MD_ARAM` `%00010101`
+  (`Source/HBIOS/md.asm:24-26`), `%00110000` for a non-removable hard disk
+  (`Source/HBIOS/hdsk.asm:192`) - so the class and the capability bits cannot be
+  got right one at a time again. `ASSIGN /B=AOB` now gives `A:=MD0:0`,
+  `B:=MD1:0`, `C:=HDSK0:0`.
+
+- **A short disk transfer reported success.** Every end-of-media and I/O path in
+  `BF_DIOREAD` and `BF_DIOWRITE` broke out of the transfer loop leaving the
+  status at `HBR_SUCCESS`. The sector count in DE was right, but a caller that
+  checks the status - which RomWBW's own callers do - saw a read that moved
+  nothing as a successful read, and CP/M then used whatever was already in its
+  sector buffer as though it were the sector it asked for. Stale data presented
+  as real data is the worst failure a disk driver has, and a dropped write is how
+  a guest loses work without being told. Both return `HBR_IO` now, which is what
+  RomWBW signals: `md.asm`'s `MD_IOSETUP3` does `OR $FF ; SIGNAL ERROR`, turned
+  into `LD A,ERR_IO` by `MD_RDSEC`.
+
+
 - **An unimplemented CIO, DIO or SYS function killed the emulator.** All three
   default arms called `emu_fatal()`, so a guest asking for a function we do not
   implement ended the process with SIGABRT and took the session with it. They
