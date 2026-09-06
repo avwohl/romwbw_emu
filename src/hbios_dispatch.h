@@ -655,6 +655,11 @@ private:
   // HBIOS heap state (SYSALLOC)
   // Heap is in bank 0x80 starting after HCB (0x0200) up to 0x8000
   uint16_t heap_ptr = 0x0200;
+  // The watermark BF_SYSRESET subfunction 0x00 rewinds the heap to. RomWBW
+  // latches it once after driver init (hbios.asm "LD HL,(CB_HEAPTOP) / LD
+  // (HEAPCURB),HL") and SYS_RESINT restores CB_HEAPTOP from it. There are no
+  // drivers to init here, so the watermark is where the heap starts.
+  uint16_t heap_curb = 0x0200;
   static constexpr uint16_t heap_end = 0x8000;
 
   // Bitmap tracking which RAM banks (0x80-0x8F) have been initialized

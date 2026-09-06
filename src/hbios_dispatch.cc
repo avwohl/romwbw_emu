@@ -868,9 +868,19 @@ void HBIOSDispatch::handleCIO() {
       // Input status - return count from emu_console
       // Returns: A = status (0=no data, non-zero=data ready)
       //          E = pending byte count (0xFF if unknown)
+      // A COUNT, and it must stay positive. RomWBW's polled drivers return 1
+      // for "one character waiting" - uart.asm UART_IST1 does "XOR A / INC A ;
+      // ACCUM := 1 TO SIGNAL 1 CHAR WAITING", acia.asm the same - and the
+      // interrupt-driven variants return a buffer utilisation count. hbios.inc
+      // reserves the NEGATIVE range for error codes.
+      //
+      // This returned 0xFF, which has bit 7 set and therefore reads as an error
+      // to anything testing the sign. HTALK.COM ships on the combo image and
+      // does exactly that ("JP M,..."), so it never reached BF_CIOIN, never saw
+      // the ^C that is its only exit, and span forever.
       bool has_input = emu_console_has_input();
-      result = has_input ? 0xFF : 0;  // Non-zero if input ready
-      cpu->regs.DE.set_low(has_input ? 0xFF : 0);  // E = pending count
+      result = has_input ? 1 : 0;  // Count of characters waiting
+      cpu->regs.DE.set_low(has_input ? 1 : 0);  // E = pending count
       // Track consecutive "no input" polls for idle detection
       if (has_input) idle_poll_count = 0; else idle_poll_count++;
       break;
@@ -1615,6 +1625,22 @@ void HBIOSDispatch::handleSYS() {
       uint8_t reset_type = subfunc;  // subfunc is C register
       // Always log SYSRESET since it causes reboot
       if (debug_log) debug_log("[HBIOS SYSRESET] reset_type=0x%02X\n", reset_type);
+
+      // Subfunction 0x00 is the INTERNAL reset, and it is not a reboot: it
+      // releases heap the drivers are not using, and RomWBW's warm reset does it
+      // first (SYS_RESWARM opens "CALL SYS_RESINT"). It did nothing here until
+      // 2026-09-06, so the heap only ever grew.
+      //
+      // That matters because CBIOS calls it on EVERY OS boot - cbios.asm
+      // "LD BC,BC_SYSRES_INT / RST 08" - and then allocates the CCP (0x800) and
+      // more. Across one emulator session the allocations accumulated until a
+      // boot died with "*** Insufficient HBIOS Heap Memory ***" and a CBIOS
+      // PANIC, which looks like a corrupt disk rather than a leak. A user
+      // hopping between the six slices on hd1k_combo reaches it without
+      // restarting the emulator.
+      if (reset_type == 0x00 || reset_type == 0x01 || reset_type == 0x02) {
+        heap_ptr = heap_curb;
+      }
       if (reset_type == 0x01 || reset_type == 0x02) {
         // Call the reset callback if set
         if (reset_callback) {
@@ -2279,9 +2305,11 @@ void HBIOSDispatch::handleVDA() {
       // way: A is the status the caller tests, E the pending count. Setting
       // only E left `result` at HBR_SUCCESS (0), so A said "no key" however
       // much was queued and a guest polling this device never read one.
+      // Same as BF_CIOIST above, and wrong the same way until 2026-09-06: a
+      // count, not a flag, and 0xFF reads as a negative error code.
       bool has_key = emu_console_has_input();
-      result = has_key ? 0xFF : 0;                 // A = status
-      cpu->regs.DE.set_low(has_key ? 0xFF : 0);    // E = pending count
+      result = has_key ? 1 : 0;                    // A = count waiting
+      cpu->regs.DE.set_low(has_key ? 1 : 0);       // E = pending count
       // Track consecutive "no input" polls for idle detection
       if (has_key) idle_poll_count = 0; else idle_poll_count++;
       break;
@@ -2512,7 +2540,15 @@ void HBIOSDispatch::handleEXT() {
       if (is_memdisk) {
         // Memory disks don't have slices - return LBA 0
         slice_lba = 0;
-        media_id = (disk_unit == 0 || (disk_unit >= 0x80 && disk_unit < 0x82)) ? 0x01 : 0x02;
+        // Ask the disk, exactly as HBF_DIOMEDIA does above - RomWBW's own
+        // EXT_SLICE gets the media ID by calling BF_DIOMEDIA rather than
+        // deriving it from the unit number (hbios.asm EXT_SLICE, "CALL
+        // DIO_DISPATCH ; CALL DIO TO GET MEDIAID (RESULT IN E)").
+        //
+        // Deriving it here was both a duplicate and backwards: md_disks[0] is
+        // the RAM disk and md_disks[1] the ROM disk, so CP/M gave each memory
+        // disk the other's DPB and STAT reported 384K for the 256KB RAM disk.
+        media_id = md_disks[map_md_unit(disk_unit)].is_rom ? MID_MDROM : MID_MDRAM;
         if (debug_log) debug_log("[HBIOS EXTSLICE] Memory disk unit 0x%02X, no slices\n", disk_unit);
       } else if (hd_idx != 0xFF && hd_idx < 16 && disks[hd_idx].is_open) {
         HBDisk& disk = disks[hd_idx];

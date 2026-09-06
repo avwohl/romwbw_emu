@@ -170,6 +170,36 @@ and now prints:
   print `COM0: 7372800,S,8,2` - worse than before. It now returns `$FFFF` **and**
   `HBR_NOTIMPL`, so the inventory prints `--` and MODE exits quietly.
 
+### Four more from the full contract audit
+
+Every function the dispatcher implements, checked against RomWBW's own handler
+rather than against the previous release. 82 functions across nine handlers.
+
+- **`BF_CIOIST` and `BF_VDAKST` returned `$FF` for "a character is waiting".**
+  These return a COUNT and it has to stay positive: RomWBW's polled drivers
+  return 1 (`uart.asm` `UART_IST1` does `XOR A / INC A ; ACCUM := 1 TO SIGNAL 1
+  CHAR WAITING`, `acia.asm` the same), and `hbios.inc` reserves the negative
+  range for error codes. `$FF` has bit 7 set, so anything testing the sign read
+  it as an error. `HTALK.COM` ships on the combo image and does exactly that -
+  it never reached `BF_CIOIN`, never saw the `^C` that is its only exit, and
+  span forever.
+
+- **`BF_EXTSLICE` derived the memory-disk media ID from the unit number, and had
+  it backwards.** `md_disks[0]` is the RAM disk and `md_disks[1]` the ROM disk,
+  so CP/M gave each memory disk the other's DPB: `STAT B:DSK:` reported 384K for
+  the 256KB RAM disk. It now asks the disk, which is what RomWBW's own
+  `EXT_SLICE` does - it calls `BF_DIOMEDIA` rather than deriving anything - and
+  what `HBF_DIOMEDIA` two hundred lines away was already doing correctly.
+  `STAT` now reports 256K and 384K the right way round.
+
+- **`BF_SYSRESET` subfunction `0x00` did nothing.** That is the INTERNAL reset,
+  not a reboot: it releases heap the drivers are not using, and RomWBW's warm
+  reset performs it first (`SYS_RESWARM` opens `CALL SYS_RESINT`). CBIOS calls
+  it on every OS boot and then allocates the CCP, so across one emulator session
+  the heap only grew - far enough that a later boot would die with
+  `*** Insufficient HBIOS Heap Memory ***` and a CBIOS PANIC, which reads as a
+  corrupt disk rather than as a leak.
+
 ### Fixed
 
 - **The memory disks vanished from the drive map, and the earlier fix in this
