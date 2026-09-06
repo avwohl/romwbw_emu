@@ -1,35 +1,3 @@
-HB_BNKCALL IS A NO-OP, AND FIXING IT PROPERLY COSTS A REPUBLISH
--------------------------------------------------------------------------------
-
-- [ANY] HB_BNKCALL, the documented proxy entry at 0xFFF9, works for exactly one
-target address.  romwbw_disks/src/emu_hbios.asm publishes "out (0EDh),a / ret"
-there, and the port handler in src/hbios_cpu.cc acts only on IX == 0x0406
-(PRTSUM); every other address silently does nothing.  The comment beside it says
-"Other vectors handled by Z80 proxy code", and that is not true - the proxy has
-no such code.
-  Reachable today: pressing O at the 3.6.0 boot prompt ("O - Hardware Monitor")
-prints "Loading Hardware Monitor..." and drops back to the prompt.  On real
-3.6.0 the bank-3 stub prints "*** Not Implemented ***" and warm-starts, and that
-string IS in our own ROM at bank 3 - we simply never call it.  So the visible
-cost today is small: a menu item that does nothing instead of saying it does
-nothing.  The real cost is that a documented entry point does not work, and any
-future guest code that calls another bank hits it.
-  THE FIX IS NOT HARD, BUT IT IS NOT FREE.  The clean version is Z80, not C++:
-make 0xFFF9 "jp HBX_LOC + HBX_BNKCALL_START" - the same 3 bytes it occupies now,
-and exactly how 0xFFF3 already reaches HBX_BNKSEL - and implement save-bank,
-select, CALL (IX), restore-bank in the proxy body, which lives at 0xFE00-0xFFFF
-in the always-mapped common area and so survives the switch.
-  What it costs: emu_hbios.asm is bank 0 of every published ROM, so changing it
-changes every ROM's sha256, which bumps each version's generation, which means
-re-cutting and re-publishing BOTH releases - and a generation bump is what makes
-a client invalidate its cached images, so every user re-downloads their disks.
-That is a real price for a menu item, and it is the owner's call rather than a
-mechanical fix.  Deferred on purpose, not overlooked.
-  The C++ alternative avoids the republish and is worse: the port handler would
-have to switch banks, set PC to IX, and arrange for the eventual RET to restore
-the bank - a re-entrancy trampoline in the middle of an OUT instruction.  Do the
-Z80 version if this is done at all.
-
 Todo list.  Open items only - finished work is in CHANGELOG.md and in the commit
 messages that made the changes, not kept here.  Checks that need a person at a
 keyboard are in MANUAL_CHECKS.md.  Questions that need the owner's ruling - not
@@ -40,14 +8,27 @@ makes about every tag in this file.
 Every item carries a tag saying what a machine has to be able to do to take it,
 so a session on another OS can see at a glance what it can pick up.
 
+- [ANY] src/emu_hbios.asm is bank 0 of every published ROM, and romwbw_disks
+carries a copy that tools/check_source_drift.sh requires to assemble to the same
+512 KB ROM.  so ANY edit here moves every ROM's sha256, which bumps each
+romwbw_disks version's generation, and a generation bump is what makes a client
+invalidate its cached images - every user re-downloads their disks.  that is not
+theoretical: HB_BNKCALL (e47c948, d4f4a2a, 2026-09-06) cost exactly that, a
+generation-2 republish of both 3.5.1 and 3.6.0.  budget it before the next
+emu_hbios.asm change.  the finished HB_BNKCALL work is CHANGELOG.md:356.
+
 - [BROWSER] no browser has drawn the page since xterm was vendored, since a
 zero-byte export started downloading, and since the download name became the
 lowercased last component of the typed path.  the checklist is in
-MANUAL_CHECKS.md.  the wasm is no longer the blocker: CI run 33519212283 built
-it from c750678, and the v1.37 .deb ships web/romwbw.html, romwbw.js,
-romwbw.wasm and vendor/ as a servable layout - `gh run download 33519212283 -n
-deb-amd64 -R avwohl/romwbw_emu` then `dpkg-deb -x`.  the packaged romwbw.html is
-byte for byte HEAD's template rendered.  serve the UNPACKED DEB, not web/ out of
+MANUAL_CHECKS.md.  the wasm is no longer the blocker, and it no longer needs a
+CI artifact: the v1.38 release ships romwbw-emu_1.38_amd64.deb, which carries
+web/romwbw.html, romwbw.js, romwbw.wasm, vendor/ and emu_avw.rom as a servable
+layout - `gh release download v1.38 -R avwohl/romwbw_emu -p
+'romwbw-emu_1.38_amd64.deb'` then `dpkg-deb -x`.  the packaged romwbw.html is
+HEAD's template rendered apart from the three @VERSION@ substitutions, which say
+1.38 where VERSION now says 1.39.  its emu_avw.rom is c7abc580, the ROM from
+before e47c948, so anything that exercises the bank call answers for the old
+one.  serve the UNPACKED DEB, not web/ out of
 this tree: web/ held gitignored March leftovers of romwbw.js and romwbw.wasm
 whose md5s differed from the CI build's, and serving them would have answered
 all three checks against a five-month-old wasm.  they are deleted (make -C web
@@ -83,8 +64,9 @@ to the page's picker callback.  until then the browser answers 0xFF and R8
 prints what was typed, which is what it always did.
 
 - [RELEASE] the pin those three ports carried is GONE, and what is left is
-shipping.  Step 4 published the refreshed images as ioscpm v1.4.12 (prerelease,
-2026-09-01, 29 assets): hd1k_combo.img refreshed to sha256 89b8ae1a..., the
+shipping.  Step 4 published the refreshed images as ioscpm v1.4.12 (2026-09-01,
+29 assets, and NOT a prerelease - it is the latest release; v1.4.5 is the
+prerelease): hd1k_combo.img refreshed to sha256 89b8ae1a..., the
 other 19 re-uploaded byte-identical, and disks.xml's version attribute
 deliberately left at 13 so the invalidation wipe never fired.  v1.4.5 is
 untouched - still be19984e..., still 30 assets.
@@ -96,14 +78,33 @@ of the catalog document.  so "which pin does this tree carry" has no answer in
 any of them any more, and any check that greps for a vN.N.N literal reports a
 correct tree as broken.
 what has NOT changed is the shipping half, and it is still the whole of what is
-left.  not one of those commits has a release tag on or after it, so every
-package a user can install still fetches v1.4.5 and still gets the R8 that
-erases on wildcards.  read it out of the artifact rather than the tree and it
-says so: `git -C ../z80cpmw show v1.0.22-beta:z80cpmw/DiskCatalog.cpp` is
-v1.4.5, and dbd53b1 records that 1.0.23 went to both channels carrying v1.4.5
-too.  nothing here needs a release for any of it: this repository publishes no
+left, though not in the shape this paragraph used to claim.  the 2026-09-05
+migration has shipped in none of the three - but "has not shipped the migration"
+is not "still on v1.4.5", and conflating the two was the error here.  ioscpm
+shipped an INTERMEDIATE repin: the App Store has served 1.5.1 since 2026-09-05,
+which is build 61 (af0b9b2, submitted at e48fb80), and af0b9b2 pins releaseTag
+"v1.4.12".  that pin is the FIXED R8, measured rather than inferred -
+v1.4.12/hd1k_combo.img is 89b8ae1a... and carries R8's "Note: characters CP/M
+cannot name became -" where v1.4.5's be19984e... does not.  so a fresh ioscpm
+install already gets the fixed R8, and it is TWO of three that do not: cpmdroid
+1.25 / versionCode 27 (35873d0, RELEASE_TAG "v1.4.5") and z80cpmw 1.0.23
+(dbd53b1, L"v1.4.5") still fetch the erasing R8.  derive that from the commit
+each store's build was cut from - not from a release tag, which none of these
+three shipped builds has.  nothing here needs a release for any of it: this repository publishes no
 disk image and fetches no catalog, so no romwbw_emu tag stands between the fix
 and a user.
+what is behind that wall grew on 2026-09-06: e47c948 and d4f4a2a made HB_BNKCALL
+work, so every ROM's bytes moved.  romwbw_disks republished all four as
+generation 2 - emu_avw 3.5.1 is 4b11402a where it was c7abc580, emu_rcz80
+03e64691 where it was ee3adea5 - and all three ports refreshed the ROM they
+bundle to match: ioscpm 5834d92, cpmdroid 19b3563, z80cpmw cd1fb2b, which
+carries two.  every one of those is 2026-09-06, later than every shipped build -
+the App Store released 1.5.1 on 2026-09-05, cpmdroid 35873d0 and z80cpmw dbd53b1
+are 2026-09-03 - so what a user runs is the old bank call on all three, ioscpm
+included, and on cpmdroid and z80cpmw the old R8 with it.  this repository's own
+shipped artifact says the same: the v1.38 deb's emu_avw.rom is c7abc580 in both
+roms/ and web/, unpacked and hashed rather than assumed, which is the ROM from
+before e47c948.
 
 - [ANY] tools/check-disk-pins.sh exits 0 while not one shipped package of any
 port carries the repin, and that is structural rather than a bug in the
@@ -133,7 +134,9 @@ should not report on artifacts at all.
   looked at since, and whatever it grows into has to answer "does this source
   still name the v0 index, is the legacy pin really gone, and does that index
   still publish the release this build's core can run" rather than "which tag".
-  z80cpmw has no copy of the script at all.
+  z80cpmw HAS a copy: fa6af1c added one on 2026-09-03, byte-identical to this
+  repository's, so its pin_of() returns empty for a correct tree too and it has
+  not been taught the "index-v0" kind either.
 
 - [ANY] a green pin does not mean a user has the fixed R8, and the gate implies
 it does.  All three ports decide "already downloaded" by filename alone -
@@ -165,8 +168,12 @@ is that file's version attribute whose bump fires the disk-wipe hazard.
   the verdict and calls nothing that acts on it, cpmdroid still compares
   filenames.  And the migration renames rather than re-downloads, so a migrated
   device keeps the bytes it had under the new name - which for hd1k_combo means
-  a hash that disagrees with the catalog naming it.  romwbw_disks' todo.txt has
-  that one as an open decision.
+  a hash that disagrees with the catalog naming it.  romwbw_disks DECIDED that
+  one: the pre-v0 combo is equivalent and is deliberately NOT refreshed - its
+  2,342 differing bytes are CP/M slack between the same 94 identical files, and
+  docs/FINDINGS.md section 10 there has the measurements.  ioscpm and z80cpmw
+  implement the exemption keyed on provenance, so a downloaded image can never
+  be blessed by it; cpmdroid needed no change.
 
   UPDATE 2026-09-05: disks/disks.xml is DELETED.  The observation above stands as
   the reason it was worthless - version="6", 21 entries, no per-disk version or
@@ -177,6 +184,21 @@ is that file's version attribute whose bump fires the disk-wipe hazard.
   the two-image list, and release.yml never stages disks/.  What the ports fetch
   is a different file entirely - ioscpm's published catalog - and that is what
   tools/check-disk-pins.sh reads, over HTTP, so it is untouched by this.
+
+- [ANY] nothing in this tree notices when the four copies of one ROM stop
+agreeing, and on 2026-09-06 they did.  e47c948 rebuilt roms/emu_avw.rom and left
+roms/emu_romwbw.rom, web/emu_avw.rom, web/emu_romwbw.rom and roms/emu_rcz80.rom
+carrying the bank call it had just fixed; every gate stayed green and d4f4a2a
+caught it by eye.  roms/verify_romwbw_pin.sh reads each ROM's HCB and never
+compares two of them, romwbw_disks' check_source_drift.sh compares
+roms/emu_avw.rom alone, and the Tests workflow hashes no ROM at all.  it is not
+tidiness: release.yml:179 stages roms/*.rom into every deb and rpm and :186
+stages roms/emu_avw.rom next to the packaged page, and a served web/ fetches
+web/emu_avw.rom by bare relative name, so a package or web user keeps whatever
+the missed copies hold.  one sha256 comparison of the four would have failed at
+e47c948.  DECISIONS.md section 4 would delete the class rather than guard it,
+and its own record of those four is now stale: the md5 it names, 826c3bcf, is
+what they were before e47c948; they are e8f2958c now.
 
 - [MAC/LINUX] the last integer-narrowing warnings in a clean build are not this
 repository's to fix.  qkz80_MK_INT16 in cpmemu's qkz80_types.h builds an int
@@ -190,11 +212,15 @@ state that teaches people to stop reading warnings.  measured again 2026-09-01
 against cpmemu v4.7.2 (91151f1), which is what v1.37 shipped against: same 8 and
 12, all of them qkz80_reg_pair.h:32 and :35.  nothing about v1.37 touched this -
 `git diff 9a94e8d 91151f1 -- 'src/qkz80*.h' 'src/qkz80*.cc'` is empty, so the
-macro is byte for byte what it was.  z80cpmw's C4267 suppression on
-hbios_dispatch.cc is removable either way: 8eeb227 cast all six sites here, so
+macro is byte for byte what it was.  measured again 2026-09-06 with clang++
+against cpmemu ed778f7, which is v4.8.0 - a cpmemu release has landed since and
+did not touch it: same 8 from `make -C src all`, both lines again, and
+`git diff 91151f1 ed778f7 -- 'src/qkz80*.h' 'src/qkz80*.cc'` is empty.
+z80cpmw's C4267 suppression on hbios_dispatch.cc is removable either way: 8eeb227 cast all six sites here, so
 the file is clean at
-/W3 from v1.37 on.  it has NOT been removed there - checked 2026-09-01 at
-z80cpmw 148be4f, still present at z80cpmw/z80cpmw.vcxproj:260.  grep for the
+/W3 from v1.37 on.  it has NOT been removed there - checked 2026-09-06 at
+z80cpmw cd1fb2b, still present at z80cpmw/z80cpmw.vcxproj:297 (it was :260 at
+148be4f; the line moved, the suppression did not).  grep for the
 MSBuild spelling `<DisableSpecificWarnings>4267`, not for `/wd4267`; searching
 for the compiler flag reports it gone when it is not, which is how this entry
 nearly got deleted as stale.
@@ -205,8 +231,13 @@ is no MSVC build of the emulator to link and no test program that would run.
 the only thing that executes Windows code is z80cpmw built and run by hand on a
 Windows box (build.bat, run_test.bat, tests/): that port has no CI at all -
 `gh api repos/avwohl/z80cpmw/actions/workflows` answers 0 and `gh run list` is
-empty.  cpmemu has no test workflow either; release.yml is its only one and it
-never runs tests/run_tests.sh.  of that suite's two Windows sections only
-"windows console" needs a real machine - "windows cross-compile" skips merely
-for want of x86_64-w64-mingw32-g++, which IS installed here, so it runs, and it
-is another compile rather than a run.
+empty.  cpmemu is no longer in that position: 43bff79 added
+.github/workflows/ci.yml on 2026-09-03, whose ubuntu and macos jobs run
+tests/run_tests.sh --require and whose windows-latest job builds with MSVC and
+then runs tests\win_console.bat under CPMEMU_REQUIRE_MSVC=1 - the same batch
+file that suite's "windows console" section shells out to, so those cases are
+finally executed by a machine, and the file's header says that job is the first
+one ever to run them.  the other of that suite's two Windows sections, "windows
+cross-compile", skips merely for want of x86_64-w64-mingw32-g++, which IS
+installed here, so it runs and is another compile rather than a run.  what is
+still only compiled and never run is this repository's own core.
