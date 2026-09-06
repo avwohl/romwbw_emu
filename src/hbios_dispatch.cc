@@ -2679,8 +2679,13 @@ void HBIOSDispatch::handleEXT() {
       uint8_t hd_idx = map_hd_unit(disk_unit);
 
       if (is_memdisk) {
-        // Memory disks don't have slices - return LBA 0
+        // Memory disks have no slices. RomWBW answers a non-zero slice on one
+        // with ERR_RANGE rather than quietly handing back slice 0's LBA, which
+        // would give a guest the same data under two different names.
         slice_lba = 0;
+        if (slice != 0) {
+          result = HBR_RANGE;
+        }
         // Ask the disk, exactly as HBF_DIOMEDIA does above - RomWBW's own
         // EXT_SLICE gets the media ID by calling BF_DIOMEDIA rather than
         // deriving it from the unit number (hbios.asm EXT_SLICE, "CALL
@@ -2797,7 +2802,10 @@ void HBIOSDispatch::handleEXT() {
         if (slice_end_sector > limit) {
           // Slice runs past the end of its partition, or of the medium
           media_id = 0;  // MID_NONE - signals no valid media
-          result = HBR_FAILED;
+          // ERR_RANGE, which is what EXT_SLICE returns for a slice past the
+          // end. HBR_FAILED (0xFF) is a generic failure a caller cannot
+          // distinguish from a missing unit.
+          result = HBR_RANGE;
           if (debug_log) {
             debug_log("[HBIOS EXTSLICE] unit=0x%02X slice=%d rejected "
                       "(end %llu > limit %llu)\n", disk_unit, slice,
@@ -2815,10 +2823,14 @@ void HBIOSDispatch::handleEXT() {
                   disk_unit, slice, media_id, slice_lba);
         }
       } else {
-        // Disk not open or invalid unit
-        result = HBR_FAILED;
+        // No disk on this unit. NOUNIT rather than a generic failure, and a
+        // log rather than an error: a guest enumerating units will ask about
+        // ones that are not there, and that is not the emulator going wrong.
+        result = HBR_NOUNIT;
         media_id = 0;  // MID_NONE
-        emu_error("[EXTSLICE] unit=0x%02X slice=%d -> DISK NOT OPEN\n", disk_unit, slice);
+        if (debug_log) {
+          emu_log("[HBIOS EXTSLICE] unit=0x%02X slice=%d - no disk\n", disk_unit, slice);
+        }
       }
 
       // Set return values

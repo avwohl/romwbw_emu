@@ -261,6 +261,19 @@ rather than against the previous release. 82 functions across nine handlers.
   this went unnoticed, and it is the reason to fix it before one is added rather
   than after.
 
+- **`BF_EXTSLICE` reported every failure as the same generic error**, `$FF`,
+  which a caller cannot tell apart from any other. A slice past the end is
+  `ERR_RANGE` and a unit with no disk is `ERR_NOUNIT`, which is what `EXT_SLICE`
+  returns. A non-zero slice on a memory disk now answers `ERR_RANGE` too, rather
+  than quietly handing back slice 0's LBA and giving a guest the same data under
+  two names.
+
+- **`HB_BNKCPY` left HL, DE and BC untouched.** RomWBW's is an `LDIR` and its
+  callers rely on that: 3.6.0's `romldr` copies a ROM image in a loop and tests
+  the returned HL to decide whether it is finished, so a ROM component laid out
+  across a bank boundary would have re-copied the same chunk on every pass. The
+  registers now end where an `LDIR` would leave them.
+
 - **`BF_EXTSLICE` bounded the wrong end against the wrong thing.** It compared
   the slice's START against the whole medium; RomWBW computes the upper sector
   (`EXT_SLICE5A-5B`, "ADD HL,BC ; ADD SPS, GET REQUIRED CAPCITY (UPPER SECTOR)")

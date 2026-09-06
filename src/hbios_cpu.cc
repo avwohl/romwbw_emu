@@ -100,6 +100,16 @@ void hbios_cpu::port_out(qkz80_uint8 port, qkz80_uint8 value) {
           memory->write_bank(dst_bank, d_addr, byte);
         }
       }
+
+      // Leave the registers where an LDIR would: source and destination
+      // advanced past the copy, count exhausted. RomWBW's HBX_BNKCPY is an
+      // LDIR and its callers rely on that - 3.6.0's romldr copies a ROM image
+      // in a loop and tests the returned HL to decide whether it is done, so a
+      // ROM component spanning a bank boundary would have re-copied the same
+      // chunk each pass.
+      regs.HL.set_pair16((uint16_t)(src_addr + length));
+      regs.DE.set_pair16((uint16_t)(dst_addr + length));
+      regs.BC.set_pair16(0);
       break;
     }
 
