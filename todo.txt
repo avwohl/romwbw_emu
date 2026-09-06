@@ -106,7 +106,7 @@ shipped artifact says the same: the v1.38 deb's emu_avw.rom is c7abc580 in both
 roms/ and web/, unpacked and hashed rather than assumed, which is the ROM from
 before e47c948.
 
-- [ANY] tools/check-disk-pins.sh exits 0 while not one shipped package of any
+- [ANY] tools/check-shipped-disks.sh exits 0 while not one shipped package of any
 port carries the repin, and that is structural rather than a bug in the
 comparison.  Its whole stated reason for existing is checking the built artifact,
 and artifacts_for() globs only local paths - dist/, bin/Release/,
@@ -183,7 +183,7 @@ is that file's version attribute whose bump fires the disk-wipe hazard.
   verify_romwbw_pin.sh finds only *.rom/*.bin/*.img, both disk scripts hardcode
   the two-image list, and release.yml never stages disks/.  What the ports fetch
   is a different file entirely - ioscpm's published catalog - and that is what
-  tools/check-disk-pins.sh reads, over HTTP, so it is untouched by this.
+  tools/check-shipped-disks.sh reads, over HTTP, so it is untouched by this.
 
 - [ANY] nothing in this tree notices when the four copies of one ROM stop
 agreeing, and on 2026-09-06 they did.  e47c948 rebuilt roms/emu_avw.rom and left
