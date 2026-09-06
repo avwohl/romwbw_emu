@@ -50,7 +50,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Check out romwbw_emu
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: romwbw_emu
 
@@ -61,7 +61,7 @@ jobs:
       # Without this the parity comparison is skipped and the run measures
       # less than a local one does - silently, which is why it is here.
       - name: Check out z80cpmw beside it, for the parity field
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: avwohl/z80cpmw
           path: z80cpmw
