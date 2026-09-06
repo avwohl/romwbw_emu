@@ -1,3 +1,35 @@
+HB_BNKCALL IS A NO-OP, AND FIXING IT PROPERLY COSTS A REPUBLISH
+-------------------------------------------------------------------------------
+
+- [ANY] HB_BNKCALL, the documented proxy entry at 0xFFF9, works for exactly one
+target address.  romwbw_disks/src/emu_hbios.asm publishes "out (0EDh),a / ret"
+there, and the port handler in src/hbios_cpu.cc acts only on IX == 0x0406
+(PRTSUM); every other address silently does nothing.  The comment beside it says
+"Other vectors handled by Z80 proxy code", and that is not true - the proxy has
+no such code.
+  Reachable today: pressing O at the 3.6.0 boot prompt ("O - Hardware Monitor")
+prints "Loading Hardware Monitor..." and drops back to the prompt.  On real
+3.6.0 the bank-3 stub prints "*** Not Implemented ***" and warm-starts, and that
+string IS in our own ROM at bank 3 - we simply never call it.  So the visible
+cost today is small: a menu item that does nothing instead of saying it does
+nothing.  The real cost is that a documented entry point does not work, and any
+future guest code that calls another bank hits it.
+  THE FIX IS NOT HARD, BUT IT IS NOT FREE.  The clean version is Z80, not C++:
+make 0xFFF9 "jp HBX_LOC + HBX_BNKCALL_START" - the same 3 bytes it occupies now,
+and exactly how 0xFFF3 already reaches HBX_BNKSEL - and implement save-bank,
+select, CALL (IX), restore-bank in the proxy body, which lives at 0xFE00-0xFFFF
+in the always-mapped common area and so survives the switch.
+  What it costs: emu_hbios.asm is bank 0 of every published ROM, so changing it
+changes every ROM's sha256, which bumps each version's generation, which means
+re-cutting and re-publishing BOTH releases - and a generation bump is what makes
+a client invalidate its cached images, so every user re-downloads their disks.
+That is a real price for a menu item, and it is the owner's call rather than a
+mechanical fix.  Deferred on purpose, not overlooked.
+  The C++ alternative avoids the republish and is worse: the port handler would
+have to switch banks, set PC to IX, and arrange for the eventual RET to restore
+the bank - a re-entrancy trampoline in the middle of an OUT instruction.  Do the
+Z80 version if this is done at all.
+
 Todo list.  Open items only - finished work is in CHANGELOG.md and in the commit
 messages that made the changes, not kept here.  Checks that need a person at a
 keyboard are in MANUAL_CHECKS.md.  Questions that need the owner's ruling - not
