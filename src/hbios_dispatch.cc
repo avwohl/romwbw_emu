@@ -1179,6 +1179,20 @@ void HBIOSDispatch::handleDIO() {
       }
 
       cpu->regs.DE.set_low(blocks_read);
+      // A short transfer is an ERROR, not a success that moved fewer sectors.
+      // Every end-of-media and I/O path above just breaks out of the loop, and
+      // until 2026-09-05 the status stayed HBR_SUCCESS - so a read that
+      // transferred nothing came back as a successful read, and CP/M used
+      // whatever was already in its sector buffer as though it were the sector
+      // it asked for. Stale data presented as real data is the worst failure
+      // mode available to a disk driver.
+      //
+      // RomWBW's own drivers signal it: Source/HBIOS/md.asm MD_IOSETUP3 does
+      // "OR $FF ; SIGNAL ERROR" and MD_RDSEC turns that into
+      // "LD A,ERR_IO ; SIGNAL IO ERROR".
+      if (blocks_read < count) {
+        result = HBR_IO;
+      }
       break;
     }
 
@@ -1312,6 +1326,12 @@ void HBIOSDispatch::handleDIO() {
       }
 
       cpu->regs.DE.set_low(blocks_written);
+      // As for the read above: fewer sectors written than asked for is ERR_IO,
+      // not success. A write silently dropped is how a guest loses work and
+      // never learns it did.
+      if (blocks_written < count) {
+        result = HBR_IO;
+      }
 
       // Mark that disk writes occurred for periodic flush
       if (blocks_written > 0) {
@@ -1334,18 +1354,28 @@ void HBIOSDispatch::handleDIO() {
       if (is_memdisk) {
         cpu->regs.DE.set_high(0x00);  // DIODEV_MD (memory disk)
         cpu->regs.DE.set_low(md_unit); // Device number (0=MD0, 1=MD1)
-        // The low nibble is the device CLASS and it was left at 0, which reads
-        // as a hard disk. RomWBW branches on it to decide the unit to print a
-        // capacity in: 4 = ROM disk, 5 = RAM disk, 7 = flash, all shown in KB;
-        // anything else is a hard disk shown in MB
-        // (Source/HBIOS/invntdev.asm PS_PRTDC). A 256KB RAM disk was therefore
-        // reported as a 0MB hard disk. MD0 is the RAM disk and MD1 the ROM
-        // disk here, so ask the disk rather than the unit number.
-        dev_attr = md_disks[md_unit].is_rom ? 0x04 : 0x05;
+        // Attribute byte, taken verbatim from RomWBW's own memory-disk driver
+        // rather than assembled bit by bit: Source/HBIOS/md.asm:24-26 defines
+        //   MD_AROM .EQU %00010100   (0x14)  ROM
+        //   MD_ARAM .EQU %00010101   (0x15)  RAM
+        //   MD_AFSH .EQU %00010110   (0x16)  FLASH
+        // The low nibble is the device class - RomWBW reads it to decide whether
+        // to size a unit in KB or MB (Source/HBIOS/invntdev.asm PS_PRTDC) - and
+        // bit 4 says LBA capable, which is what CBIOS requires before it will
+        // put a unit in the drive map at all.
+        //
+        // This was 0x00 until 2026-09-05, so both memory disks reported as hard
+        // disks; then 0x04/0x05, which fixed the sizing and still dropped bit 4,
+        // so ASSIGN /B= silently rebuilt the drive map without them. Use the
+        // driver's constants and neither half can be got wrong on its own.
+        dev_attr = md_disks[md_unit].is_rom ? 0x14 : 0x15;
       } else if (is_harddisk) {
         cpu->regs.DE.set_high(0x09);  // DIODEV_HDSK (hard disk)
         cpu->regs.DE.set_low(hd_unit); // Device number within type
-        dev_attr = 0x20;  // Bit 5 = high capacity (enables multiple slices)
+        // %00110000 - non-removable hard disk, LBA capable. RomWBW's own value,
+        // Source/HBIOS/hdsk.asm:192 "LD C,%00110000 ; C := ATTRIBUTES,
+        // NON-REMOVABLE HARD DISK". Bit 4 was missing here too.
+        dev_attr = 0x30;
       } else {
         // No device at this unit - return error, don't crash
         cpu->regs.DE.set_high(0xFF);  // No device
