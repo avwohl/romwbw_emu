@@ -927,6 +927,12 @@ void HBIOSDispatch::handleCIO() {
       // how this was found, by fixing it for the inventory and then running
       // MODE.
       cpu->regs.DE.set_pair16(0xFFFF);
+      cpu->regs.HL.set_pair16(0xFFFF);  // tty.asm TTY_QUERY sets both
+      // TTY_QUERY returns those with SUCCESS, and that is deliberately not
+      // copied: MODE.COM ignores the value and aborts on status, so success
+      // here sends it on to decode $FF as an encoded baud code and print
+      // "COM0: 7372800,S,8,2". Measured both ways. NOTIMPL is the answer that
+      // leaves both shipped callers correct.
       result = HBR_NOTIMPL;
       break;
     }
@@ -1627,7 +1633,13 @@ void HBIOSDispatch::handleRTC() {
     }
 
     default:
+      // As for VDA and SND: report it rather than returning the caller's own
+      // registers with a success status. BF_RTCGETALM and BF_RTCSETALM land
+      // here, and an alarm call that "succeeds" and sets nothing is worse than
+      // one that says it is not implemented.
       emu_log("[HBIOS RTC] Unhandled function 0x%02X\n", func);
+      result = HBR_NOFUNC;
+      break;
   }
 
   setResult(result);
@@ -2258,8 +2270,13 @@ void HBIOSDispatch::handleVDA() {
   uint8_t result = HBR_SUCCESS;
 
   switch (func) {
-    case HBF_VDAINI:
     case HBF_VDARES:
+      // Reset is not initialise. vdu.asm puts the clear-and-home on VDAINI and
+      // makes VDARES "XOR A / RET" - sharing a case label meant any guest
+      // resetting the video device had its screen wiped and its cursor moved.
+      break;
+
+    case HBF_VDAINI:
       vda_cursor_row = 0;
       vda_cursor_col = 0;
       vda_attr = 0x07;
@@ -2286,6 +2303,7 @@ void HBIOSDispatch::handleVDA() {
       // The unit is in C, as it is for every VDA call.
       cpu->regs.DE.set_low(cpu->regs.BC.get_low());
       cpu->regs.HL.set_high(0x00);   // No attributes claimed
+      cpu->regs.HL.set_low(0x00);    // No I/O base - there is no port here
       break;
     }
 
@@ -2299,6 +2317,12 @@ void HBIOSDispatch::handleVDA() {
       // diagnostic line and not harmless to a guest that sizes a window from it.
       cpu->regs.DE.set_high((uint8_t)vda_rows);
       cpu->regs.DE.set_low((uint8_t)vda_cols);
+      // C := mode, HL := 0. VDU_VDAQRY is "LD C,$00 ; MODE ZERO IS ALL WE KNOW
+      // / LD DE,... / LD HL,0 ; EXTRACTION OF CURRENT BITMAP DATA NOT
+      // SUPPORTED", and every other VDA driver agrees. Both were left holding
+      // the caller's input.
+      cpu->regs.BC.set_low(0x00);
+      cpu->regs.HL.set_pair16(0x0000);
       break;
     }
 
@@ -2453,9 +2477,14 @@ void HBIOSDispatch::handleVDA() {
     }
 
     default:
+      // Report it. An unhandled function in this group used to fall through
+      // with result still HBR_SUCCESS, handing the caller its own registers
+      // back as though they were an answer - which is how the ROM device
+      // inventory came to print a sound chip's name in the video row.
       if (debug_log) {
         emu_log("[HBIOS VDA] Unhandled function 0x%02X\n", func);
       }
+      result = HBR_NOFUNC;
       break;
   }
 
@@ -2554,9 +2583,14 @@ void HBIOSDispatch::handleSND() {
     }
 
     default:
+      // Report it. An unhandled function in this group used to fall through
+      // with result still HBR_SUCCESS, handing the caller its own registers
+      // back as though they were an answer - which is how the ROM device
+      // inventory came to print a sound chip's name in the video row.
       if (debug_log) {
         emu_log("[HBIOS SND] Unhandled function 0x%02X\n", func);
       }
+      result = HBR_NOFUNC;
       break;
   }
 

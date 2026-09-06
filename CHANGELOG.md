@@ -230,6 +230,23 @@ rather than against the previous release. 82 functions across nine handlers.
   `SYSFREE` reported success where RomWBW's `SYS_FREE` is literally
   `SYSCHKERR(ERR_NOTIMPL) / RET`.
 
+- **An unhandled VDA, SND or RTC function reported SUCCESS.** All three default
+  arms logged and fell through with the status untouched, so the caller got its
+  own registers back as though they were an answer. That is how the ROM device
+  inventory came to print a sound chip's name in the video row, and it is worse
+  than an error because a caller cannot defend against it. All three return
+  `HBR_NOFUNC` now, which also gives `BF_RTCGETALM`/`BF_RTCSETALM` and
+  `BF_SNDDEVICE` an honest answer instead of a silent one.
+
+- **`BF_VDARES` shared a case label with `BF_VDAINI`**, so resetting the video
+  device cleared the screen and homed the cursor. `vdu.asm` puts the
+  clear-and-home on `VDAINI` and makes `VDARES` `XOR A / RET`.
+
+- **`BF_VDAQRY` left C and HL as the caller passed them** - `VDU_VDAQRY` sets
+  `C := 0` (mode) and `HL := 0`. `BF_VDADEV` likewise left L, the I/O base, and
+  `BF_CIOQUERY` left HL, which `tty.asm` `TTY_QUERY` sets to `$FFFF` alongside
+  DE.
+
 - **`BF_EXTSLICE` bounded the wrong end against the wrong thing.** It compared
   the slice's START against the whole medium; RomWBW computes the upper sector
   (`EXT_SLICE5A-5B`, "ADD HL,BC ; ADD SPS, GET REQUIRED CAPCITY (UPPER SECTOR)")
