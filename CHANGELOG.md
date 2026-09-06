@@ -192,6 +192,31 @@ rather than against the previous release. 82 functions across nine handlers.
   what `HBF_DIOMEDIA` two hundred lines away was already doing correctly.
   `STAT` now reports 256K and 384K the right way round.
 
+- **The disk handler stopped writing into the guest's console.** `BF_DIOSEEK`
+  and `BF_DIOREAD` printed `[SEEK ERR]` / `[DIO ERR]` through
+  `writeConsoleString` on a missing unit - the guest's own output stream. RomWBW
+  answers a bad unit with `ERR_NOUNIT` and prints nothing. Emulator text in the
+  middle of a full-screen application or a binary transfer is corruption, and it
+  leaked internal state besides. Both go to `stderr` now, matching what the rest
+  of the handler already did.
+
+- **`BF_DIOGEOM` returned a fixed 63/16/255** whatever was attached - a 127MB
+  shape for every unit, including units with nothing on them. It derives the
+  cylinder count from the real capacity now, the way `ide.asm` and `hdsk.asm`
+  do, and answers `HBR_NOUNIT` for an absent unit.
+
+- **`BF_DIOREAD`/`BF_DIOWRITE` never advanced HL.** RomWBW's own comment is
+  "RETURN WITH SECTORS READ IN E AND UPDATED DMA ADDRESS IN HL"; HL came back
+  holding the original buffer address, so a caller chaining transfers from it
+  re-read into the same place every time.
+
+- **Smaller contract gaps in the same handler:** `BF_DIOCAP` never set BC to the
+  block size; `BF_DIOMEDIA` left D as the caller passed it; `BF_DIOVERIFY` now
+  answers `HBR_NOTIMPL` with the other unimplemented disk functions rather than
+  falling into the unknown-function arm; and `BF_DIORESET` no longer rewinds the
+  seek position, which meant a reset between a seek and a read silently moved
+  the read to sector 0.
+
 - **`BF_EXTSLICE` bounded the wrong end against the wrong thing.** It compared
   the slice's START against the whole medium; RomWBW computes the upper sector
   (`EXT_SLICE5A-5B`, "ADD HL,BC ; ADD SPS, GET REQUIRED CAPCITY (UPPER SECTOR)")

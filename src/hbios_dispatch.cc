@@ -1038,13 +1038,15 @@ void HBIOSDispatch::handleDIO() {
       break;
     }
 
+    // Reset clears error state. It does NOT rewind the seek position: RomWBW's
+    // drivers leave the LBA alone, and clearing it here meant a reset between a
+    // seek and a read silently moved the read to sector 0.
     case HBF_DIORESET:
-      // Reset - nothing to do
-      if (is_memdisk) {
-        md_disks[md_unit].current_lba = 0;
-      } else if (is_harddisk) {
-        disks[hd_unit].current_lba = 0;
+      if (!is_memdisk && !is_harddisk) {
+        result = HBR_NOUNIT;
       }
+      // There is no error state to clear here, and the seek position is
+      // deliberately left alone.
       break;
 
     case HBF_DIOSEEK: {
@@ -1061,11 +1063,14 @@ void HBIOSDispatch::handleDIO() {
         disks[hd_unit].current_lba = lba;
       } else {
         // No device at this unit - return error
-        char errmsg[128];
-        snprintf(errmsg, sizeof(errmsg),
-                 "\r\n[SEEK ERR] unit=%d hd_unit=%d is_open=%d\r\n",
-                 raw_unit, hd_unit, (hd_unit < 16) ? disks[hd_unit].is_open : -1);
-        writeConsoleString(errmsg);
+        // stderr, NOT the guest's console. RomWBW answers a bad unit with
+        // ERR_NOUNIT and prints nothing (HB_UNITERR); the driver trace that
+        // does print is compiled out of a release build. Writing here landed
+        // emulator text in the middle of whatever the guest was displaying -
+        // fatal to a full-screen application and to any binary stream running
+        // over the console - and leaked internal state to the guest besides.
+        emu_error("[HBIOS DIOSEEK] no unit %d (hd_unit=%d is_open=%d)\n",
+                  raw_unit, hd_unit, (hd_unit < 16) ? disks[hd_unit].is_open : -1);
         result = HBR_NOUNIT;
       }
       break;
@@ -1087,12 +1092,8 @@ void HBIOSDispatch::handleDIO() {
 
       if (!is_memdisk && !is_harddisk) {
         // No device at this unit - return error with 0 blocks read
-        char errmsg[128];
-        snprintf(errmsg, sizeof(errmsg),
-                 "\r\n[DIO ERR] unit=%d hd_unit=%d is_open=%d\r\n",
-                 raw_unit, hd_unit, (hd_unit < 16) ? disks[hd_unit].is_open : -1);
-        writeConsoleString(errmsg);
-
+        emu_error("[HBIOS DIOREAD] no unit %d (hd_unit=%d is_open=%d)\n",
+                  raw_unit, hd_unit, (hd_unit < 16) ? disks[hd_unit].is_open : -1);
         cpu->regs.DE.set_low(0);
         result = HBR_NOUNIT;
         break;
@@ -1190,6 +1191,10 @@ void HBIOSDispatch::handleDIO() {
       }
 
       cpu->regs.DE.set_low(blocks_read);
+      // "RETURN WITH SECTORS READ IN E AND UPDATED DMA ADDRESS IN HL" - RomWBW's
+      // own words. HL was left holding the ORIGINAL buffer address, so a caller
+      // chaining transfers from it re-read into the same place every time.
+      cpu->regs.HL.set_pair16((uint16_t)(buffer + blocks_read * 512));
       // A short transfer is an ERROR, not a success that moved fewer sectors.
       // Every end-of-media and I/O path above just breaks out of the loop, and
       // until 2026-09-05 the status stayed HBR_SUCCESS - so a read that
@@ -1337,6 +1342,7 @@ void HBIOSDispatch::handleDIO() {
       }
 
       cpu->regs.DE.set_low(blocks_written);
+      cpu->regs.HL.set_pair16((uint16_t)(buffer + blocks_written * 512));
       // As for the read above: fewer sectors written than asked for is ERR_IO,
       // not success. A write silently dropped is how a guest loses work and
       // never learns it did.
@@ -1351,6 +1357,7 @@ void HBIOSDispatch::handleDIO() {
       break;
     }
 
+    case HBF_DIOVERIFY:
     case HBF_DIOFORMAT:
       // Format track - not supported in emulator
       result = HBR_NOTIMPL;
@@ -1407,9 +1414,12 @@ void HBIOSDispatch::handleDIO() {
 
     case HBF_DIOMEDIA: {
       // Disk media report - return media type
+      // D is part of the answer and was being left as the caller passed it.
       if (is_memdisk) {
+        cpu->regs.DE.set_high(0);
         cpu->regs.DE.set_low(md_disks[md_unit].is_rom ? MID_MDROM : MID_MDRAM);
       } else if (is_harddisk) {
+        cpu->regs.DE.set_high(0);
         cpu->regs.DE.set_low(MID_HD);  // Hard disk media
       } else {
         // No device at this unit - return error
@@ -1445,10 +1455,12 @@ void HBIOSDispatch::handleDIO() {
         uint32_t sectors = md_disks[md_unit].total_sectors();
         cpu->regs.DE.set_pair16((sectors >> 16) & 0xFFFF);
         cpu->regs.HL.set_pair16(sectors & 0xFFFF);
+        cpu->regs.BC.set_pair16(512);  // BC := block size, as the drivers do
       } else if (is_harddisk) {
         uint32_t sectors = disks[hd_unit].total_sectors();
         cpu->regs.DE.set_pair16((sectors >> 16) & 0xFFFF);
         cpu->regs.HL.set_pair16(sectors & 0xFFFF);
+        cpu->regs.BC.set_pair16(512);
       } else {
         // No device at this unit - return 0 capacity and error
         cpu->regs.DE.set_pair16(0);
@@ -1459,12 +1471,25 @@ void HBIOSDispatch::handleDIO() {
     }
 
     case HBF_DIOGEOM: {
-      // Get geometry
-      // Returns: C=sectors/track, D=heads, E=tracks (for CHS addressing)
-      // For LBA-only, return dummy values
-      cpu->regs.BC.set_low(63);   // 63 sectors/track
-      cpu->regs.DE.set_high(16);  // 16 heads
-      cpu->regs.DE.set_low(255);  // 255 tracks
+      // Geometry. RomWBW's LBA drivers report a synthetic CHS derived from the
+      // real capacity and set the LBA flag, rather than a fixed shape: ide.asm
+      // and hdsk.asm build it from their own capacity with 16 heads and 63
+      // sectors per track. Returning a constant 63/16/255 described a 127MB
+      // disk whatever was actually attached, and answered identically for a
+      // unit with nothing on it.
+      if (!is_memdisk && !is_harddisk) {
+        result = HBR_NOUNIT;
+        break;
+      }
+      uint32_t sectors = is_memdisk ? md_disks[md_unit].total_sectors()
+                                    : disks[hd_unit].total_sectors();
+      uint32_t cyls = sectors / (16 * 63);
+      if (cyls == 0) cyls = 1;
+      if (cyls > 0xFFFF) cyls = 0xFFFF;
+      cpu->regs.BC.set_low(63);                        // sectors per track
+      cpu->regs.DE.set_high(16);                       // heads
+      cpu->regs.DE.set_low((uint8_t)(cyls & 0xFF));    // cylinders, low
+      cpu->regs.HL.set_pair16((uint16_t)cyls);         // and the full count
       break;
     }
 
