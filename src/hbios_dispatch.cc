@@ -11,6 +11,7 @@
 #include "qkz80.h"
 #include "qkz80_cpu_flags.h"
 #include "romwbw_mem.h"
+#include <chrono>
 #include <cstring>
 #include <cctype>
 #include <cmath>
@@ -1916,6 +1917,38 @@ void HBIOSDispatch::handleSYS() {
           break;
         }
 
+        case SYSGET_TIMER: {
+          // DE:HL := the 32-bit tick count, C := TICKFREQ.
+          //
+          // This had no case at all and fell into a default that logged, left
+          // the status at success and wrote E=0. A guest could not tell that
+          // from a stopped clock, and two shipped programs depend on it:
+          // TIMER.COM printed a frozen value, and VGMPLAY.COM hung outright -
+          // it probes the timer, spins a delay loop, reads it again and only
+          // proceeds if the value moved.
+          //
+          // TICKFREQ is 50Hz on every RomWBW configuration in the tree, and
+          // hbios.asm's Z180 timer even hard-errors if it is anything else
+          // ("TICKFREQ *MUST* BE 50 FOR Z180 TIMER"). A steady_clock is the
+          // right source: this is an uptime counter, not a wall clock, and it
+          // must not jump when the host's date changes.
+          uint32_t ticks = currentTicks();
+          cpu->regs.DE.set_pair16((uint16_t)(ticks >> 16));
+          cpu->regs.HL.set_pair16((uint16_t)(ticks & 0xFFFF));
+          cpu->regs.BC.set_low(TICKFREQ);
+          break;
+        }
+
+        case SYSGET_SECS: {
+          // DE:HL := seconds, C := ticks elapsed within the current second.
+          uint32_t ticks = currentTicks();
+          uint32_t secs = ticks / TICKFREQ;
+          cpu->regs.DE.set_pair16((uint16_t)(secs >> 16));
+          cpu->regs.HL.set_pair16((uint16_t)(secs & 0xFFFF));
+          cpu->regs.BC.set_low((uint8_t)(ticks % TICKFREQ));
+          break;
+        }
+
         case SYSGET_CPUINFO:
           // CPU info: H = CPU variant, L = speed in MHz, DE = speed in KHz
           cpu->regs.HL.set_high(0x00);      // Z80 variant
@@ -2029,6 +2062,22 @@ void HBIOSDispatch::handleSYS() {
     case HBF_SYSSET: {
       // Set system info - subfunc in C
       switch (subfunc) {
+        case SYSSET_TIMER: {
+          // Store DE:HL as the new tick count, by moving the origin rather than
+          // keeping a counter - the clock stays monotonic either way.
+          uint32_t want = ((uint32_t)cpu->regs.DE.get_pair16() << 16) |
+                          cpu->regs.HL.get_pair16();
+          setTicks(want);
+          break;
+        }
+
+        case SYSSET_SECS: {
+          uint32_t want = ((uint32_t)cpu->regs.DE.get_pair16() << 16) |
+                          cpu->regs.HL.get_pair16();
+          setTicks(want * TICKFREQ);
+          break;
+        }
+
         case SYSSET_SWITCH: {
           // Set non-volatile switch value (emulates RTC NVRAM)
           // D register contains switch number:

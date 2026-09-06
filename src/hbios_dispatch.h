@@ -12,6 +12,7 @@
 #ifndef HBIOS_DISPATCH_H
 #define HBIOS_DISPATCH_H
 
+#include <chrono>
 #include <cstdint>
 #include <ctime>
 #include <string>
@@ -658,6 +659,28 @@ private:
 
   // HBIOS heap state (SYSALLOC)
   // Heap is in bank 0x80 starting after HCB (0x0200) up to 0x8000
+  // Periodic timer. RomWBW keeps a 32-bit tick count at TICKFREQ and exposes it
+  // through BF_SYSGET subfunctions $D0 (ticks) and $D1 (seconds). 50Hz is the
+  // value every configuration in the RomWBW tree uses, and hbios.asm hard-errors
+  // on anything else for the Z180 timer.
+  static constexpr uint8_t TICKFREQ = 50;
+  // Monotonic, so the count cannot jump when the host's wall clock moves. The
+  // origin is shifted rather than a counter stored, which keeps setTicks()
+  // consistent with a clock that is still running.
+  std::chrono::steady_clock::time_point tick_origin = std::chrono::steady_clock::now();
+
+  uint32_t currentTicks() const {
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - tick_origin).count();
+    if (ms < 0) ms = 0;
+    return (uint32_t)((uint64_t)ms * TICKFREQ / 1000);
+  }
+
+  void setTicks(uint32_t ticks) {
+    tick_origin = std::chrono::steady_clock::now() -
+                  std::chrono::milliseconds((long long)ticks * 1000 / TICKFREQ);
+  }
+
   uint16_t heap_ptr = 0x0200;
   // The watermark BF_SYSRESET subfunction 0x00 rewinds the heap to. RomWBW
   // latches it once after driver init (hbios.asm "LD HL,(CB_HEAPTOP) / LD

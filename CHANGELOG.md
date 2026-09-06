@@ -211,6 +211,21 @@ rather than against the previous release. 82 functions across nine handlers.
   end-of-scan was printing `[EXTSLICE] ... REJECTED` into the middle of the `S`
   Slice Inventory listing on every use.
 
+- **There was no periodic timer.** `BF_SYSGET` subfunctions `$D0` (ticks) and
+  `$D1` (seconds) had no case and fell into a default that logged, left the
+  status at success and wrote `E=0` - a guest could not tell that from a stopped
+  clock. `TIMER.COM` ships on nine of the published images and printed a frozen
+  value; `VGMPLAY.COM` hung outright, because it probes the timer, spins a delay
+  loop, reads it again and only proceeds if the value moved.
+
+  There is a real 32-bit tick counter now, at the 50Hz `TICKFREQ` every RomWBW
+  configuration in the tree uses, driven from a monotonic clock so it cannot
+  jump when the host's wall clock moves - this is uptime, not a date.
+  `BF_SYSSET` `$D0`/`$D1` set it by shifting the origin rather than by storing a
+  counter, so the clock keeps running across a set. Measured with `TIMER.COM`:
+  199 ticks / 4.00 seconds, then 450 ticks / 9.00 seconds five seconds later -
+  251 ticks, which is 50Hz.
+
 - **`BF_SYSRESET` subfunction `0x00` did nothing.** That is the INTERNAL reset,
   not a reboot: it releases heap the drivers are not using, and RomWBW's warm
   reset performs it first (`SYS_RESWARM` opens `CALL SYS_RESINT`). CBIOS calls
