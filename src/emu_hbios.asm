@@ -330,6 +330,56 @@ HBX_SEL_ROM:
 	out	(07Ch), a		; ROM bank select port
 	ret
 
+; Bank call: A = target bank, IX = target address.
+;
+; This used to be "out (0EDh),a / ret" at 0xFFF9, and the emulator acted on
+; exactly one target address - 0x0406, the 3.5.1 device summary.  Every other
+; bank call silently did nothing, so RomWBW 3.6.0's "O - Hardware Monitor"
+; loaded nothing and any guest calling into another bank was ignored.
+;
+; The shape is RomWBW's own HBX_BNKCALL: stuff the bank and address into the
+; immediate operands below, save the current bank, select, call, restore.  Self
+; modifying code is fine here because the proxy is copied into RAM at 0xFE00
+; before it ever runs, which is exactly why RomWBW does the same.
+;
+; 0x0406 still goes to the emulator.  Under 3.5.1 the device summary lives in
+; the HBIOS bank this proxy REPLACES, so a real bank call there would land in
+; upstream code that expects an HBIOS environment we do not provide.
+HBX_BNKCALL_START equ $ - HBX_IMG
+	; Stash the target bank FIRST - the address test below needs A.
+	ld	(HBX_LOC + HBX_BNKCALL_BNK + 1 - HBX_IMG), a
+	push	hl
+	push	ix
+	pop	hl			; hl := target address
+	ld	(HBX_LOC + HBX_BNKCALL_ADR + 1 - HBX_IMG), hl
+	ld	a, h
+	cp	004h
+	jr	nz, HBX_BNKCALL_REAL
+	ld	a, l
+	cp	006h
+	jr	nz, HBX_BNKCALL_REAL
+	pop	hl			; 0x0406 - let the emulator answer it
+	ld	a, (HBX_LOC + HBX_BNKCALL_BNK + 1 - HBX_IMG)
+	out	(EMU_BNKCALL_PORT), a
+	ret
+
+HBX_BNKCALL_REAL:
+	pop	hl
+	ld	a, (0FFE0h)		; current bank (CURBNK)
+	push	af			; save it for the return
+HBX_BNKCALL_BNK:
+	ld	a, 0FFh			; overlaid above with the target bank
+	call	HBX_LOC + HBX_BNKSEL_START
+HBX_BNKCALL_ADR:
+	call	0FFFFh			; overlaid above with the target address
+	ex	(sp), hl		; stash hl, recover the saved bank into h
+	push	af			; keep the callee's return value
+	ld	a, h
+	call	HBX_LOC + HBX_BNKSEL_START
+	pop	af
+	pop	hl
+	ret
+
 	org	06E0h			; PMGMT at offset 0x1E0 within HBX_IMG (0xFFE0 when installed)
 
 ; Offset 0x1E0: HBIOS Proxy Management Block (at 0xFFE0 when installed)
@@ -353,8 +403,7 @@ PMGMT_LOCK:	db	0FEh		; Mutex lock
 	jp	HBX_LOC + HBX_BNKSEL_START ; 0xFFF3: Bank select (in proxy)
 	out	(EMU_BNKCPY_PORT), a	; 0xFFF6: Bank copy (triggers emulator)
 	ret				; 0xFFF8: Return after copy
-	out	(EMU_BNKCALL_PORT), a	; 0xFFF9: Bank call (trigger emulator)
-	ret				; 0xFFFB: Return after emulator handles it
+	jp	HBX_LOC + HBX_BNKCALL_START ; 0xFFF9: Bank call (in proxy)
 	dw	HBX_LOC			; 0xFFFC: Ident pointer -> proxy start
 	dw	HBX_LOC			; 0xFFFE: Reserved
 

@@ -353,6 +353,32 @@ rather than against the previous release. 82 functions across nine handlers.
   could plausibly reach: every stock RomWBW driver stubs it to `ERR_NOTIMPL`
   rather than omitting it.
 
+### `HB_BNKCALL` performs a real bank call
+
+The documented proxy entry at `0xFFF9` was `out (0EDh),a / ret`, and the port
+handler acted on exactly one target address - `IX == 0x0406`, the 3.5.1 device
+summary. Every other bank call silently did nothing, so RomWBW 3.6.0's
+`O - Hardware Monitor` printed "Loading Hardware Monitor..." and dropped back to
+the prompt.
+
+`src/emu_hbios.asm` implements it now, in the shape RomWBW's own `HBX_BNKCALL`
+uses: stuff the target bank and address into the immediate operands, save the
+current bank, select, call, restore. Self-modifying code is correct here for the
+same reason it is correct upstream - the proxy is copied into RAM at `0xFE00`
+before it runs. `0xFFF9` becomes `jp HBX_LOC + HBX_BNKCALL_START`, the same
+three bytes it occupied, so `0xFFFC` and the ident pointers do not move.
+
+`0x0406` still goes to the emulator. Under 3.5.1 the device summary lives in the
+HBIOS bank this proxy REPLACES, so a real bank call there would land in upstream
+code expecting an HBIOS environment we do not provide. Both paths verified:
+3.6.0's `O` now prints `*** Not Implemented ***` and warm-starts, exactly as real
+hardware does, and 3.5.1's `D` still prints its disk summary.
+
+This changes bank 0, so every emulator ROM's bytes change with it - `emu_avw.rom`
+is `4b11402a...` where it was `c7abc580...`. `romwbw_disks` carries the identical
+change to its own copy and both trees still build the same ROM, which
+`check_source_drift.sh` asserts.
+
 ### Removed
 
 ### The RomWBW 3.6.0 dev snapshot is gone from `archive/`
