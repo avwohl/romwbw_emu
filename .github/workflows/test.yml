@@ -12,12 +12,27 @@ name: Tests
 #   tests/cli_hostfile.cc        where W8 writes, and what it reports back
 #   tests/web_reload_disks.js    page JS, driven headless by node
 #   tests/web_console_output.js  page JS, driven headless by node
-#   disks/verify_disk_utils.sh   the R8/W8 in the tracked images vs their source
+#   tests/web_manifest.js        the page's catalog-manifest -> <option> logic
+#   tests/catalog_client_test.py tools/romwbw-get against a catalog it serves
+#                                itself on 127.0.0.1
+#   disks/verify_disk_utils.sh   src/r8.asm and src/w8.asm build, and w8 still
+#                                carries the HBF_HOST_CAPS interlock
+#   roms/verify_romwbw_pin.sh    the built binary's --version release list
+#                                against ROMWBW_SUPPORTED_RELEASES, plus every
+#                                artifact in the tree and in the fetch cache
 #
-# The last one is the reason cpmtools is installed below. It SKIPS silently
-# when um80, ul80 or cpmcp are missing - which is right on a developer's
-# machine and wrong here, where a skip would report a green disk check that
-# never opened an image. The step after the suite asserts it actually ran.
+# THE ARTIFACTS ARE NOT IN THIS REPOSITORY any more. Since v1.40 the ROMs and
+# disk images are published by avwohl/romwbw_disks and fetched with
+# tools/romwbw-get, so `make test` runs the whole suite against a tree with no
+# .rom and no .img in it - which is what a user has. The catalog steps further
+# down then fetch the real thing and re-run the two artifact checks against
+# what was actually downloaded, which is a stronger question than the one two
+# tracked images could answer.
+#
+# cpmtools is installed for disks/verify_disk_utils.sh's image half. It SKIPS
+# silently when um80, ul80 or cpmcp are missing - which is right on a
+# developer's machine and wrong here, where a skip would report a green disk
+# check that never opened an image. The step after the suite asserts it ran.
 #
 # Three jobs, and only the first one runs the suite:
 #
@@ -66,12 +81,12 @@ jobs:
           # um80/ul80: the MACRO-80 toolchain src/r8.asm and src/w8.asm are
           # written for.  Unpinned, like everything else here - see "On
           # pinning" in release.yml.  Note what that accepts: disks/
-          # verify_disk_utils.sh compares the r8.com/w8.com on each image
-          # against a fresh assembly BYTE FOR BYTE, so a um80 release that
-          # changes its output turns this job red with nothing in this
+          # verify_disk_utils.sh compares the r8.com/w8.com on each fetched
+          # image against a fresh assembly BYTE FOR BYTE, so a um80 release
+          # that changes its output turns this job red with nothing in this
           # repository touched.  That is the intended signal - it means the
-          # committed images no longer match their sources - and the fix is
-          # disks/rebuild_disk_utils.sh, not a version pin.
+          # PUBLISHED images no longer match these sources - and the fix is a
+          # rebuild and re-publish in romwbw_disks, not a version pin here.
           pip install um80
 
       - name: Check the tools the disk check needs are really present
@@ -112,14 +127,14 @@ jobs:
           test "${PIPESTATUS[0]}" -eq 0
         shell: bash
 
-      - name: Assert the disk check actually opened the images
+      - name: Assert the offline suite really ran
         run: |
-          # verify_disk_utils.sh exits 0 when its tools are missing, so a
-          # dropped package would silently stop comparing the R8/W8 inside
-          # disks/*.img against src/r8.asm and src/w8.asm - the exact drift it
-          # exists to catch. Insist on the line it prints only when it ran.
-          if grep -qE '^SKIP: (um80|ul80|cpmcp) is not on PATH' /tmp/test.log; then
-            echo "the disk check skipped for want of its tools:"
+          # Every one of these checks exits 0 when a tool it needs is missing.
+          # That is deliberate - none of them is a build dependency - but here
+          # a dropped package would turn "did not run" into a green job, which
+          # is the failure mode this whole block exists for.
+          if grep -qE '^SKIP: (um80|ul80) is not on PATH' /tmp/test.log; then
+            echo "the disk-utility source gate skipped for want of its tools:"
             grep '^SKIP:' /tmp/test.log
             exit 1
           fi
@@ -127,28 +142,25 @@ jobs:
             echo "the web JS tests skipped - node should be present on this runner"
             exit 1
           fi
-          # Insist on the COUNT, not just on a pass. Two tracked images times
-          # two utilities is four; anything less means a copy went missing from
-          # an image, which is the drift this whole check exists for and used to
-          # be reported as an info line. Bump this if disks/verify_disk_utils.sh
-          # gains an image.
-          grep -qE '^PASS: 4 disk-resident binaries' /tmp/test.log || {
-            echo "expected all 4 disk-resident binaries to be compared; got:"
-            grep -E '^(PASS|FAIL|SKIP)' /tmp/test.log || true
+          if grep -q '^SKIP  catalog client test' /tmp/test.log; then
+            echo "the catalog client test skipped - python3 should be present"
             exit 1
-          }
-          # Same reasoning for the interlock assertion: a w8.com that could
-          # not be extracted is already a FAIL, but the count is what says
-          # both images were asked. Bump it alongside the four above.
-          grep -qE '^PASS: 2 shipped w8.com carry' /tmp/test.log || {
-            echo "expected both shipped w8.com to be probed for the interlock; got:"
+          fi
+          # The source gate is the half that needs no network and no image: it
+          # assembles src/r8.asm and src/w8.asm and asserts that the w8.com
+          # they build still contains the HBF_HOST_CAPS interlock bytes. It is
+          # the only thing standing between an edit to w8.asm and a W8 that
+          # hands a guest-supplied host path to a front end that promised
+          # nothing about where it lands, so assert it happened.
+          grep -qE '^PASS: src/r8.asm and src/w8.asm build, and w8 carries' /tmp/test.log || {
+            echo "the r8/w8 source gate did not run, or did not pass; got:"
             grep -E '^(PASS|FAIL|SKIP)' /tmp/test.log || true
             exit 1
           }
           # And that the RomWBW release check ran at all. It went years without
           # being run by anything - not `make test`, not any job here - so the
           # thing worth asserting is not that it passed but that it happened.
-          grep -qE '^PASS: every artifact names a RomWBW release' /tmp/test.log || {
+          grep -qE '^PASS: (every artifact names a RomWBW release|src/romwbw_pin.h is consistent)' /tmp/test.log || {
             echo "roms/verify_romwbw_pin.sh did not run, or did not pass; got:"
             grep -E '^(PASS|FAIL|warn)' /tmp/test.log || true
             exit 1
@@ -161,6 +173,126 @@ jobs:
             echo "romwbw_emu was not built, so its supported-release list was not checked"
             exit 1
           fi
+
+      - name: Nothing binary has come back into the tree
+        run: |
+          # Requirement (a) of the v1.40 migration - "no ROM or disk images in
+          # this repository" - is otherwise a policy git will not enforce, and
+          # this tree's own history says what happens without one: four copies
+          # of the same ROM drifted apart in September 2026 and nothing
+          # noticed for a day.
+          #
+          # archive/ is named and excluded rather than being covered by a
+          # pattern that happens to miss it, and the exception is now one file:
+          # archive/cpm22/com/mbasic.com, third-party CP/M software with no
+          # source in this tree and no upstream this project controls. The
+          # other six binaries that used to sit under archive/ went on
+          # 2026-09-07 - a stock RomWBW ROM recoverable from the upstream
+          # package, a zero-byte disk image, an x86-64 build artifact and three
+          # files cpm22asm/build_cpm.sh rebuilds - see archive/cpm22/README.md.
+          # A carve-out that is spelled out is a different thing from one that
+          # is an accident of a regex.
+          found=$(git ls-files -- ':!archive/**' \
+                    | grep -Ei '\.(rom|img)$' || true)
+          if [ -n "$found" ]; then
+            echo "ROM or disk images are tracked again outside archive/:"
+            echo "$found"
+            echo
+            echo "They belong in avwohl/romwbw_disks, fetched with"
+            echo "tools/romwbw-get. See docs/CATALOG.md."
+            exit 1
+          fi
+          echo "no .rom or .img tracked outside archive/ - as intended since v1.40"
+
+      # --- the live catalog ----------------------------------------------------
+      #
+      # Everything above is offline. These steps ask the questions only the real
+      # catalog can answer, and they are TRI-STATE, the way
+      # tools/check-store-version.sh already is:
+      #
+      #   exit 0  fetched and verified            -> green
+      #   exit 2  could not reach github.com      -> warning, still green
+      #   exit 1  a hash, size or schema is wrong -> RED
+      #
+      # A gate that cries wolf is a gate that stops being read, and a GitHub
+      # outage is not a defect in this repository.
+      - name: Fetch the published ROM and disk
+        id: fetch
+        run: |
+          set +e
+          tools/romwbw-get versions
+          tools/romwbw-get fetch @rom @disk0
+          rc=$?
+          set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          case "$rc" in
+            0) echo "fetched and verified against the published sha256" ;;
+            2) echo "::warning::the romwbw_disks catalog was unreachable, so the catalog checks below did NOT run"
+               echo "CATALOG NOT VERIFIED - github.com unreachable" >> "$GITHUB_STEP_SUMMARY" ;;
+            *) echo "::error::the catalog contradicted itself - see above"; exit 1 ;;
+          esac
+
+      - name: Check what was downloaded, not what a table says
+        if: steps.fetch.outputs.rc == '0'
+        run: |
+          # The counts are COMPUTED from what the fetch step just produced, not
+          # typed. This job used to assert the literal strings "PASS: 4
+          # disk-resident binaries" and "PASS: 2 shipped w8.com carry", which
+          # were two tracked images times two utilities - a number a human had
+          # to bump, in a repository whose whole premise is now that the set of
+          # images changes without anyone here touching anything.
+          cache=$(tools/romwbw-get cache-dir)
+          imgs=$(find "$cache" -name '*.img' | wc -l | tr -d ' ')
+          test "$imgs" -ge 1 || { echo "the fetch produced no image"; exit 1; }
+          sh disks/verify_disk_utils.sh "$cache" 2>&1 | tee /tmp/disk.log
+          grep -qE "^PASS: $imgs image\(s\) inspected" /tmp/disk.log || {
+            echo "expected all $imgs fetched image(s) to be inspected; got:"
+            grep -E '^(PASS|FAIL|  skip)' /tmp/disk.log || true
+            exit 1
+          }
+          # The combo image is the one the catalog flags host_transfer, so at
+          # least one r8/w8 comparison must have really happened. A run that
+          # opened images and compared nothing is the same silent-scope failure
+          # in a new place.
+          grep -qE '^PASS: [0-9]+ image\(s\) inspected, [1-9][0-9]* disk-resident' /tmp/disk.log || {
+            echo "images were opened but no r8/w8 copy was compared:"
+            cat /tmp/disk.log
+            exit 1
+          }
+          sh roms/verify_romwbw_pin.sh 2>&1 | tee /tmp/pin.log
+          grep -qE '^PASS: every artifact names a RomWBW release' /tmp/pin.log || {
+            echo "the fetched artifacts did not pass the release check:"
+            cat /tmp/pin.log
+            exit 1
+          }
+
+      - name: Boot the published ROM
+        if: steps.fetch.outputs.rc == '0'
+        run: |
+          # The end of the whole chain: the artifacts this repository tells
+          # users to download must actually boot in the binary it builds. A
+          # hash that matches a catalog is not evidence of that.
+          set -o pipefail
+          printf '\n\n' | timeout 120 tools/romwbw-get run -- \
+              --boot=2 --escape=none 2>&1 | tee /tmp/boot.log || true
+          grep -q 'CBIOS v' /tmp/boot.log || {
+            echo "the fetched ROM and disk did not reach a CBIOS banner:"
+            cat /tmp/boot.log
+            exit 1
+          }
+          grep -q 'CP/M-80' /tmp/boot.log || {
+            echo "booted, but never reached the CP/M prompt:"
+            cat /tmp/boot.log
+            exit 1
+          }
+          # A matched pair must NOT warn. This is the check that the ROM and
+          # the disk the catalog offers together really do go together.
+          if grep -q 'HBIOS/CBIOS Version Mismatch' /tmp/boot.log; then
+            echo "the catalog's own ROM and disk are a mismatched pair:"
+            cat /tmp/boot.log
+            exit 1
+          fi
+          echo "booted the published pair to a CP/M prompt with no mismatch"
 
   # Apple clang, which is what ioscpm compiles this same core with. This runs the
   # four compiled test programs by name through the makefile's own targets rather

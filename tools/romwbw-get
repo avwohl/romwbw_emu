@@ -1,0 +1,1331 @@
+#!/usr/bin/env python3
+#
+# romwbw-get - fetch ROM and disk images from the romwbw_disks catalog.
+#
+# This repository ships no ROM and no disk image.  It used to: roms/ held six
+# 512 KB ROMs, web/ held two more copies of one of them, and disks/ held a 49 MB
+# combo image and an 8 MB one, all tracked in git.  They now live in
+# avwohl/romwbw_disks, published as release assets behind a two-level catalog,
+# and this script is how they get here.
+#
+#   index-v0.json  ->  catalog-v0-<ver>.json  ->  the assets themselves
+#
+# Only the index URL is written down here.  Everything else - which RomWBW
+# releases exist, which ROMs and disks each one has, where they live and what
+# they hash to - is read out of a document at run time.  That is the whole
+# point: romwbw_disks can publish a new ROM, a new disk or a whole new RomWBW
+# release and it reaches a user who has already installed this without anybody
+# cutting a romwbw_emu release.
+#
+# The one thing that does need a rebuild is a new RomWBW *release*, because
+# ROMWBW_SUPPORTED_RELEASES in src/romwbw_pin.h is compile-time and adding a
+# line to it is a claim that somebody booted that release.  This script asks
+# the binary what it can run rather than assuming, so an entry the local build
+# cannot boot is reported as such instead of being downloaded and refused.
+#
+# Why a separate program and not C++ in the emulator: fetching needs HTTP, TLS
+# and SHA-256, none of which belong inside a program whose job is to execute
+# untrusted Z80 code, and all three of which would break `make STATIC=1` and
+# the emscripten build.  Python 3 is already required by the web build and by
+# romwbw_disks' own tooling; this uses nothing outside its standard library.
+#
+# Exit codes, matching tools/check-store-version.sh so a CI job needs no
+# translation table:
+#
+#   0   did the thing, and verified it
+#   1   a contradiction - sha256 or size mismatch, a schema violation, an id
+#       that is not in the catalog, no release this build can run.  Red.
+#   2   could not verify - DNS, timeout, 5xx, rate limit.  Amber: nothing is
+#       known to be wrong, the question could not be asked.
+#   64  usage error
+#
+# See docs/CATALOG.md.
+
+import argparse
+import errno
+import hashlib
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+# --- the one compiled-in fact -------------------------------------------------
+#
+# This URL is the root of trust.  It has no hash above it - HTTPS is the whole
+# of its integrity - which is why the catalog it points at is verified against
+# a hash the index carries, and every asset against a hash the catalog carries.
+# A floating tag on purpose: `catalog-v0` is rewritten when a RomWBW version is
+# added, and it is cut last, after the assets it names.
+
+#
+# Kept on ONE line, over the line length: tools/check-shipped-disks.sh looks
+# for the whole URL in a single line of source, the same way it does in the
+# three GUI clients, and a string split across two lines is invisible to it -
+# which reads as "this port has been repointed back off the catalog".
+INDEX_URL = "https://github.com/avwohl/romwbw_disks/releases/download/catalog-v0/index-v0.json"
+INTERFACE = "v0"
+
+INDEX_SCHEMA = "romwbw-disks-index"
+CATALOG_SCHEMA = "romwbw-disks-catalog"
+
+# An index that is bigger than this is not an index.  Bounded before it is read
+# so a wrong URL cannot stream a disk image into memory.
+INDEX_MAX_BYTES = 1 << 20
+CATALOG_MAX_BYTES = 4 << 20
+
+INDEX_TTL = 3600          # re-fetch the index after an hour
+INDEX_STALE_OK = 30 * 86400  # ...but keep using a cached one this long offline
+
+MIRROR_SCHEMA = "romwbw-emu-mirror"
+MIRROR_SCHEMA_VERSION = 1
+
+EX_OK, EX_CONTRADICTION, EX_UNVERIFIED, EX_USAGE = 0, 1, 2, 64
+
+
+class Contradiction(Exception):
+    """Something is demonstrably wrong: a hash, a size, a schema, a missing id."""
+
+
+class Unverified(Exception):
+    """The question could not be asked: no network, a timeout, a 5xx."""
+
+
+def warn(msg):
+    print("romwbw-get: " + msg, file=sys.stderr)
+
+
+def info(msg, quiet=False):
+    if not quiet:
+        print(msg, file=sys.stderr)
+
+
+# --- directories --------------------------------------------------------------
+#
+# Three roots, deliberately distinct.  The cache holds pristine, hash-verified
+# bytes and is safe to delete.  The data directory holds working copies the
+# guest writes to and is NOT safe to delete.  The config directory holds the
+# one choice this program remembers.
+
+def _xdg(var, default):
+    v = os.environ.get(var)
+    if v and os.path.isabs(v):
+        return v
+    return os.path.join(os.path.expanduser("~"), default)
+
+
+def cache_root(override=None):
+    if override:
+        return os.path.abspath(override)
+    v = os.environ.get("ROMWBW_GET_CACHE")
+    if v:
+        return os.path.abspath(v)
+    return os.path.join(_xdg("XDG_CACHE_HOME", ".cache"), "romwbw_emu")
+
+
+def data_root():
+    return os.path.join(_xdg("XDG_DATA_HOME", ".local/share"), "romwbw_emu")
+
+
+def config_path():
+    return os.path.join(_xdg("XDG_CONFIG_HOME", ".config"),
+                        "romwbw_emu", "catalog.json")
+
+
+# The emulator's own settings file (romwbw_emu.json / config.json) is NOT this
+# file, and must not be.  emu_config_save() rebuilds that document from the C++
+# EmuConfig struct, so any key it does not know about is destroyed the next time
+# somebody runs --save-config.  Keeping the catalog choice in a sibling file
+# means the two can never fight.
+
+def load_choice():
+    try:
+        with open(config_path(), "r") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(d, dict) or d.get("interface") != INTERFACE:
+        return {}
+    return d
+
+
+def save_choice(d):
+    p = config_path()
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    d = dict(d)
+    d["version"] = 1
+    d["interface"] = INTERFACE
+    tmp = p + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(d, f, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp, p)
+
+
+# --- transport ----------------------------------------------------------------
+
+def http_get(url, max_bytes, timeout, retries=1, no_cache=False):
+    """Fetch a bounded document into memory.  Raises Unverified, never Contradiction."""
+    headers = {"User-Agent": "romwbw-get/1 (+https://github.com/avwohl/romwbw_emu)"}
+    if no_cache:
+        headers["Cache-Control"] = "no-cache"
+    last = None
+    for attempt in range(retries + 1):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = r.read(max_bytes + 1)
+            if len(data) > max_bytes:
+                # Not Unverified: a document this size is wrong, not unknown.
+                raise Contradiction(
+                    "%s is larger than the %d bytes this document may be - "
+                    "is that URL really a catalog?" % (url, max_bytes))
+            return data
+        except urllib.error.HTTPError as e:
+            last = "HTTP %s" % e.code
+            if e.code in (400, 401, 403, 404, 410):
+                break          # retrying a 404 just wastes a second
+        except (urllib.error.URLError, OSError) as e:
+            last = str(getattr(e, "reason", e))
+        if attempt < retries:
+            time.sleep(1)
+    raise Unverified("could not fetch %s: %s" % (url, last))
+
+
+def http_download(url, dest, expect_size, expect_sha, timeout, retries=1,
+                  progress=True, no_cache=False):
+    """Stream to a temporary file, hashing as it goes; rename only once it verifies.
+
+    Nothing is ever visible at the real path until it has passed both checks.  A
+    partially written 8 MB hd1k image is not a smaller disk, it is a disk the
+    emulator's size-based auto-detect reads as hd512 with the wrong geometry.
+    """
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    part_dir = os.path.join(os.path.dirname(dest), ".partial")
+    os.makedirs(part_dir, exist_ok=True)
+    tmp = os.path.join(part_dir, "%s.%d" % (os.path.basename(dest), os.getpid()))
+
+    headers = {"User-Agent": "romwbw-get/1 (+https://github.com/avwohl/romwbw_emu)"}
+    if no_cache:
+        headers["Cache-Control"] = "no-cache"
+
+    last = None
+    for attempt in range(retries + 1):
+        h = hashlib.sha256()
+        got = 0
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as r, \
+                    open(tmp, "wb") as out:
+                while True:
+                    chunk = r.read(256 * 1024)
+                    if not chunk:
+                        break
+                    got += len(chunk)
+                    if expect_size is not None and got > expect_size:
+                        raise Contradiction(
+                            "%s is longer than the %d bytes the catalog says "
+                            "it is" % (url, expect_size))
+                    h.update(chunk)
+                    out.write(chunk)
+                    if progress and expect_size:
+                        _progress(os.path.basename(dest), got, expect_size)
+                out.flush()
+                os.fsync(out.fileno())
+            if progress and expect_size:
+                sys.stderr.write("\n")
+            break
+        except (urllib.error.URLError, OSError) as e:
+            if progress and expect_size:
+                sys.stderr.write("\n")
+            last = str(getattr(e, "reason", e))
+            _unlink(tmp)
+            if attempt >= retries:
+                raise Unverified("could not download %s: %s" % (url, last))
+            time.sleep(1)
+
+    if expect_size is not None and got != expect_size:
+        _unlink(tmp)
+        raise Contradiction("%s: got %d bytes, the catalog says %d"
+                            % (url, got, expect_size))
+    digest = h.hexdigest()
+    if expect_sha and digest != expect_sha.lower():
+        keep = tmp + ".bad"
+        os.replace(tmp, keep)
+        raise Contradiction(
+            "%s: sha256 %s, the catalog says %s\n"
+            "            the bytes that did not verify are at %s"
+            % (url, digest[:12], expect_sha[:12], keep))
+
+    os.replace(tmp, dest)
+    # Pristine.  Read-only so a stray --disk0 pointed here cannot be written
+    # through by a CP/M SAVE, which is exactly how a verified cache turns into
+    # a cache that reports itself corrupt.
+    os.chmod(dest, 0o444)
+    return digest
+
+
+def _progress(name, got, total):
+    pct = int(got * 100 / total)
+    sys.stderr.write("\r  %-34s %3d%%  %s / %s"
+                     % (name[:34], pct, human(got), human(total)))
+    sys.stderr.flush()
+
+
+def _unlink(p):
+    try:
+        os.unlink(p)
+    except OSError:
+        pass
+
+
+def human(n):
+    if n < 1024:
+        return "%d B" % n
+    if n < 1024 * 1024:
+        return "%.1f KB" % (n / 1024.0)
+    return "%.1f MB" % (n / (1024.0 * 1024.0))
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            b = f.read(1 << 20)
+            if not b:
+                break
+            h.update(b)
+    return h.hexdigest()
+
+
+# --- what this build can run --------------------------------------------------
+#
+# Parsed off `romwbw_emu --version`, which is the protocol romwbw_disks'
+# tools/boot_test.sh already speaks.  Three consumers now read that one line;
+# a machine-readable flag would be a fourth surface for the same fact and would
+# not exist on binaries that are already installed.
+
+RE_RUNS = re.compile(r"^RomWBW releases this build can run:\s*(.+)$", re.M)
+RE_PINNED = re.compile(r"^RomWBW compatibility:\s*v([0-9.]+)", re.M)
+
+
+def find_emulator(explicit=None):
+    if explicit:
+        return explicit if os.path.exists(explicit) else None
+    env = os.environ.get("ROMWBW_EMU")
+    if env and os.path.exists(env):
+        return env
+    here = os.path.dirname(os.path.abspath(__file__))
+    for cand in (os.path.join(here, "romwbw_emu"),
+                 os.path.join(here, os.pardir, "src", "romwbw_emu")):
+        if os.path.exists(cand):
+            return os.path.abspath(cand)
+    return shutil.which("romwbw_emu")
+
+
+def supported_releases(emu):
+    """Ask the binary.  Returns a list of version strings, or None if it could not be asked."""
+    if not emu:
+        return None
+    try:
+        out = subprocess.run([emu, "--version"], capture_output=True, text=True,
+                             timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    blob = (out.stdout or "") + (out.stderr or "")
+    m = RE_RUNS.search(blob)
+    if m:
+        return [v.strip() for v in m.group(1).split(",") if v.strip()]
+    m = RE_PINNED.search(blob)      # a binary from before the runtime version
+    if m:
+        return [m.group(1).strip()]
+    return None
+
+
+# --- the catalog ---------------------------------------------------------------
+
+class Catalog(object):
+    def __init__(self, args):
+        self.cache = cache_root(args.cache)
+        self.index_url = (args.index_url or os.environ.get("ROMWBW_INDEX_URL")
+                          or load_choice().get("index_url") or INDEX_URL)
+        self.offline = args.offline
+        self.refresh = getattr(args, "refresh", False)
+        self.timeout = args.timeout
+        self.retries = args.retries
+        self.quiet = args.quiet
+        self._index = None
+        self._catalogs = {}
+        if self.index_url != INDEX_URL:
+            warn("using a non-default index URL: %s" % self.index_url)
+
+    # -- index ---------------------------------------------------------------
+    @property
+    def index_file(self):
+        return os.path.join(self.cache, "index", "index-v0.json")
+
+    def index(self):
+        if self._index is not None:
+            return self._index
+        raw = self._index_bytes()
+        try:
+            doc = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as e:
+            raise Contradiction("the index is not valid JSON: %s" % e)
+        self._check_index(doc)
+        self._index = doc
+        return doc
+
+    def _index_bytes(self):
+        f = self.index_file
+        age = None
+        if os.path.exists(f):
+            age = time.time() - os.path.getmtime(f)
+
+        want_fetch = self.refresh or age is None or age > INDEX_TTL
+        if self.offline:
+            want_fetch = False
+
+        if want_fetch:
+            try:
+                raw = http_get(self.index_url, INDEX_MAX_BYTES, self.timeout,
+                               self.retries)
+                os.makedirs(os.path.dirname(f), exist_ok=True)
+                tmp = f + ".tmp"
+                with open(tmp, "wb") as fh:
+                    fh.write(raw)
+                os.replace(tmp, f)
+                meta = {"fetched_at": int(time.time()),
+                        "source_url": self.index_url,
+                        "sha256": hashlib.sha256(raw).hexdigest()}
+                with open(f.replace(".json", ".meta.json"), "w") as fh:
+                    json.dump(meta, fh, indent=2, sort_keys=True)
+                    fh.write("\n")
+                return raw
+            except Unverified as e:
+                # A cached index that is merely old is far better than no
+                # answer: everything under it is hash-verified anyway, so the
+                # worst a stale index can do is fail to mention something new.
+                if age is None:
+                    raise
+                if age > INDEX_STALE_OK:
+                    raise Unverified(
+                        "%s, and the cached index is %d days old" %
+                        (e, int(age / 86400)))
+                warn("%s" % e)
+                warn("using the index cached %s ago" % _ago(age))
+
+        if not os.path.exists(f):
+            raise Unverified(
+                "no cached index and --offline was given; run without "
+                "--offline once to populate %s" % self.cache)
+        with open(f, "rb") as fh:
+            return fh.read()
+
+    def _check_index(self, doc):
+        if not isinstance(doc, dict):
+            raise Contradiction("the index is not an object")
+        if doc.get("schema") != INDEX_SCHEMA:
+            raise Contradiction("index schema is %r, expected %r"
+                                % (doc.get("schema"), INDEX_SCHEMA))
+        if doc.get("interface") != INTERFACE:
+            raise Contradiction(
+                "the index publishes interface %r; this build of romwbw-get "
+                "speaks %r only.  A newer romwbw_emu will speak it."
+                % (doc.get("interface"), INTERFACE))
+        vs = doc.get("romwbw_versions")
+        if not isinstance(vs, list) or not vs:
+            raise Contradiction("the index lists no RomWBW versions")
+
+    # -- version selection ----------------------------------------------------
+    def entries(self):
+        return [e for e in self.index()["romwbw_versions"]
+                if isinstance(e, dict) and e.get("romwbw_version")]
+
+    def entry(self, version):
+        for e in self.entries():
+            if e["romwbw_version"] == version:
+                return e
+        raise Contradiction(
+            "the index does not publish RomWBW %s.  It publishes: %s"
+            % (version, ", ".join(e["romwbw_version"] for e in self.entries())))
+
+    def resolve_version(self, args, runnable):
+        """Precedence, matching what the three GUI clients converged on."""
+        if getattr(args, "romwbw", None):
+            v = args.romwbw
+            if v != "default":
+                self.entry(v)          # raises if unpublished
+                return v
+        env = os.environ.get("ROMWBW_VERSION")
+        if env:
+            self.entry(env)
+            return env
+
+        # Filter to runnable BEFORE honouring `default`.  Otherwise a newly
+        # published release carrying default:true that this build cannot boot
+        # would be selected, and 51 MB downloaded for a ROM the binary refuses.
+        pool = [e for e in self.entries()
+                if runnable is None or e["romwbw_version"] in runnable]
+        if not pool:
+            raise Contradiction(
+                "this build can run %s, and the index publishes %s - no "
+                "overlap.\n"
+                "            Add the release to ROMWBW_SUPPORTED_RELEASES in "
+                "src/romwbw_pin.h once you have booted it, or pass "
+                "--allow-untested."
+                % (", ".join(runnable or []) or "nothing",
+                   ", ".join(e["romwbw_version"] for e in self.entries())))
+
+        stored = load_choice().get("romwbw_version")
+        if stored and any(e["romwbw_version"] == stored for e in pool):
+            return stored
+        for e in pool:
+            if e.get("default"):
+                return e["romwbw_version"]
+        return pool[0]["romwbw_version"]
+
+    # -- per-version catalog --------------------------------------------------
+    def catalog(self, version):
+        if version in self._catalogs:
+            return self._catalogs[version]
+        e = self.entry(version)
+        d = os.path.join(self.cache, INTERFACE, version)
+        cfile = os.path.join(d, "catalog.json")
+        want_sha = (e.get("catalog_sha256") or "").lower()
+        want_size = e.get("catalog_size")
+
+        raw = None
+        if os.path.exists(cfile):
+            with open(cfile, "rb") as fh:
+                cached = fh.read()
+            if (want_size is None or len(cached) == want_size) and \
+                    (not want_sha or hashlib.sha256(cached).hexdigest() == want_sha):
+                raw = cached
+
+        if raw is None:
+            if self.offline:
+                raise Unverified(
+                    "RomWBW %s's catalog is not cached and --offline was given"
+                    % version)
+            url = e.get("catalog_url")
+            if not url:
+                raise Contradiction("index entry for %s has no catalog_url" % version)
+            # Absolute, and used verbatim.  Reconstructing it from a tag and a
+            # filename is how a client ends up fetching last week's document.
+            raw = http_get(url, CATALOG_MAX_BYTES, self.timeout, self.retries)
+            # Size first - it is free and it catches truncation - then the hash,
+            # and only then is a single byte of it parsed.
+            if want_size is not None and len(raw) != want_size:
+                raise Contradiction(
+                    "%s: got %d bytes, the index says %d"
+                    % (url, len(raw), want_size))
+            if want_sha:
+                got = hashlib.sha256(raw).hexdigest()
+                if got != want_sha:
+                    raise Contradiction(
+                        "%s: sha256 %s, the index says %s\n"
+                        "            (the release may have been re-published "
+                        "while this ran; try again)" % (url, got[:12], want_sha[:12]))
+            os.makedirs(d, exist_ok=True)
+            tmp = cfile + ".tmp"
+            with open(tmp, "wb") as fh:
+                fh.write(raw)
+            os.replace(tmp, cfile)
+            with open(os.path.join(d, "catalog.meta.json"), "w") as fh:
+                json.dump({"generation": e.get("generation"),
+                           "catalog_sha256": want_sha,
+                           "fetched_at": int(time.time())},
+                          fh, indent=2, sort_keys=True)
+                fh.write("\n")
+
+        try:
+            doc = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as ex:
+            raise Contradiction("RomWBW %s's catalog is not valid JSON: %s"
+                                % (version, ex))
+        if doc.get("schema") != CATALOG_SCHEMA:
+            raise Contradiction("catalog schema is %r, expected %r"
+                                % (doc.get("schema"), CATALOG_SCHEMA))
+        if doc.get("interface") != INTERFACE:
+            raise Contradiction("catalog interface is %r, expected %r"
+                                % (doc.get("interface"), INTERFACE))
+        if not doc.get("base_url"):
+            raise Contradiction("catalog for %s has no base_url" % version)
+        self._catalogs[version] = doc
+        return doc
+
+    # -- assets ---------------------------------------------------------------
+    def assets_dir(self, version):
+        return os.path.join(self.cache, INTERFACE, version, "assets")
+
+    def resolve_id(self, version, ident):
+        """Map an id or a pseudo-id onto ('rom'|'disk'|'upstream', entry).
+
+        Pseudo-ids start with '@' because catalog ids never do, so they cannot
+        collide with an id romwbw_disks might publish tomorrow.
+        """
+        cat = self.catalog(version)
+        roms = [r for r in cat.get("roms", []) if isinstance(r, dict) and r.get("id")]
+        disks = [d for d in cat.get("disks", []) if isinstance(d, dict) and d.get("id")]
+
+        if ident == "@rom":
+            # default:true, else the first.  Never by name: the conformance
+            # rules say a client must not assume emu_avw exists.
+            for r in roms:
+                if r.get("default"):
+                    return "rom", r
+            if roms:
+                return "rom", roms[0]
+            raise Contradiction("RomWBW %s publishes no ROM" % version)
+
+        if ident in ("@disk0", "@disk1"):
+            # Keyed on defaultSlot, NOT on a `default` flag: measured against
+            # both published catalogs, no disk carries `default` at all, and
+            # exactly one carries defaultSlot.
+            slot = int(ident[-1])
+            for d in disks:
+                if d.get("defaultSlot") == slot:
+                    return "disk", d
+            raise Contradiction(
+                "RomWBW %s publishes no disk with defaultSlot %d.  Name one "
+                "explicitly - `romwbw-get list --disks` shows them."
+                % (version, slot))
+
+        if ident == "@upstream":
+            up = cat.get("upstream") or {}
+            if not up.get("package_url"):
+                raise Contradiction("RomWBW %s's catalog names no upstream package"
+                                    % version)
+            return "upstream", up
+
+        for r in roms:
+            if r["id"] == ident:
+                return "rom", r
+        for d in disks:
+            if d["id"] == ident:
+                return "disk", d
+        raise Contradiction(
+            "RomWBW %s has no ROM or disk with id %r.  It has: %s"
+            % (version, ident,
+               ", ".join([r["id"] for r in roms] + [d["id"] for d in disks])))
+
+    def fetch(self, version, ident, progress=True, trust_cache=False):
+        """Return the absolute path of a verified, pristine asset."""
+        kind, ent = self.resolve_id(version, ident)
+        cat = self.catalog(version)
+
+        if kind == "upstream":
+            fname = ent["package_url"].rsplit("/", 1)[-1]
+            url = ent["package_url"]
+            want_sha = (ent.get("package_sha256") or "").lower()
+            want_size = None
+        else:
+            fname = ent.get("filename")
+            if not fname or "/" in fname or fname.startswith("."):
+                raise Contradiction("catalog entry %r has a filename this "
+                                    "program will not write: %r"
+                                    % (ent.get("id"), fname))
+            # base_url already ends in '/'; inserting a separator is how a
+            # client gets a double slash and, on some hosts, a 404.
+            url = cat["base_url"] + fname
+            want_sha = (ent.get("sha256") or "").lower()
+            want_size = ent.get("size")
+
+        dest = os.path.join(self.assets_dir(version), fname)
+
+        if os.path.exists(dest):
+            ok, why = self._verify_cached(dest, want_size, want_sha, trust_cache)
+            if ok:
+                return dest
+            # A file that verified before and does not now is either a moved
+            # generation (expected - romwbw_disks re-cut the release) or local
+            # corruption (not expected, and re-downloading over it would hide a
+            # failing disk).  Only the first is repaired automatically.
+            if self._generation_moved(version):
+                warn("%s no longer matches the catalog and RomWBW %s's "
+                     "generation has moved - re-downloading" % (fname, version))
+                self._supersede(dest)
+            else:
+                raise Contradiction(
+                    "%s does not match the catalog (%s) and the generation has "
+                    "NOT moved, so this is local damage rather than a "
+                    "re-publish.\n"
+                    "            Inspect it, then delete it and re-run, or run "
+                    "`romwbw-get verify --repair`." % (dest, why))
+
+        if self.offline:
+            raise Unverified("%s is not cached and --offline was given" % fname)
+
+        info("fetching %s" % url, self.quiet)
+        http_download(url, dest, want_size, want_sha, self.timeout, self.retries,
+                      progress=progress and sys.stderr.isatty())
+        self._record_generation(version)
+        return dest
+
+    def _verify_cached(self, path, want_size, want_sha, trust_cache):
+        try:
+            st = os.stat(path)
+        except OSError as e:
+            return False, str(e)
+        if want_size is not None and st.st_size != want_size:
+            return False, "size %d, expected %d" % (st.st_size, want_size)
+        if trust_cache or not want_sha:
+            return True, ""
+        got = sha256_file(path)
+        if got != want_sha:
+            return False, "sha256 %s, expected %s" % (got[:12], want_sha[:12])
+        return True, ""
+
+    def _gen_file(self, version):
+        return os.path.join(self.cache, INTERFACE, version, "generation")
+
+    def _record_generation(self, version):
+        g = self.entry(version).get("generation")
+        if g is None:
+            return
+        try:
+            with open(self._gen_file(version), "w") as f:
+                f.write("%s\n" % g)
+        except OSError:
+            pass
+
+    def _generation_moved(self, version):
+        g = self.entry(version).get("generation")
+        try:
+            with open(self._gen_file(version)) as f:
+                seen = f.read().strip()
+        except OSError:
+            return True          # never recorded: treat as moved, repair once
+        # Equality only.  generation is a counter romwbw_disks advances when an
+        # artifact actually changes; it may jump by more than one, and
+        # subtracting from it would invent a meaning it does not have.
+        return str(g) != seen
+
+    def _supersede(self, path):
+        d = os.path.join(os.path.dirname(path), ".superseded")
+        os.makedirs(d, exist_ok=True)
+        try:
+            short = sha256_file(path)[:12]
+        except OSError:
+            short = "unknown"
+        os.chmod(path, 0o644)
+        os.replace(path, os.path.join(d, "%s.%s" % (os.path.basename(path), short)))
+
+    # -- working copies --------------------------------------------------------
+    def working_copy(self, version, pristine):
+        """A writable copy of a disk image, outside the verified cache.
+
+        The guest writes to its disks - hbios_dispatch.cc opens every image
+        "rw" - so handing --disk0 a hash-pinned cache entry means the first CP/M
+        SAVE breaks the hash, and the obvious repair destroys the user's work.
+        Verified bytes and mutable bytes are therefore different files.
+        """
+        d = os.path.join(data_root(), "disks", version)
+        os.makedirs(d, exist_ok=True)
+        work = os.path.join(d, os.path.basename(pristine))
+        if not os.path.exists(work):
+            info("  writable copy -> %s" % work, self.quiet)
+            tmp = work + ".tmp"
+            _copy(pristine, tmp)
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, work)
+        elif os.path.getsize(work) != os.path.getsize(pristine):
+            # The pristine copy changed shape under an existing working copy -
+            # romwbw_disks re-cut the release with a different image.  The
+            # working copy is NOT replaced: whatever the user saved into it is
+            # in there, and this program does not get to decide that a fresh
+            # download matters more.  It does have to be said, though, because
+            # otherwise "I updated and nothing changed" has no explanation.
+            warn("%s is a working copy of an OLDER version of this image "
+                 "(%d bytes; the catalog now publishes %d)."
+                 % (work, os.path.getsize(work), os.path.getsize(pristine)))
+            warn("Your changes are kept.  Delete that file to start from the "
+                 "newly published one.")
+        return work
+
+
+def _copy(src, dst):
+    """Copy, preferring a reflink where the filesystem has one (51 MB images)."""
+    if sys.platform == "linux":
+        try:
+            subprocess.run(["cp", "--reflink=auto", src, dst], check=True,
+                           capture_output=True)
+            return
+        except (OSError, subprocess.CalledProcessError):
+            pass
+    elif sys.platform == "darwin":
+        try:
+            subprocess.run(["cp", "-c", src, dst], check=True, capture_output=True)
+            return
+        except (OSError, subprocess.CalledProcessError):
+            pass
+    shutil.copyfile(src, dst)
+
+
+def _ago(seconds):
+    if seconds < 3600:
+        return "%d minutes" % (seconds / 60)
+    if seconds < 86400:
+        return "%d hours" % (seconds / 3600)
+    return "%d days" % (seconds / 86400)
+
+
+# --- subcommands ---------------------------------------------------------------
+
+def cmd_versions(cat, args):
+    runnable = _runnable(args)
+    entries = cat.entries()
+    stored = load_choice().get("romwbw_version")
+    if args.json:
+        out = []
+        for e in entries:
+            d = dict(e)
+            d["runnable"] = (runnable is None or e["romwbw_version"] in runnable)
+            out.append(d)
+        json.dump({"index_url": cat.index_url, "emu_supported": runnable,
+                   "selected": stored, "romwbw_versions": out},
+                  sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return EX_OK
+
+    hidden = 0
+    for e in entries:
+        v = e["romwbw_version"]
+        runs = runnable is None or v in runnable
+        if not runs and not args.all:
+            hidden += 1
+            continue
+        marks = []
+        if e.get("default"):
+            marks.append("index default")
+        if v == stored:
+            marks.append("selected")
+        if not runs:
+            marks.append("NOT RUNNABLE by this build")
+        print("  %-7s %-8s %-22s %s"
+              % (v, e.get("status", "?"), e.get("label", ""),
+                 ("(" + ", ".join(marks) + ")") if marks else ""))
+    if hidden:
+        print("  (%d more this build cannot run; --all shows them)" % hidden)
+    # No warning here: _runnable() already said so once, for every subcommand.
+    if runnable is not None:
+        print("\n  this build runs: %s" % ", ".join(runnable))
+    return EX_OK
+
+
+def cmd_list(cat, args):
+    runnable = _runnable(args)
+    version = cat.resolve_version(args, None if args.allow_untested else runnable)
+    doc = cat.catalog(version)
+    roms = [r for r in doc.get("roms", []) if isinstance(r, dict)]
+    disks = [d for d in doc.get("disks", []) if isinstance(d, dict)]
+    want_roms = args.roms or not (args.roms or args.disks)
+    want_disks = args.disks or not (args.roms or args.disks)
+
+    if args.json:
+        out = {"romwbw_version": version, "generation": doc.get("generation"),
+               "base_url": doc.get("base_url")}
+        if want_roms:
+            out["roms"] = roms
+        if want_disks:
+            out["disks"] = disks
+        json.dump(out, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return EX_OK
+
+    adir = cat.assets_dir(version)
+    print("RomWBW %s  (generation %s)" % (version, doc.get("generation")))
+    for label, items, want in (("ROMs", roms, want_roms), ("Disks", disks, want_disks)):
+        if not want:
+            continue
+        print("\n%s:" % label)
+        for it in items:
+            here = os.path.exists(os.path.join(adir, it.get("filename", "")))
+            marks = []
+            if it.get("default"):
+                marks.append("default")
+            if it.get("defaultSlot") is not None:
+                marks.append("slot %d" % it["defaultSlot"])
+            if it.get("host_transfer"):
+                marks.append("R8/W8")
+            print("  %-14s %9s  %-8s %s%s"
+                  % (it.get("id", "?"), human(it.get("size", 0)),
+                     "cached" if here else "",
+                     it.get("name", ""),
+                     ("  [" + ", ".join(marks) + "]") if marks else ""))
+    return EX_OK
+
+
+def cmd_use(cat, args):
+    if args.clear:
+        try:
+            os.unlink(config_path())
+            print("forgot the stored choice; the index default applies again")
+        except OSError as e:
+            if e.errno != errno.ENOENT:
+                raise
+            print("nothing was stored")
+        return EX_OK
+
+    choice = load_choice()
+    if args.version:
+        runnable = _runnable(args)
+        cat.entry(args.version)
+        if runnable is not None and args.version not in runnable \
+                and not args.allow_untested:
+            raise Contradiction(
+                "this build cannot run RomWBW %s (it runs %s).\n"
+                "            Add it to ROMWBW_SUPPORTED_RELEASES in "
+                "src/romwbw_pin.h once you have booted it, or pass "
+                "--allow-untested."
+                % (args.version, ", ".join(runnable)))
+        choice["romwbw_version"] = args.version
+    for key in ("rom", "disk0", "disk1"):
+        v = getattr(args, key)
+        if v:
+            choice[key] = v
+    if args.index_url:
+        choice["index_url"] = args.index_url
+    save_choice(choice)
+    print("stored in %s:" % config_path())
+    for k in sorted(choice):
+        if k not in ("version", "interface"):
+            print("  %-16s %s" % (k, choice[k]))
+    return EX_OK
+
+
+def cmd_fetch(cat, args):
+    runnable = _runnable(args)
+    version = cat.resolve_version(args, None if args.allow_untested else runnable)
+    ids = args.ids or _default_ids(cat, version)
+    paths = []
+    for ident in ids:
+        paths.append(cat.fetch(version, ident, trust_cache=args.trust_cache))
+    for p in paths:
+        print(p)
+    return EX_OK
+
+
+def _default_ids(cat, version):
+    """The ROM plus whatever disks the catalog nominates for slots 0 and 1."""
+    ids = ["@rom"]
+    doc = cat.catalog(version)
+    for slot in (0, 1):
+        if any(d.get("defaultSlot") == slot
+               for d in doc.get("disks", []) if isinstance(d, dict)):
+            ids.append("@disk%d" % slot)
+    return ids
+
+
+def cmd_path(cat, args):
+    runnable = _runnable(args)
+    version = cat.resolve_version(args, None if args.allow_untested else runnable)
+    for ident in args.ids:
+        kind, _ = cat.resolve_id(version, ident)
+        p = cat.fetch(version, ident, trust_cache=args.trust_cache)
+        if args.work and kind == "disk":
+            p = cat.working_copy(version, p)
+        print(p)
+    return EX_OK
+
+
+def cmd_run(cat, args):
+    runnable = _runnable(args)
+    version = cat.resolve_version(args, None if args.allow_untested else runnable)
+    choice = load_choice()
+
+    rom_id = args.rom or choice.get("rom") or "@rom"
+    rom = cat.fetch(version, rom_id, trust_cache=args.trust_cache)
+
+    emu = find_emulator(args.emu)
+    if not emu:
+        raise Contradiction(
+            "no romwbw_emu binary found.  Build it with `make -C src`, or "
+            "pass --emu=PATH.")
+
+    argv = [emu, "--romwbw=" + rom]
+    for slot in (0, 1):
+        ident = getattr(args, "disk%d" % slot) or choice.get("disk%d" % slot)
+        if ident is None and not args.no_disks:
+            doc = cat.catalog(version)
+            if any(d.get("defaultSlot") == slot
+                   for d in doc.get("disks", []) if isinstance(d, dict)):
+                ident = "@disk%d" % slot
+        if not ident or ident == "none":
+            continue
+        pristine = cat.fetch(version, ident, trust_cache=args.trust_cache)
+        argv.append("--disk%d=%s" % (slot, cat.working_copy(version, pristine)))
+    argv.extend(args.emu_args)
+
+    info("+ " + " ".join(argv), cat.quiet)
+    try:
+        os.execv(emu, argv)
+    except OSError as e:
+        raise Contradiction("could not run %s: %s" % (emu, e))
+
+
+def cmd_verify(cat, args):
+    runnable = _runnable(args)
+    versions = ([args.romwbw] if args.romwbw and args.romwbw != "default"
+                else [e["romwbw_version"] for e in cat.entries()])
+    bad = 0
+    checked = 0
+    for version in versions:
+        adir = cat.assets_dir(version)
+        if not os.path.isdir(adir):
+            continue
+        doc = cat.catalog(version)
+        by_name = {}
+        for it in list(doc.get("roms", [])) + list(doc.get("disks", [])):
+            if isinstance(it, dict) and it.get("filename"):
+                by_name[it["filename"]] = it
+        # The upstream RomWBW Package.zip is cached here too when
+        # roms/build_emu_rom.sh has fetched it, and the catalog carries a
+        # sha256 for it.  It is not in roms[] or disks[], so keying only on
+        # those two arrays left a verifiable file reported as "not in the
+        # catalog" and excluded from the count - a file this program
+        # downloaded, and could check, and did not.
+        up = doc.get("upstream") or {}
+        if up.get("package_url"):
+            by_name[up["package_url"].rsplit("/", 1)[-1]] = {
+                "id": "@upstream", "sha256": up.get("package_sha256"),
+                "size": None}
+        for fname in sorted(os.listdir(adir)):
+            full = os.path.join(adir, fname)
+            # .superseded/ and .partial/ are directories, so os.path.isfile
+            # already skips them; listdir does not recurse into either.
+            if not os.path.isfile(full):
+                continue
+            it = by_name.get(fname)
+            if it is None:
+                print("  ?     %s is not in RomWBW %s's catalog" % (fname, version))
+                continue
+            checked += 1
+            ok, why = cat._verify_cached(full, it.get("size"),
+                                         (it.get("sha256") or "").lower(), False)
+            if ok:
+                print("  ok    %s" % fname)
+            elif args.repair:
+                print("  fix   %s (%s)" % (fname, why))
+                cat._supersede(full)
+                cat.fetch(version, it["id"], trust_cache=False)
+            else:
+                print("  FAIL  %s (%s)" % (fname, why))
+                bad += 1
+    if not checked:
+        print("nothing cached to verify under %s" % cat.cache)
+        return EX_OK
+    print("\n%s: %d cached asset(s) checked, %d bad"
+          % ("FAIL" if bad else "PASS", checked, bad))
+    return EX_CONTRADICTION if bad else EX_OK
+
+
+def cmd_cache_dir(cat, args):
+    print(cat.cache)
+    return EX_OK
+
+
+# --- mirror --------------------------------------------------------------------
+
+def cmd_mirror(cat, args):
+    """Populate a same-origin directory beside the web page.
+
+    A browser cannot fetch a GitHub release asset: measured, the download URLs
+    send no access-control-allow-origin on either redirect hop and the CORS
+    preflight 404s, and the images are release assets only, so raw.github and
+    jsdelivr 404 on them.  So the page reads a manifest and files served from
+    its own origin, and this is what writes them.
+    """
+    runnable = _runnable(args)
+    dest = os.path.abspath(args.dir)
+    cdir = os.path.join(dest, "catalog")
+
+    if args.versions == "runnable":
+        if runnable is None:
+            raise Contradiction(
+                "--versions=runnable needs a romwbw_emu binary to ask "
+                "(--emu=PATH).  The wasm core and that binary are compiled "
+                "from the same src/romwbw_pin.h, so it is the right thing to "
+                "ask - but it has to exist.")
+        want = [e["romwbw_version"] for e in cat.entries()
+                if e["romwbw_version"] in runnable]
+        for e in cat.entries():
+            if e["romwbw_version"] not in runnable:
+                info("skipping RomWBW %s: this build cannot run it - add it "
+                     "to ROMWBW_SUPPORTED_RELEASES in src/romwbw_pin.h once "
+                     "you have booted it" % e["romwbw_version"], cat.quiet)
+    elif args.versions == "all":
+        want = [e["romwbw_version"] for e in cat.entries()]
+    else:
+        want = [v.strip() for v in args.versions.split(",") if v.strip()]
+        for v in want:
+            cat.entry(v)
+    if not want:
+        raise Contradiction("no RomWBW version to mirror")
+
+    only = set(v.strip() for v in args.only.split(",")) if args.only else None
+    exclude = set(v.strip() for v in args.exclude.split(",")) if args.exclude else set()
+
+    manifest = {
+        "schema": MIRROR_SCHEMA,
+        "schema_version": MIRROR_SCHEMA_VERSION,
+        "interface": INTERFACE,
+        "mirrored_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "emu_supported": runnable,
+        "source": {"index_url": cat.index_url},
+        "romwbw_versions": [],
+    }
+    kept = set()
+    failures = []
+
+    for version in want:
+        e = cat.entry(version)
+        doc = cat.catalog(version)
+        vdir = os.path.join(cdir, INTERFACE, version)
+        block = {
+            "romwbw_version": version,
+            "label": e.get("label", "RomWBW " + version),
+            "status": e.get("status"),
+            "default": bool(e.get("default")),
+            "generation": doc.get("generation"),
+            "source": {"base_url": doc.get("base_url"),
+                       "release_tag": doc.get("release_tag")},
+            "roms": [], "disks": [], "not_mirrored": [],
+        }
+        for kind, items in (("rom", doc.get("roms", [])),
+                            ("disk", doc.get("disks", []))):
+            for it in items:
+                if not isinstance(it, dict) or not it.get("id"):
+                    continue
+                ident = it["id"]
+                if ident in exclude or (only is not None and ident not in only):
+                    block["not_mirrored"].append(
+                        {"id": ident, "kind": kind, "name": it.get("name", ""),
+                         "size": it.get("size"),
+                         "reason": "excluded from this mirror"})
+                    continue
+                try:
+                    src = cat.fetch(version, ident, trust_cache=args.trust_cache)
+                except (Contradiction, Unverified) as ex:
+                    failures.append("%s %s/%s: %s" % (kind, version, ident, ex))
+                    block["not_mirrored"].append(
+                        {"id": ident, "kind": kind, "name": it.get("name", ""),
+                         "size": it.get("size"), "reason": str(ex)})
+                    continue
+                fname = it["filename"]
+                out = os.path.join(vdir, fname)
+                rel = os.path.relpath(out, cdir)
+                kept.add(os.path.abspath(out))
+                if not (os.path.exists(out)
+                        and os.path.getsize(out) == it.get("size")):
+                    os.makedirs(vdir, exist_ok=True)
+                    info("  mirroring %s" % rel, cat.quiet)
+                    tmp = out + ".tmp"
+                    _copy(src, tmp)
+                    os.replace(tmp, out)
+                entry = {k: it[k] for k in
+                         ("id", "name", "description", "filename", "size",
+                          "sha256", "default", "format", "slices", "defaultSlot",
+                          "bootable", "cbios", "host_transfer", "license")
+                         if k in it}
+                entry["url"] = rel
+                block["roms" if kind == "rom" else "disks"].append(entry)
+        manifest["romwbw_versions"].append(block)
+
+    if args.prune and os.path.isdir(cdir):
+        for root, _dirs, files in os.walk(cdir):
+            for f in files:
+                p = os.path.abspath(os.path.join(root, f))
+                if f == "manifest.json" or p in kept:
+                    continue
+                info("  pruning %s" % os.path.relpath(p, cdir), cat.quiet)
+                _unlink(p)
+
+    # The manifest is the commit point.  It is written last, atomically, so a
+    # run that dies halfway leaves the previous one in place and the page keeps
+    # working with the set it already had.
+    os.makedirs(cdir, exist_ok=True)
+    tmp = os.path.join(cdir, "manifest.json.tmp")
+    with open(tmp, "w") as f:
+        json.dump(manifest, f, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp, os.path.join(cdir, "manifest.json"))
+
+    total = sum(len(b["roms"]) + len(b["disks"]) for b in manifest["romwbw_versions"])
+    print("mirrored %d asset(s) for %s into %s"
+          % (total, ", ".join(want), cdir))
+    if failures:
+        for f in failures:
+            warn(f)
+        return EX_CONTRADICTION
+    return EX_OK
+
+
+_warned_no_emu = [False]
+
+
+def _runnable(args):
+    """Which RomWBW releases the local build can boot, or None if it could not be asked."""
+    if getattr(args, "assume_supported", None):
+        return [v.strip() for v in args.assume_supported.split(",") if v.strip()]
+    emu = find_emulator(args.emu)
+    rel = supported_releases(emu)
+    if rel is None and not _warned_no_emu[0]:
+        # Said once, on every subcommand rather than only on `versions`.  With
+        # no answer the release list is not filtered at all, so a user can be
+        # handed a 51 MB image for a release their binary will refuse to load -
+        # and the refusal happens at the end of the download, not before it.
+        _warned_no_emu[0] = True
+        if emu:
+            warn("%s did not report a supported-release list, so nothing was "
+                 "filtered" % emu)
+        else:
+            warn("no romwbw_emu binary found (build it with `make -C src`, or "
+                 "pass --emu=PATH), so the release list was not filtered by "
+                 "what this build can run")
+    return rel
+
+
+# --- argument parsing -----------------------------------------------------------
+
+class Parser(argparse.ArgumentParser):
+    """argparse, but a usage error exits 64 rather than 2.
+
+    argparse's own error() exits 2, which here is the code that means "could
+    not verify - the network was unreachable".  CI acts on that difference:
+    .github/workflows/test.yml turns a 2 into a warning and keeps the job
+    green.  Left alone, a mistyped flag in that step would be reported as a
+    GitHub outage and nothing would go red.
+    """
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(EX_USAGE, "%s: error: %s\n" % (self.prog, message))
+
+
+def build_parser():
+    p = Parser(
+        prog="romwbw-get",
+        description="Fetch ROM and disk images from the romwbw_disks catalog.",
+        epilog="This repository ships no ROM and no disk image; they are "
+               "published at github.com/avwohl/romwbw_disks and fetched here.")
+    p.add_argument("--index-url", help="override the compiled-in index URL")
+    p.add_argument("--cache", help="cache root (default $XDG_CACHE_HOME/romwbw_emu)")
+    p.add_argument("--romwbw", metavar="VER",
+                   help="use this RomWBW release for this run ('default' = the index's)")
+    p.add_argument("--emu", metavar="PATH",
+                   help="the romwbw_emu binary to ask what releases it can run")
+    p.add_argument("--assume-supported", metavar="A,B",
+                   help="skip asking a binary and assume these releases are runnable")
+    p.add_argument("--allow-untested", action="store_true",
+                   help="allow a release this build has not been checked against")
+    p.add_argument("--offline", action="store_true", help="never open a socket")
+    p.add_argument("--refresh", action="store_true", help="ignore the index cache TTL")
+    p.add_argument("--trust-cache", action="store_true",
+                   help="check cached sizes but not their sha256")
+    p.add_argument("--timeout", type=float, default=30.0, metavar="SECS")
+    p.add_argument("--retries", type=int, default=1, metavar="N")
+    p.add_argument("--quiet", "-q", action="store_true")
+    sub = p.add_subparsers(dest="cmd", parser_class=Parser)
+
+    s = sub.add_parser("versions", help="what RomWBW releases are published")
+    s.add_argument("--all", action="store_true",
+                   help="include releases this build cannot run")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_versions)
+
+    s = sub.add_parser("list", help="what ROMs and disks a release has")
+    s.add_argument("--roms", action="store_true")
+    s.add_argument("--disks", action="store_true")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_list)
+
+    s = sub.add_parser("use", help="remember a RomWBW release and artifact choice")
+    s.add_argument("version", nargs="?")
+    s.add_argument("--rom", metavar="ID")
+    s.add_argument("--disk0", metavar="ID")
+    s.add_argument("--disk1", metavar="ID")
+    s.add_argument("--clear", action="store_true", help="forget the stored choice")
+    s.set_defaults(func=cmd_use)
+
+    s = sub.add_parser("fetch", help="download and verify assets by id")
+    s.add_argument("ids", nargs="*", metavar="ID",
+                   help="catalog ids, or @rom / @disk0 / @disk1 / @upstream; "
+                        "with none, the release's defaults")
+    s.set_defaults(func=cmd_fetch)
+
+    s = sub.add_parser("path", help="print the path of an asset, fetching it if needed")
+    s.add_argument("ids", nargs="+", metavar="ID")
+    s.add_argument("--work", action="store_true",
+                   help="for a disk, print a writable working copy instead of "
+                        "the read-only cached original")
+    s.set_defaults(func=cmd_path)
+
+    s = sub.add_parser("run", help="fetch what is needed and start the emulator")
+    s.add_argument("--rom", metavar="ID")
+    s.add_argument("--disk0", metavar="ID")
+    s.add_argument("--disk1", metavar="ID")
+    s.add_argument("--no-disks", action="store_true", help="boot with no disk attached")
+    s.add_argument("emu_args", nargs="*", metavar="-- EMU-ARGS",
+                   help="everything after -- is passed to romwbw_emu")
+    s.set_defaults(func=cmd_run)
+
+    s = sub.add_parser("mirror", help="populate a same-origin directory for the web page")
+    s.add_argument("dir", metavar="DIR")
+    s.add_argument("--versions", default="runnable",
+                   help="'runnable' (default), 'all', or a comma-separated list")
+    s.add_argument("--only", metavar="ID,ID", help="mirror only these ids")
+    s.add_argument("--exclude", metavar="ID,ID")
+    s.add_argument("--prune", action="store_true",
+                   help="delete mirrored files no longer in the manifest")
+    s.set_defaults(func=cmd_mirror)
+
+    s = sub.add_parser("verify", help="re-hash everything in the cache")
+    s.add_argument("--repair", action="store_true",
+                   help="re-download anything that does not verify")
+    s.set_defaults(func=cmd_verify)
+
+    s = sub.add_parser("cache-dir", help="print the cache root and exit")
+    s.set_defaults(func=cmd_cache_dir)
+    return p
+
+
+def main(argv):
+    parser = build_parser()
+    # Everything after a bare `--` belongs to the emulator, not to us.
+    if "--" in argv:
+        cut = argv.index("--")
+        argv, passthrough = argv[:cut], argv[cut + 1:]
+    else:
+        passthrough = []
+    args = parser.parse_args(argv)
+    if not getattr(args, "cmd", None):
+        parser.print_help()
+        return EX_USAGE
+    if args.cmd == "run":
+        args.emu_args = list(args.emu_args) + passthrough
+    elif passthrough:
+        parser.error("-- is only meaningful for `run`")
+
+    cat = Catalog(args)
+    try:
+        return args.func(cat, args)
+    except Contradiction as e:
+        print("romwbw-get: %s" % e, file=sys.stderr)
+        return EX_CONTRADICTION
+    except Unverified as e:
+        print("romwbw-get: CANNOT VERIFY: %s" % e, file=sys.stderr)
+        return EX_UNVERIFIED
+    except KeyboardInterrupt:
+        print("\nromwbw-get: interrupted", file=sys.stderr)
+        return EX_UNVERIFIED
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

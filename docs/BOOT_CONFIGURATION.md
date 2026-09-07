@@ -19,17 +19,26 @@ Settings persist across sessions in `$XDG_CONFIG_HOME/romwbw_emu/nvram` (default
 
 ```bash
 # Auto-boot CP/M from ROM
-./romwbw_emu --romwbw=roms/emu_avw.rom --boot=C
+./romwbw_emu --romwbw="$(romwbw-get path @rom)" --boot=C
 
 # Auto-boot from the first hard disk (unit 2), slice 0
-./romwbw_emu --romwbw=roms/emu_avw.rom --disk0=disk.img --boot=2
+./romwbw_emu --romwbw="$(romwbw-get path @rom)" --disk0=disk.img --boot=2
 
 # Auto-boot from the first hard disk (unit 2), slice 3
-./romwbw_emu --romwbw=roms/emu_avw.rom --disk0=disk.img --boot=2.3
+./romwbw_emu --romwbw="$(romwbw-get path @rom)" --disk0=disk.img --boot=2.3
 
 # Show boot menu (no auto-boot)
-./romwbw_emu --romwbw=roms/emu_avw.rom --boot=H
+./romwbw_emu --romwbw="$(romwbw-get path @rom)" --boot=H
 ```
+
+This repository ships no ROM. `romwbw-get path @rom` downloads the default one
+for the selected RomWBW release, verifies it against the catalog's SHA-256, and
+prints where it landed - see [CATALOG.md](CATALOG.md). The whole of the first
+line is also `romwbw-get run -- --boot=C`, which fetches a disk too.
+
+For `disk.img`, use `$(romwbw-get path --work @disk0)` rather than the cached
+original: a guest writes to its disks, and the cached copy is the file the hash
+was checked against.
 
 ### Boot Format Reference
 
@@ -42,30 +51,35 @@ Settings persist across sessions in `$XDG_CONFIG_HOME/romwbw_emu/nvram` (default
 | `2` | Boot disk unit 2 (first hard disk), slice 0 |
 | `2.3` | Boot disk unit 2, slice 3 |
 
-Boot unit numbering: unit 0 is the RAM disk and unit 1 is the ROM disk - neither contains a bootable OS, so booting `0` reports "No system image on disk". Hard disks are units 2 and up in `--disk0`..`--disk15` order (`--disk0` = unit 2). Press `D` at the boot menu to list the disk units.
+Boot unit numbering: unit 0 is the RAM disk and unit 1 is the ROM disk - neither contains a bootable OS, so booting `0` reports "*** No boot record" on RomWBW 3.6.0 and "*** No system image on disk" on 3.5.1. Hard disks are units 2 and up in `--disk0`..`--disk15` order (`--disk0` = unit 2). Press `D` at the boot menu to list the disk units.
 
 ## Using SYSCONF (Interactive)
 
-Press `W` at the boot menu to access the SYSCONF utility:
+Press `W` at the boot menu to access the SYSCONF utility. This is RomWBW 3.6.0
+started with `--boot=H`, which is why the boot option reads `H` and autoboot is
+already enabled:
 
 ```
 Boot [H=Help]: W
 
-RomWBW System Config Utility, Version 1.0
+RomWBW System Config Utility, Version 1.1 June-2025
 
-Current Configuration:
+Current Configuration: 
   [BO] / Boot Options: ROM (App = "H")
-  [AB] / Auto Boot: Disabled
+  [AB] / Auto Boot: Enabled (Timeout = 0)
 
 Commands:
-  (P)rint - Display current settings
-  (S)et {switch} {values} - Set a switch
-  (R)eset - Reset NVRAM to defaults
-  (H)elp - Help menu
-  (Q)uit - Exit to boot menu
+  (P)rint - Display Current settings
+  (S)et {SW} {val}[,{val}[,{val}]]- Set a switch value(s)
+  (R)eset - Init NVRAM to Defaults
+  (H)elp [{SW}] - This help menu, or help on a switch
+  e(X)it - Exit Configuration
 
 $
 ```
+
+3.5.1 prints `Version 1.0 Nov-2024` and lists `(Q)uit - Quit` in place of
+3.6.0's `e(X)it - Exit Configuration`. Both releases accept either letter.
 
 ### SYSCONF Commands
 
@@ -81,30 +95,57 @@ $
 | `H` | Show help | `H` |
 | `H BO` | Help for boot options | `H BO` |
 | `H AB` | Help for autoboot | `H AB` |
-| `Q` | Quit SYSCONF | `Q` |
+| `X` or `Q` | Exit configuration | `X` |
 
 ### Example: Configure Disk Boot
 
+Set the target to disk unit 2 slice 3, enable autoboot with no countdown, print
+to check, and exit. Every `S` echoes the whole configuration back, so the `P`
+here only confirms what the two sets already printed:
+
 ```
-$ S BO D,2,3       <- Set boot to disk 2, slice 3
-$ S AB E,0         <- Enable autoboot (immediate)
-$ P                <- Verify settings
-Current Configuration:
-  [BO] / Boot Options: Disk (Unit 2, Slice 3)
-  [AB] / Auto Boot: Enabled (Timeout 0 seconds)
-$ Q                <- Quit (settings saved on emulator exit)
+$S BO D,2,3
+Current Configuration: 
+  [BO] / Boot Options: Disk (Unit = 2, Slice = 3)
+  [AB] / Auto Boot: Enabled (Timeout = 0)
+
+$S AB E,0
+Current Configuration: 
+  [BO] / Boot Options: Disk (Unit = 2, Slice = 3)
+  [AB] / Auto Boot: Enabled (Timeout = 0)
+
+$P
+Current Configuration: 
+  [BO] / Boot Options: Disk (Unit = 2, Slice = 3)
+  [AB] / Auto Boot: Enabled (Timeout = 0)
+
+$X
 ```
+
+The settings are written to `nvram` when the emulator exits.
 
 ### Example: Configure ROM App Boot
 
+Continuing in the same session, switch to ROM app `C` (CP/M 2.2) and give the
+menu a five second countdown:
+
 ```
-$ S BO R,C         <- Set boot to ROM app 'C' (CP/M)
-$ S AB E,5         <- Enable autoboot with 5 second countdown
-$ P
-Current Configuration:
+$S BO R,C
+Current Configuration: 
   [BO] / Boot Options: ROM (App = "C")
-  [AB] / Auto Boot: Enabled (Timeout 5 seconds)
-$ Q
+  [AB] / Auto Boot: Enabled (Timeout = 0)
+
+$S AB E,5
+Current Configuration: 
+  [BO] / Boot Options: ROM (App = "C")
+  [AB] / Auto Boot: Enabled (Timeout = 5)
+
+$P
+Current Configuration: 
+  [BO] / Boot Options: ROM (App = "C")
+  [AB] / Auto Boot: Enabled (Timeout = 5)
+
+$X
 ```
 
 ## NVRAM Persistence
@@ -236,7 +277,7 @@ thing and is still saved.
 ### Getting Back to the Menu
 
 ```bash
-./romwbw_emu --romwbw=roms/emu_avw.rom --boot=none
+./romwbw_emu --romwbw="$(romwbw-get path @rom)" --boot=none
 ```
 
 `--boot=none` (or `off`) removes the persisted setting and comes up at the boot

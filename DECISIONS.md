@@ -24,7 +24,11 @@ Either way the entry leaves this file. An answered decision left in place turns
 this file into the same accumulating record `todo.txt` was.
 
 The sections are independent and in a fixed order; answering one does not
-require reading any other.
+require reading any other. The numbers are stable rather than contiguous. They
+are cited from outside this file - `.github/workflows/release.yml` cites one -
+so an answered decision leaves a gap where it was instead of renumbering
+everything below it, which would silently repoint every citation at a different
+question.
 
 ---
 
@@ -131,49 +135,6 @@ each of them sees. Inside this repository the CR half also cannot be done
 piecemeal: `emu_io_cli.cc`, `emu_io_wasm.cc`, the page's
 `Module.onConsoleOutput` and `romwbw-debug.html` are one commit's worth of work
 or the web build is visibly wrong in between.
-
----
-
-## 4. What a package ships: the duplicated ROM, and the missing disk
-
-**The question.** Two halves, and one answer covers both. (a) The four ROM files
-in this tree are one file - which name is canonical, and what does the web build
-fetch? (b) Should the deb and rpm carry a disk image at all?
-
-**What is true today.** `web/emu_avw.rom`, `web/emu_romwbw.rom`,
-`roms/emu_avw.rom` and `roms/emu_romwbw.rom` all md5 to
-`826c3bcf7db18a36f8eb73792873613d`, so deduplicating them means deciding which
-name is canonical and what the web build fetches - the page's ROM select offers
-`emu_avw.rom` by name. Separately, no `.img` is staged by `release.yml` or by
-`web/makefile`'s deploy targets, so a stock deb or rpm has no disk at all, while
-the page offers five disk names of which `z80cpm_tools.img` exists nowhere in
-this tree.
-
-**What each answer costs.**
-
-- **Deduplicate the ROMs.** Whichever name loses, the page's ROM select and the
-  web build's fetch have to name the survivor. The four copies are byte
-  identical, so nothing about the emulator's behaviour changes.
-- **Leave the four copies.** Three redundant copies of one ROM stay in the tree.
-  A package carries fewer than four but still more than one: `release.yml`
-  stages `roms/*.rom`, and then stages `roms/emu_avw.rom` a second time next to
-  the page, because the page fetches its ROM by a bare relative name.
-- **Ship an image in the packages.** A 49 MB combo image in a deb is a
-  packaging decision in its own right - size, build time and mirror bandwidth
-  for every install.
-- **Ship no image.** The status quo: a stock install 404s on every `.img` name
-  the page's select offers, including the two the page selects by default, and
-  the user loads an image through the page's file picker instead. The CLI is
-  unaffected, since it takes a path.
-
-**Who is blocked.** `README.md`'s "**No disk image is packaged.**" paragraph
-points here for this question - it was repointed from `todo.txt` when this file
-was created. The `[1.37]` entry in `CHANGELOG.md` still says "still open in
-`todo.txt` as a policy question", and is deliberately left alone: it was true
-when it shipped, and this repository does not rewrite released entries.
-`todo.txt`'s header is what catches a reader who follows it. `release.yml` and
-`web/makefile`'s deploy targets are what would change if the answer is to ship
-an image.
 
 ---
 

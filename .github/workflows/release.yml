@@ -163,8 +163,12 @@ jobs:
           mkdir -p staging/usr/share/doc/romwbw_emu
           mkdir -p staging/usr/share/romwbw_emu/web
           mkdir -p staging/usr/share/romwbw_emu/web/vendor
-          mkdir -p staging/usr/share/romwbw_emu/roms
           cp src/romwbw_emu staging/usr/bin/
+          # The catalog client. It is the only way to get a ROM now, so it is
+          # a first-class part of the package rather than a developer script:
+          # `romwbw_emu` with no argument tells the user to run `romwbw-get`,
+          # and that has to be on their PATH when it does.
+          install -m 755 tools/romwbw-get staging/usr/bin/romwbw-get
           # No 2>/dev/null || true here: every one of these is checked in or
           # built above, so a failure means the package would ship incomplete.
           # Discarding that error is what hid the missing page for this long.
@@ -176,16 +180,45 @@ jobs:
           cp web/vendor/xterm.css web/vendor/xterm.js web/vendor/xterm-addon-fit.js \
              web/vendor/LICENSE.xterm web/vendor/LICENSE.xterm-addon-fit \
              staging/usr/share/romwbw_emu/web/vendor/
-          cp roms/*.rom staging/usr/share/romwbw_emu/roms/
-          # The page fetches its ROM by a bare relative name -
-          # fetchWithProgress('emu_avw.rom') in romwbw.html-template - so it
-          # resolves next to the page, not in roms/. Staging roms/ alone left
-          # the installed page 404ing on the only ROM its select offers.
-          # Measured by serving a copy of this staging layout and fetching
-          # every href/src in the rendered page.
-          cp roms/emu_avw.rom staging/usr/share/romwbw_emu/web/
+          # NO ROM IS STAGED. Every .deb and .rpm up to v1.39 carried six
+          # 512 KB ROMs in usr/share/romwbw_emu/roms plus a seventh copy of
+          # emu_avw.rom beside the page - about 3.7 MB of a package whose
+          # binary is 400 KB - and shipping them is what made "publish a new
+          # ROM" mean "release this repository". They come from the catalog
+          # now, and DECISIONS.md section 4 asked exactly this question.
+          #
+          # What that means for the installed page: it has no ROM and no disk
+          # until somebody populates the mirror beside it, and it says so in
+          # its own status line and terminal rather than 404ing on names
+          # nobody chose (which is what it did before this - the two disks its
+          # select offered by default were never staged by anything). One
+          # command fixes it:
+          #
+          #     romwbw-get mirror /usr/share/romwbw_emu/web
+          #
+          # The file pickers work with no mirror at all.
           cp README.md staging/usr/share/doc/romwbw_emu/
           cp LICENSE staging/usr/share/doc/romwbw_emu/
+          cp docs/CATALOG.md staging/usr/share/doc/romwbw_emu/
+
+      - name: No artifact slipped into the package
+        run: |
+          # The staging step above is the last place a ROM could get back into
+          # something users install. Assert rather than trust: the two cp lines
+          # that used to put them there were unguarded on purpose, so their
+          # removal is the kind of change a later edit could quietly undo.
+          found=$(find staging -type f \( -name '*.rom' -o -name '*.img' \) || true)
+          if [ -n "$found" ]; then
+            echo "a ROM or disk image reached the package staging area:"
+            echo "$found"
+            exit 1
+          fi
+          test -x staging/usr/bin/romwbw-get || {
+            echo "romwbw-get is not in the package - the emulator's own error"
+            echo "message tells users to run it"
+            exit 1
+          }
+          echo "no .rom or .img staged; romwbw-get is installed"
 
       - name: Build DEB package
         run: |

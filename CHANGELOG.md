@@ -19,17 +19,140 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
-`VERSION` is `1.39`. The rule `[1.37]` was cut to establish is that a
+`VERSION` is `1.40`. The rule `[1.37]` was cut to establish is that a
 **binary-affecting** change landing here bumps it, so that no build answers with
 a tag's version while differing from it. The RomWBW runtime-version change below
-touches four files in `src/`, so it bumped. Cutting a release from here takes a
-dated heading, a `VERSION` that already matches the tag, and a green
+touches four files in `src/`, so it bumped to `1.39`; the artifact migration
+took it to `1.40`, which is the same rule read strictly - `src/romwbw_emu.cc`
+changed, so the binary changed, even though all that changed in it is help text
+and the message printed when no ROM is given. Cutting a release from here takes
+a dated heading, a `VERSION` that already matches the tag, and a green
 `workflow_dispatch` run of `release.yml` before the tag exists; that dry run is
 what replaced the dependency pins, so it is a step rather than a courtesy.
 
+### The ROMs and the disk images have left this repository
+
+Six 512 KB ROMs in `roms/`, two more copies of one of them in `web/`, a 49 MB
+combo image and an 8 MB one in `disks/` - about 61 MB of binary in a repository
+whose source is a few hundred kilobytes - and 3.7 MB of ROM in every published
+`.deb` and `.rpm`. All of it is gone. `git ls-files` now matches no `.rom` and
+no `.img` outside `archive/`, and a CI step fails the build if that stops being
+true, because this tree's own history says what happens without one: four copies
+of the same ROM drifted apart on 2026-09-06 and every gate stayed green.
+
+The size was never the argument. The argument is that **adding a disk image
+meant releasing this repository**, and the three GUI clients besides - a user
+who wanted an image somebody had already published waited on four application
+releases that contained no change to any application.
+[`avwohl/romwbw_disks`](https://github.com/avwohl/romwbw_disks) builds and
+publishes the ROMs and images now, behind a two-level catalog, and the new
+`tools/romwbw-get` fetches them and checks every byte against the SHA-256 the
+catalog names. Publishing a ROM or a disk there reaches everyone who already has
+this installed, with **no release of this repository at all**.
+
+There is one exception and it is deliberate. A new RomWBW *release* still needs
+a rebuild here, because `ROMWBW_SUPPORTED_RELEASES` in `src/romwbw_pin.h` is
+compile-time and adding a line to it is a claim that somebody booted that
+release and watched it work. `romwbw-get` refuses such a release by name before
+it downloads anything - a catalog ROM is 512 KB, and the 49 MB is the disk `run`
+fetches beside it.
+
+The four Z80 sources stay. `src/{r8,w8,emu_hbios,emu_rom}.asm` are what this
+repository actually owns, and `romwbw_disks`' `tools/check_source_drift.sh`
+compares them against its own copies and asserts they are present.
+
+[`docs/CATALOG.md`](docs/CATALOG.md) is the description of the whole arrangement
+and is where to start; what follows is what moved.
+
 ### Added
 
+- **`tools/romwbw-get`, which is how a ROM and a disk get here now.** Python 3,
+  standard library only - no `pip install`, and nothing added to the emulator,
+  which still links libc++ and libSystem and has gained no network code of any
+  kind. Fetching needs HTTP, TLS and SHA-256, none of which belong in a program
+  whose job is to execute untrusted Z80 code, and all three of which would break
+  `make STATIC=1` and the emscripten build. The quick start is one command:
+
+      tools/romwbw-get run
+
+  which reads the catalog, works out which RomWBW release this build can boot by
+  *asking the binary* rather than assuming, downloads that release's default ROM
+  and disk, checks both against the published SHA-256 and starts the emulator.
+  `versions`, `list`, `use`, `fetch`, `path`, `mirror` and `verify` are the rest
+  of the surface; `docs/CATALOG.md` has the table.
+
+  What it guarantees is an order, and the order is the whole of it: the catalog
+  document is checked against the index's `catalog_sha256` and `catalog_size`
+  **before a byte of it is parsed**, and each asset against its own entry.
+  Nothing appears under its real filename until it has passed. Assets are named
+  by pseudo-id - `@rom`, `@disk0`, `@disk1`, `@upstream` - so that nothing in
+  this repository hardcodes `emu_avw` or `hd1k_combo`; a client that names an
+  asset is a client that breaks when the catalog is rearranged. There is no
+  `@disk` and no "the default disk", which was measured rather than decided: no
+  disk in either published catalog carries a `default` field at all, so `@disk0`
+  and `@disk1` are the disks the catalog gives `defaultSlot` 0 and 1.
+
+  Its exit codes are `0` verified, `1` a contradiction - a hash, a size, a
+  schema, an id that does not exist - `2` could not verify, and `64` usage. CI
+  turns a `2` into a warning and a `1` into a red build, because a GitHub outage
+  is not a defect in this repository and a gate that cries wolf is a gate that
+  stops being read. It is the same split `tools/check-store-version.sh` already
+  used, so a job needs no translation table between them.
+
+- **A pristine cache and a separate working copy, because a guest writes to its
+  disks.** `hbios_dispatch.cc` opens every image `"rw"`, so the hash-verified
+  download and the file handed to the emulator cannot be the same file: the
+  first CP/M `SAVE` would break the hash of a verified file, and the obvious
+  repair - re-download it - would then destroy the user's work.
+
+      $XDG_CACHE_HOME/romwbw_emu/v0/<release>/assets/  verified, mode 0444
+      $XDG_DATA_HOME/romwbw_emu/disks/<release>/       what the guest writes to
+
+  `run` and `path --work` copy into the second on first use; `verify` only ever
+  looks at the first. Pointing `--disk0=` at a cached path by hand cannot damage
+  the cache, because 0444 makes that `"rw"` open fall back to read-only; what it
+  does instead is make the guest's first write fail as a bad sector, which is
+  what `path --work` is for.
+
+- **`docs/CATALOG.md`** - the canonical description of where the ROM and the
+  disks come from, what is verified against what, and what a browser can and
+  cannot do. `README.md` and the packages point at it; a `.deb` and `.rpm`
+  install it as `/usr/share/doc/romwbw_emu/CATALOG.md`.
+
+- **Two tests that need no network.** `tests/catalog_client_test.py` runs
+  `romwbw-get` against a fixture catalog it serves itself on `127.0.0.1`, and
+  `tests/web_manifest.js` drives the page's manifest-to-`<option>` logic under
+  node. Both run in `make -C src test`, and the CI job asserts neither of them
+  skipped - every check in that suite exits 0 when a tool it needs is missing,
+  which is right on a developer's machine and would turn a dropped package into
+  a green job here.
+
+- **`romwbw-get` keeps its release choice in a file of its own.** The settings
+  document - `romwbw_emu.json`, or `$XDG_CONFIG_HOME/romwbw_emu/config.json` -
+  is unchanged and still holds `rom` and `disks[]` as plain paths. `use` writes
+  to `$XDG_CONFIG_HOME/romwbw_emu/catalog.json` instead, because `--save-config`
+  rebuilds the settings document from the C++ struct: a key it does not know
+  about is not merged through, it is gone, so a user who ran `--save-config`
+  once would have silently lost the release they had chosen.
+
 ### Fixed
+
+- **An installed package's web page offered five disk images and staged none of
+  them.** The ROM half had been fixed in `[1.37]` - `release.yml` copied
+  `emu_avw.rom` next to the page because the page fetched it by a bare relative
+  name - and that is exactly why the disk half went unnoticed: the two disks the
+  selects chose *by default*, `hd1k_combo.img` and `hd1k_games.img`, were staged
+  by nothing, and one of the five names on offer, `z80cpm_tools.img`, has never
+  existed in this repository at all. The lists come from `catalog/manifest.json`
+  now, so a package with no mirror beside it offers nothing rather than offering
+  names that cannot resolve, says so in its status line and in its terminal, and
+  names the one command that populates it. The file pickers work with no mirror
+  at all, which they always did.
+
+- **`make -C web serve` finally has a bootable disk in it.** It mirrors
+  `emu_avw` and `hd1k_combo` into `web/` before starting the server, so a local
+  serve can boot to a CP/M prompt without the operator finding an image by hand.
+  That is a first: no `.img` has ever been staged next to the served page.
 
 - **`src/makefile` had no header dependencies at all.** The pattern rule was
   `%.o: %.cc` and nothing else, so editing any header rebuilt nothing: `make`
@@ -45,6 +168,120 @@ what replaced the dependency pins, so it is a step rather than a courtesy.
   without anyone remembering.
 
 ### Changed
+
+- **The web page builds its ROM, disk and RomWBW lists from a manifest on its
+  own origin, because a browser cannot fetch the artifacts any other way.**
+  Measured this session rather than assumed: GitHub release download URLs send
+  no `access-control-allow-origin` on either redirect hop, and the CORS
+  preflight `OPTIONS` returns 404. `raw.githubusercontent.com` and jsdelivr do
+  send `*`, and carry byte-identical copies of the catalog *documents* - but the
+  ROMs and images are release assets only, never committed
+  (`git ls-files | grep -cE '\.(img|rom)$'` in `romwbw_disks` is `0`), so those
+  hosts 404 on the artifacts themselves. There is no Pages site. So
+  `romwbw-get mirror DIR` writes `catalog/manifest.json` and the assets beside
+  the page; `web/romwbw.html-template` lost its hardcoded `<option>` lists and
+  gained a `RomWBW:` select, builds all three lists at load time, and checks
+  each download against the manifest's size and sha256 through `crypto.subtle`
+  - which needs a secure context, so over plain HTTP the page says it checked
+  the size only rather than reporting a pass it did not perform.
+  `make -C web deploy-dev` and `deploy-romwbw-PRODUCTION-ASK-HUMAN-FIRST` now
+  depend on `mirror-dev`/`mirror-prod`, so **a newly published disk reaches the
+  page by re-running a deploy** - no source edit, no wasm rebuild, no release.
+
+- **A `.deb` and `.rpm` carry no ROM, which answers `DECISIONS.md` section 4 in
+  both of its halves.** That entry asked which of four identical ROM copies was
+  canonical and what the web build should fetch, and separately whether a
+  package should carry a disk image at all. The first has no answer because it
+  has no subject: there are no copies, nothing is tracked, so there is nothing
+  to deduplicate and nothing to drift. That also closes the `todo.txt` item
+  asking for a gate over those four - `e47c948` rebuilt one of them and left
+  three carrying the bank call it had just fixed, and every gate stayed green -
+  and the replacement is not a hash comparison but the CI guard that no `.rom`
+  or `.img` is tracked outside `archive/`. The second answer is no: packages
+  install `/usr/bin/romwbw-get` beside `/usr/bin/romwbw_emu`, plus
+  `/usr/share/doc/romwbw_emu/CATALOG.md`, and the installed page has no mirror
+  until somebody runs `romwbw-get mirror /usr/share/romwbw_emu/web`. Per that
+  file's own rule the entry has left `DECISIONS.md`; the sections below it keep
+  their numbers, because `release.yml` cites one by number. `[1.37]` below still
+  calls this "still open in `todo.txt` as a policy question" - true when it
+  shipped, released entries here are not rewritten, and this bullet is where the
+  answer is.
+
+- **`roms/build_emu_rom.sh` proves the published ROM is reproducible from this
+  source, rather than just building a ROM.** It assembles bank 0 from
+  `src/emu_hbios.asm`, overlays it on banks 1-15 taken from a ROM you name or
+  from the sha256-pinned upstream `Package.zip` it fetches, and then **compares
+  the result against the SHA-256 the catalog publishes**. That comparison is the
+  script's real output, because `docs/ROM_ATTESTATION.md` and the GPL both turn
+  on the claim being true. Verified this session: it reproduces
+  `emu_avw-v0-3.5.1.rom`, sha256
+  `4b11402a29fad22de304775b7c415eb6a74600df06bd57828b9931a7e9693258`, byte for
+  byte. It will build only the release `ROMWBW_DEFAULT_*` names, because
+  `src/emu_hbios.asm` here hardcodes its version stamp - `db 035h` / `db 010h`
+  at `CB_VERSION` and again in the ident block - and overlaying this bank 0 on
+  another release's banks would produce a ROM that boots and then prints
+  `*** WARNING: HBIOS/CBIOS Version Mismatch ***`. It refuses rather than
+  building that. `romwbw_disks`' copy takes the stamp from a generated include
+  and is what cuts what users download. It also will not write inside the
+  repository: a built ROM in the tree is exactly what was removed.
+
+- **`ROMWBW_DEFAULT_*` stays, and means something narrower again.** Three live
+  C++ uses read it - `hbios_dispatch.cc:709`, `:1702` and `emu_init.cc:150`, as
+  the fallback release for a ROM with no readable HCB - so it is not
+  bookkeeping. What it names is now "the release `roms/build_emu_rom.sh`
+  reproduces", not "the release this tree's artifacts are cut from", because
+  this tree has no artifacts.
+
+- **The two verifiers ask their question of what was downloaded.**
+  `disks/verify_disk_utils.sh` was rewritten in two halves: it always assembles
+  `src/r8.asm` and `src/w8.asm` and asserts the `w8.com` they build still
+  carries the `06 e9 cf` `HBF_HOST_CAPS` interlock - which needs no network and
+  no image, and is the only thing standing between an edit to `w8.asm` and a W8
+  that hands a guest-supplied path to a front end that promised nothing about
+  where it lands - and it then inspects any `*.img` in a directory you name,
+  defaulting to the `romwbw-get` cache. `roms/verify_romwbw_pin.sh` keeps its
+  name and its path, which `DOWNSTREAM.md` and three client changelogs publish,
+  and now scans that cache too. When there is nothing anywhere it prints a PASS
+  line for the half it could check - the pin header against the binary - and
+  then a second line saying `NO ARTIFACT WAS INSPECTED`, which is the same
+  correction `tools/check-shipped-disks.sh` took a day earlier: a summary that
+  cannot tell "nothing to check" from "everything checked out" is worse than no
+  summary.
+
+- **CI stopped asserting two counts a human had to maintain.** The Tests
+  workflow used to grep for the literal strings `PASS: 4 disk-resident binaries`
+  and `PASS: 2 shipped w8.com carry` - two tracked images times two utilities,
+  in a repository whose premise is now that the set of images changes without
+  anyone here touching anything. Both counts are computed from what the fetch
+  step actually produced. The workflow also gained a guard that no `.rom` or
+  `.img` is tracked outside `archive/`, and tri-state catalog steps that fetch
+  the published ROM and disk, re-run both verifiers against them, and boot the
+  pair to a CP/M prompt asserting the CBIOS banner and the absence of an
+  HBIOS/CBIOS version mismatch - which is the check that the ROM and the disk
+  the catalog offers together really do go together. Unreachable is a warning
+  and still green; contradicted is red.
+
+- **The emulator's own surface is unchanged except for what it says.** The ROM
+  flag is still spelled `--romwbw=FILE`, and there is still no `--rom`. The
+  disk flags are still `--disk0=` through `--disk15=`, but the help documented
+  only 0 and 1, so a reader could not tell the other fourteen slots existed; it
+  says `--diskN=FILE ... N, 0 through 15` now. The examples name
+  `$(romwbw-get path @rom)` rather than `roms/emu_avw.rom`, which is a path no
+  user has any more, and a run with no ROM prints an error naming `romwbw-get`
+  instead of `No binary file specified` - since v1.40 that is the normal state
+  of a fresh install rather than a typo.
+
+- **What this weakened, said out loud rather than left to be discovered.**
+  `romwbw_disks`' `tools/check_source_drift.sh` reads
+  `romwbw_emu/roms/emu_avw.rom` and pulls `r8.com` and `w8.com` out of
+  `romwbw_emu/disks/hd1k_combo.img` with `cpmcp`. Neither file exists now, so
+  both of its artifact comparisons degrade to green `info` lines: the script
+  still exits 0 and no longer compares any built artifact. Its comparison of the
+  four `.asm` sources is untouched and still works, which is why those four
+  sources stay here. The fix belongs in that repository and `todo.txt` carries
+  it as a cross-repo item, with the shape it should take - compare its own
+  `build/utils/*.com` against a local `um80` assembly of these sources, which
+  needs no image and is strictly stronger than what it does today.
 
 - **`roms/verify_romwbw_pin.sh` asks a different question.** It used to be "does
   everything in this tree match the one pinned release?", which would now fail a
@@ -377,9 +614,40 @@ hardware does, and 3.5.1's `D` still prints its disk summary.
 This changes bank 0, so every emulator ROM's bytes change with it - `emu_avw.rom`
 is `4b11402a...` where it was `c7abc580...`. `romwbw_disks` carries the identical
 change to its own copy and both trees still build the same ROM, which
-`check_source_drift.sh` asserts.
+`check_source_drift.sh` asserted at the time. The artifact migration later in
+this same release took the ROM it compared against out of this tree, so that
+half of it now degrades to an `info` line; what asserts the identity today is
+`roms/build_emu_rom.sh` against the catalog's published sha256, and **Changed**
+above says where the rest of the fix belongs.
 
 ### Removed
+
+- **Every tracked ROM and disk image, and the three scripts that maintained
+  them.** `roms/emu_avw.rom`, `roms/emu_romwbw.rom`, `roms/emu_rcz80.rom`,
+  `roms/RCZ80_std.rom`, `roms/SBC_emu.rom`, `roms/SBC_simh_std.rom`,
+  `roms/emu_hbios_32k.bin`, `roms/emu_rom.bin`, `roms/romldr.bin`,
+  `web/emu_avw.rom`, `web/emu_romwbw.rom`, `disks/hd1k_combo.img` and
+  `disks/hd1k_infocom.img`; and with them `roms/build_all.sh`,
+  `roms/build_from_source.sh` and `disks/rebuild_disk_utils.sh`, which existed
+  to rebuild and re-install artifacts this repository no longer holds. What
+  survives in those two directories is `roms/build_emu_rom.sh`,
+  `roms/verify_romwbw_pin.sh` and `disks/verify_disk_utils.sh` - all three
+  rewritten rather than merely kept - and `disks/diskdefs`, which is what
+  cpmtools reads and which nobody publishes.
+
+  `archive/cpm22/` is the deliberate exception, named as one in CI rather than
+  missed by a regex. It holds `SBC_std.rom`, `HD0.img`, `cpm22.sys`,
+  `mbasic.com` and an x86-64 `cpm_bios` - the retired **pre**-RomWBW CP/M 2.2
+  emulator. None of it is a RomWBW artifact, none of it is published by
+  `romwbw_disks`, and there is nowhere else it exists, so deleting it would lose
+  it outright.
+
+- **`web/makefile`'s `romwbw-bundled.js` target, and `romwbw_autostart()` with
+  it.** The target preloaded `../roms/emu_avw.rom` into the emscripten
+  filesystem for `romwbw_autostart()` to find, and its prerequisite does not
+  exist any more. Baking a 512 KB ROM into a wasm bundle is also the thing the
+  mirror replaces: which ROM the page loads is chosen at run time from the
+  manifest now, so there is no build-time answer left to bake in.
 
 ### The RomWBW 3.6.0 dev snapshot is gone from `archive/`
 
@@ -423,6 +691,12 @@ globbing the directory. `release.yml`'s staging step never enters `disks/`, so n
 `.deb` or `.rpm` carried it. Confirmed after deleting: `make -C src test` passes
 with the three counts CI asserts unchanged - 4 disk-resident binaries, 2 shipped
 `w8.com` with the interlock, every artifact naming a supported release.
+
+(Two of the things that paragraph names have moved since, later in this same
+release, without changing what it concluded: `rebuild_disk_utils.sh` is deleted
+and `verify_disk_utils.sh` takes a directory to scan rather than a hardcoded
+pair of images, and the two literal counts CI grepped for are computed now.
+Neither script ever read a `.xml`, which is the point that mattered.)
 
 The catalog the three ports actually fetched was always ioscpm's published one,
 `version="13"` with a per-disk `sha256`, and `tools/check-disk-pins.sh` reads that

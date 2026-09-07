@@ -1,3 +1,5 @@
+**Historical, and nothing here is current as of 2026-09-07.** The publish steps below run `disks/rebuild_disk_utils.sh`, which v1.40 deleted, over `disks/hd1k_combo.img`, which it stopped tracking along with every other disk image. [CATALOG.md](CATALOG.md) is where a disk image comes from now.
+
 # Release order for the W8 host-path work
 
 **The constraint this whole document exists for:** refreshing the published

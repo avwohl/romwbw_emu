@@ -1,3 +1,5 @@
+**Historical, and nothing here is current as of 2026-09-07.** The command lines below name `emu_romwbw.rom`, which v1.40 deleted along with every other tracked ROM, and a `--hbdisk0=` option the argument parser has never accepted - it takes `--disk0` through `--disk15`. [../CATALOG.md](../CATALOG.md) is where a ROM and a disk come from now.
+
 # iOS/WebAssembly Disk Support Notes
 
 This document describes the RomWBW disk format support added for iOS and WebAssembly builds.

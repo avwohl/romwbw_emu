@@ -407,37 +407,17 @@ int romwbw_run_batch() {
   return emu->running ? 1 : 0;
 }
 
-// Auto-start with preloaded files
-EMSCRIPTEN_KEEPALIVE
-int romwbw_autostart() {
-  // Create fresh emulator state
-  delete emu;
-  emu = new EmulatorState();
-
-  // Load ROM from virtual filesystem using shared function
-  if (!emu_load_rom(&emu->memory, "/romwbw.rom")) {
-    emu_status("Error: romwbw.rom not found");
-    return -1;
-  }
-
-  // Load disk if present (before completing init so disk table is populated)
-  FILE* f = fopen("/hd0.img", "rb");
-  if (f) {
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    std::vector<uint8_t> disk_data(size);
-    fread(disk_data.data(), 1, size, f);
-    fclose(f);
-    emu->hbios.loadDisk(0, disk_data.data(), disk_data.size());
-  }
-
-  // Use shared initialization sequence
-  emu_complete_init(&emu->memory, &emu->hbios, nullptr);
-
-  romwbw_start();
-  return 0;
-}
+// romwbw_autostart() used to live here.  It loaded "/romwbw.rom" and
+// "/hd0.img" out of the emscripten virtual filesystem, and it was reachable
+// only through the romwbw-bundled.js target, which preloaded a ROM from
+// roms/emu_avw.rom.  Nothing ever produced /hd0.img at all, so even that
+// target autostarted with no disk.
+//
+// It is gone with the tracked ROM.  This repository ships no ROM image; the
+// page fetches one from the catalog mirror beside it (catalog/manifest.json,
+// written by tools/romwbw-get mirror), so there is no preloaded file for an
+// autostart to find and nothing in romwbw.html-template ever called this.
+// _romwbw_autostart is out of EXPORTED_FUNCTIONS in web/makefile too.
 
 }  // extern "C"
 

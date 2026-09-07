@@ -71,10 +71,14 @@
   X(3, 6, 0, 0, "2026-03-28 release; checked 2026-09-05")
 
 /*
- * The release the ROM and disk artifacts bundled in this tree are cut from.
- * roms/build_emu_rom.sh, roms/build_from_source.sh and
- * roms/verify_romwbw_pin.sh read these four numbers out of this file with
- * sed, so keep the "#define NAME value" shape.
+ * The release this tree can build a ROM for.  Since v1.40 no ROM or disk
+ * image is bundled here at all - they come from the romwbw_disks catalog, see
+ * docs/CATALOG.md - so this no longer names "what is in roms/".  It names the
+ * release roms/build_emu_rom.sh reproduces, which is fixed because
+ * src/emu_hbios.asm hardcodes its version stamp.
+ *
+ * roms/build_emu_rom.sh and roms/verify_romwbw_pin.sh read these four numbers
+ * out of this file with sed, so keep the "#define NAME value" shape.
  *
  * This must be one of the supported releases above; emu_validate_rom_hcb()
  * would refuse the tree's own ROM otherwise.

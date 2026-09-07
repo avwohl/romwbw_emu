@@ -18,9 +18,50 @@
 # wbw_hd1k is copied from the stock cpmtools file.  The slice definitions are
 # the same geometry with an offset: a combo image is a 1 MB MBR prefix followed
 # by whole 8 MB slices (docs/DISK_FORMATS.md).
+#
+# PASS -T logical WHEN YOU USE wbw_hd1k, OR cpmtools WILL CORRUPT THE IMAGE.
+#
+# cpmtools 2.23 cannot be configured without libdsk, and its default libdsk
+# path double-counts boottrk on a diskdef that carries no `offset` - which is
+# what wbw_hd1k is.  Measured 2026-09-07, homebrew cpmtools 2.23 on macOS,
+# against the published hd1k_infocom, whose directory sits at
+# boottrk*sectrk*seclen = 16384:
+#
+#   cpmls -l -f wbw_hd1k <img>                 373 mojibake entries across 30
+#                                              invented user areas
+#   cpmls -l -T logical -f wbw_hd1k <img>      the real 69 entries, user areas
+#                                              0 and 15
+#   cpmcp -f wbw_hd1k <img> f.txt 0:f.txt      exits 0; directory entry at
+#                                              32768, data block at 102400
+#   cpmcp -T logical -f wbw_hd1k ...           entry at 23232, which is right
+#
+# 32768 - 16384 is exactly boottrk*sectrk*seclen again, so the read and the
+# write are both one boot area too far into the file.
+#
+# The write is the serious half, and not for the reason it first looks.  32768
+# is still inside the 32 KB directory region, so the entry lands in a real slot
+# and a later `cpmls -T logical` DOES list the file - it is the data block that
+# goes into occupied space.  On hd1k_infocom the bare cpmcp above overwrote
+# 4096 bytes of amfv.z4, and reading the new file back returns amfv.z4's bytes.
+# Silent, exit 0, and it looks like it worked.
+#
+#   -T logical  bypasses the auto-probe.  Reads and writes then land where the
+#               geometry says.
+#
+# mkfs.cpm is the exception: it has no -T option at all ("illegal option -- T")
+# and needs none - it writes 0xE5 from 0 to 49152, which puts the empty
+# directory at 16384, and -T logical reads and writes that correctly after.
+#
+# The slice definitions below are unaffected either way, because they carry a
+# nonzero offset - which is why hd1k_combo always looked fine and the plain
+# images did not.  Use -T logical for all of them anyway; it costs nothing and
+# means one recipe rather than two.  disks/verify_disk_utils.sh passes it when
+# the local cpmtools advertises -T, and still checks for an unreadable listing
+# in case it does not.
 
 # RomWBW 8 MB hard disk slice, 1024 directory entries.  A plain single-slice
-# image - hd1k_infocom.img - is exactly this and nothing else.
+# image - hd1k_infocom - is exactly this and nothing else.  It has no offset,
+# so it is the one that needs -T logical - see the warning above.
 diskdef wbw_hd1k
   seclen 512
   tracks 1024
@@ -56,11 +97,19 @@ end
 # entry at 1048576 + 8388608*n + 16384 (offset + boottrk 2 * 8192) is an
 # ordinary CP/M entry for every n from 0 to 5, and hd1k_combo.img is
 # 51380224 bytes = 1 MB + six 8 MB slices exactly.  Cutting each slice out
-# with dd and listing it as a plain wbw_hd1k image gives, in order,
-# 167/200/301/187/245/66 files and 6144/6052/5112/5720/5592/7036 K free -
-# used plus free is 8144K in all six, which is the whole slice less its two
-# boot tracks.  Reading the same six through the definitions below gives
+# with dd and listing it as a plain wbw_hd1k image (with -T logical - see
+# above) gives, in order:
+#
+#   3.5.1   162 200 299 187 245 66
+#   3.6.0   166 204 303 190 248 66
+#
+# Used plus free came to 8144K in all six, which is the whole slice less its
+# two boot tracks.  Reading the same six through the definitions below gives
 # byte-identical files.
+#
+# This paragraph used to record 167/200/301/187/245/66 with no release named.
+# Those were the tracked disks/hd1k_combo.img, which v1.40 removed, and they
+# match neither published combo - re-measured 2026-09-07 against both.
 #
 # So why does it fail here?  Not the definition - the cpmtools BUILD.
 # cpmtools 2.23 cannot be configured without libdsk (./configure aborts with

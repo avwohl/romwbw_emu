@@ -426,33 +426,65 @@ The rest of the ROM (banks 1-15) is preserved from the original, keeping OS imag
 
 ### Building EMU ROMs
 
-Use `roms/build_emu_rom.sh` to create an EMU ROM from any standard RomWBW ROM:
+`roms/build_emu_rom.sh` assembles bank 0 from `src/emu_hbios.asm`, overlays it
+on banks 1-15 of a stock RomWBW ROM, and then does the thing that is the actual
+point: compares the result against the SHA-256 the catalog publishes.
 
 ```bash
-cd roms
-./build_emu_rom.sh SBC_simh_std.rom emu_romwbw.rom
-./build_emu_rom.sh RCZ80_std.rom emu_rcz80.rom
+roms/build_emu_rom.sh                       # fetch upstream, build, compare
+roms/build_emu_rom.sh SBC_simh_std.rom      # supply banks 1-15 yourself
+roms/build_emu_rom.sh -o /tmp/emu_avw.rom   # and keep the result
+roms/build_emu_rom.sh --rom-id emu_rcz80    # reproduce the other published ROM
 ```
+
+Given no source ROM it fetches the upstream RomWBW `Package.zip` the catalog
+names, through `tools/romwbw-get` and against a published sha256, and takes the
+stock ROM out of it. The output goes to a temporary directory unless `-o` says
+otherwise: **the script will not write inside the repository**, because a built
+ROM sitting in the tree is exactly what v1.40 removed.
+
+```
+PASS: byte-identical to the published emu_avw for RomWBW 3.5.1
+      sha256 4b11402a29fad22de304775b7c415eb6a74600df06bd57828b9931a7e9693258
+```
+
+That line is the deliverable, not the file. It is what makes
+[`ROM_ATTESTATION.md`](ROM_ATTESTATION.md)'s claim - and the GPL's - checkable
+rather than asserted: the ROM users download really is reproducible from the
+source in this repository.
+
+It reproduces one release. `src/emu_hbios.asm` here hardcodes its version stamp
+(`db 035h` / `db 010h` at CB_VERSION and again in the ident block), so the
+script can only build what `ROMWBW_DEFAULT_*` in `src/romwbw_pin.h` names. The
+copy of the same file in romwbw_disks reads that stamp from a generated include
+and can build any release; `romwbw_disks/tools/build_rom.sh` is what cuts what
+users actually download. Overlaying this bank 0 on another release's banks
+produces a ROM that boots and then prints `*** WARNING: HBIOS/CBIOS Version
+Mismatch ***`, so the script refuses rather than building it.
 
 ### ROM Types
 
 An emulator ROM is one whose HCB declares `CB_PLATFORM = 0` (EMU); that is
-what `roms/verify_romwbw_pin.sh` keys off, and what the emulator now checks
-at load time.
+what `roms/verify_romwbw_pin.sh` keys off, and what the emulator checks at
+load time. A stock ROM handed to `--romwbw` prints a warning rather than
+failing silently.
 
-| ROM | Description | Works? |
-|-----|-------------|--------|
-| `emu_avw.rom` | SBC/SIMH with emu_hbios overlay (the default) | Yes |
-| `emu_romwbw.rom` | Byte-identical to `emu_avw.rom` | Yes |
-| `emu_rcz80.rom` | RCZ80 with emu_hbios overlay | Yes |
-| `SBC_simh_std.rom` | Standard SBC/SIMH ROM | No - build input only |
-| `RCZ80_std.rom` | Standard RCZ80 ROM | No - build input only |
-| `SBC_emu.rom` | Standard SBC ROM despite the name (`CB_PLATFORM=1`) | No - build input only |
+No ROM is tracked in this repository. The catalog publishes two per RomWBW
+release, and `romwbw-get list --roms` is the authority on what exists:
 
-The three "build input only" ROMs are stock RomWBW images: they contain a
-real HBIOS that drives hardware this emulator does not provide. They are
-kept because `roms/build_emu_rom.sh` overlays our bank 0 onto them. Passing
-one to `--romwbw` now prints a warning rather than failing silently.
+| Catalog id | What it is |
+|------------|------------|
+| `emu_avw` | SBC/SIMH banks 1-15 under this repository's bank 0. Flagged `default`, so `@rom` resolves to it |
+| `emu_rcz80` | the same bank 0 over RCZ80 banks |
+
+The stock ROMs those are overlaid on - `SBC_simh_std.rom`, `RCZ80_std.rom` -
+are not published separately. They come out of the upstream RomWBW
+`Package.zip`, which the catalog carries as `@upstream` and `build_emu_rom.sh`
+fetches on demand.
+
+Two names this table used to carry are gone rather than moved: `emu_romwbw.rom`
+was a byte-identical second copy of `emu_avw.rom`, and `SBC_emu.rom` was a stock
+SBC ROM (`CB_PLATFORM=1`) whose name said otherwise and which never ran here.
 
 ## Version Compatibility
 
@@ -469,9 +501,12 @@ emulated RAM: a stored copy that was never updated is invisible to every
 verifier in this tree and surfaces only as a guest printing the wrong
 version. Deriving it removes the possibility.
 
-`ROMWBW_DEFAULT_*` in the same header is a different thing: the release this
-tree's own `roms/` and `disks/` artifacts are cut from, used by the build
-scripts. It does not constrain what the binary can load.
+`ROMWBW_DEFAULT_*` in the same header is a different thing: the release
+`roms/build_emu_rom.sh` reproduces, which is the one this tree's bank 0 has its
+version stamp hardcoded for. It is also what the C++ falls back to for a ROM
+whose HCB cannot be read (`hbios_dispatch.cc`, `emu_init.cc`). It does not
+constrain what the binary can load, and it no longer describes any artifact in
+the tree, because there are none.
 
 A guest's CBIOS compares its own build against the version this core
 reports, so a ROM paired with a boot slice from a *different* release prints
@@ -479,8 +514,16 @@ reports, so a ROM paired with a boot slice from a *different* release prints
 loads either release happily, that warning is the only thing left enforcing
 the pairing. `roms/verify_romwbw_pin.sh` checks a whole tree - every
 artifact's release, the pairing between ROMs and disks, and the binary's
-supported list - and `make -C src test` runs it. See the "RomWBW Version"
-section of `../DOWNSTREAM.md` for what adding a release involves.
+supported list - and `make -C src test` runs it. Its path and name are
+unchanged; what it looks at is not, because this tree holds no artifacts to
+look at. It now also scans the `romwbw-get` cache, so on a machine that has
+fetched anything it is checking what was actually downloaded, and where there
+is nothing anywhere it still passes and exits 0, but the PASS line claims only
+that `src/romwbw_pin.h` is consistent and the binary agrees with it, and a
+second line says `NO ARTIFACT WAS INSPECTED` - so a pass over zero files does
+not read like a pass over twenty. See the "RomWBW Version" section of
+`../DOWNSTREAM.md` for what adding a release involves, and
+[CATALOG.md](CATALOG.md) for where the artifacts come from.
 
 Key compatibility points:
 

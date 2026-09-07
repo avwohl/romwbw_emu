@@ -1,3 +1,5 @@
+**Historical, and nothing here is current as of 2026-09-07.** The rebuild recipe in section 4 names `disks/rebuild_disk_utils.sh`, which v1.40 deleted, and `disks/hd1k_combo.img`, which it stopped tracking along with every other disk image. [CATALOG.md](CATALOG.md) is where a disk image comes from now.
+
 # Downstream Update Notice - 2026-08-25 (core v1.36, unreleased)
 
 Addressed to every port that compiles this core: the Windows port (`z80cpmw`),

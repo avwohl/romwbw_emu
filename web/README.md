@@ -51,18 +51,36 @@ Makefile targets:
 - `make romwbw-debug.js` - same sources built with `-g -gsource-map`
   (DWARF symbols plus source map) for Chrome DevTools debugging; pairs with
   `romwbw-debug.html` and the `debug_wasm.js` Puppeteer harness.
-- `make romwbw-bundled.js` - variant with the ROM preloaded into the
-  Emscripten filesystem as `/romwbw.rom` via `--preload-file`. It uses the
-  checked-in `../roms/emu_avw.rom`; used together with the
-  `_romwbw_autostart` export.
-- `make clean` - remove the built .js/.wasm/.data/.map outputs.
-- `make serve` - build and serve this directory with
-  `python3 -m http.server 8080` for local testing.
-- `make deploy-dev` - deploy to `~/www/romwbw1`. Safe to run without
-  asking; the version string is stamped with `-dev` and a timestamp.
-- `make deploy-romwbw-PRODUCTION-ASK-HUMAN-FIRST` - deploy to the
-  production directory `~/www/romwbw`. **Do not run this without explicit
-  human approval - the target name is the policy.**
+- `make clean` - remove `romwbw.js` and `romwbw.wasm`, plus the debug build's
+  `.js`, `.wasm` and `.wasm.map`. No `.data` is removed because none is
+  produced: `romwbw-bundled.js` was the only `--preload-file` target and it is
+  gone (see below).
+- `make mirror-dev` / `make mirror-prod` - run `../tools/romwbw-get mirror`
+  into `~/www/romwbw1` / `~/www/romwbw`, writing the `catalog/` directory the
+  page reads its ROM and disk lists from. `MIRROR_FLAGS` defaults to
+  `--versions=runnable --emu=../src/romwbw_emu`, so only releases the CLI
+  binary says it can boot are mirrored - it and the wasm are compiled from the
+  same `../src/romwbw_pin.h`, so it is the right thing to ask. Both releases
+  with every disk is roughly 460 MB; `MIRROR_ONLY=--only=emu_avw,hd1k_combo`
+  trims a small host.
+- `make serve` - mirror `emu_avw` and `hd1k_combo` into this directory, then
+  serve it with `python3 -m http.server 8080`. The mirror step is what makes a
+  local serve boot at all: this repository tracks no ROM and no disk image, and
+  before v1.40 the page offered five filenames that no build or packaging step
+  ever put next to it.
+- `make deploy-dev` - depends on `mirror-dev`; deploys to `~/www/romwbw1`.
+  Safe to run without asking; the version string is stamped with `-dev` and a
+  timestamp.
+- `make deploy-romwbw-PRODUCTION-ASK-HUMAN-FIRST` - depends on `mirror-prod`;
+  deploys to the production directory `~/www/romwbw`. **Do not run this without
+  explicit human approval - the target name is the policy.**
+
+`make romwbw-bundled.js` is gone. It preloaded `../roms/emu_avw.rom` into the
+Emscripten filesystem as `/romwbw.rom` via `--preload-file` for the
+`_romwbw_autostart` export to find, and both the ROM and that export were
+deleted in v1.40. The target's prerequisite no longer exists, and baking a
+512 KB ROM into a `.data` file is exactly what made publishing a new ROM a
+release of this repository.
 
 Versioning: the makefile reads `../VERSION` and passes it as
 `-DEMU_VERSION` at compile time. Both deploy targets generate `index.html`
@@ -70,8 +88,9 @@ by sed-substituting every `@VERSION@` in `romwbw.html-template` with that
 version (the template also uses it as a `romwbw.js?v=...` cache-buster).
 The deploy targets copy `index.html`, `romwbw.js`, `romwbw.wasm` and the five
 files of `vendor/` (a deploy that leaves those out is a page with no terminal
-in it); the ROM and disk images offered by the page's dropdowns must already
-be present in the deploy directory.
+in it); the ROM and disk images the page offers come from the `catalog/`
+mirror, which those same targets now write themselves - see "The catalog
+mirror" below.
 
 Notable Emscripten settings: `ALLOW_MEMORY_GROWTH=1`, 64MB initial memory,
 and exported runtime methods `ccall`, `cwrap`, `FS`, `HEAPU8`.
@@ -118,8 +137,6 @@ These are the `EXPORTED_FUNCTIONS` from the makefile. Most are defined in
   system, and HBIOS dispatch.
 - `_romwbw_run_batch()` - run a single instruction batch (used by test
   harnesses).
-- `_romwbw_autostart()` - boot from files preloaded into the Emscripten
-  filesystem (`/romwbw.rom`, optional `/hd0.img`); for the bundled build.
 - `_emu_host_file_load(ptr, size)` - provide the picked file's bytes to a
   pending R8 host-file read.
 - `_emu_host_file_cancel()` - cancel a pending R8 host-file read.
@@ -190,6 +207,67 @@ Persistence:
   `_romwbw_is_disk_dirty`. Downloading a disk clears its dirty flag, and
   dirty state survives Stop.
 
+## The catalog mirror
+
+The page carries no ROM and no disk image, and it cannot fetch one from GitHub.
+Measured: a romwbw_disks release download URL sends no
+`access-control-allow-origin` on either redirect hop and the CORS preflight
+OPTIONS returns 404. `raw.githubusercontent.com` and jsdelivr do send `*` and
+carry a byte-identical copy of the catalog *documents*, but the ROMs and images
+are release assets only - `git ls-files | grep -cE '\.(img|rom)$'` in
+romwbw_disks is 0 - so those hosts 404 on them, and there is no Pages site. A
+browser physically cannot reach the artifacts.
+
+So the page reads everything from its own origin, and
+`../tools/romwbw-get mirror <dir>` is what puts it there:
+
+    <dir>/catalog/manifest.json          what the page reads at load time
+    <dir>/catalog/v0/<release>/<file>    the ROMs and images themselves
+
+`manifest.json` is a `romwbw-emu-mirror` document. Per RomWBW release it has a
+label, the catalog's `generation`, and a `roms` and a `disks` array; each entry
+keeps the catalog's `id`, `name`, `description`, `filename`, `size`, `sha256`,
+`format`, `default` / `defaultSlot`, `host_transfer` and a `url` relative to
+`catalog/`. Anything left out of the mirror is listed in `not_mirrored` with
+the reason, so a partial mirror says what is missing instead of offering a
+shorter list that looks complete. `emu_supported` is the release list the CLI
+binary reported at mirror time; a release outside it is shown disabled and
+labelled "(needs a newer build)" rather than hidden, so a user who mirrored one
+can see why it is not selectable.
+
+What the page does with it:
+
+- `loadManifest()` fills the RomWBW, ROM, Disk 0 and Disk 1 selects at load
+  time; no `<option>` in the markup names an artifact. The six it does carry
+  are placeholders - `-- no catalog mirror --`, `-- Select ROM --`, and
+  `-- None --` / `-- Custom --` on each disk select - and they are load
+  bearing: they are what leaves both file pickers usable on a page with no
+  mirror behind it. Everything keys on the manifest's `id`, never on a filename
+  or an array position, and fields it does not know are ignored - the
+  conformance rules romwbw_disks publishes for a catalog consumer, which this
+  is one hop removed from.
+- Changing the RomWBW select rebuilds both the ROM and the disk lists, because
+  a ROM from one release with a disk from another boots into
+  `*** WARNING: HBIOS/CBIOS Version Mismatch ***`.
+- Every download is checked against the `size` and `sha256` its `<option>`
+  carries before the emulator is handed a byte of it (`verifyAsset`). A file
+  the user picked from their own computer carries neither and is not checked.
+- `crypto.subtle` exists only in a secure context - https, or
+  `http://localhost`. A `make serve` reached over a LAN by IP has none, which
+  is exactly the case where silently not checking would be worst, so it *says*
+  it checked the size only rather than reporting a pass it did not perform.
+- A directory with no `catalog/manifest.json` is not an error. The status line
+  and the terminal say there is no mirror and name the command that makes one,
+  and both file pickers keep working. An installed `.deb` is in that state
+  until someone runs `romwbw-get mirror /usr/share/romwbw_emu/web`. Before
+  v1.40 an installed page instead 404'd on the only ROM its select offered and
+  on both of its default disks.
+
+Both deploy targets depend on the matching mirror target, so **a newly
+published ROM or disk reaches the page by re-running a deploy** - no source
+edit, no wasm rebuild, no release of this repository. See
+[../docs/CATALOG.md](../docs/CATALOG.md).
+
 ## Manifest disks and the write warning
 
 Disks fetched from the page's server dropdowns are flagged with
@@ -233,7 +311,10 @@ Node test scripts (run with `node`):
 - `test_rom.js` - ROM boot test driving `_romwbw_run_batch` directly.
 - `test_wasm.js` - general test jig loading `romwbw.js`; optional ROM file
   argument.
-- `test_roms.js` - boots each ROM in `../roms` using the Node build.
+- `test_roms.js` - boots each ROM in `../roms` using the Node build. `../roms`
+  holds no ROM since v1.40, so this now has nothing to iterate over even once
+  the Node build below is buildable again; point it at a
+  `romwbw-get` cache or a mirror.
 - `test_cpm3.js` - Puppeteer regression test for the CP/M 3 boot hang fix.
 - `node_modules` - Puppeteer and friends for the Node harnesses.
 
@@ -246,28 +327,32 @@ behind the sources with no way to tell and no way to refresh. `test_roms.js`
 loaded `romwbw_test.js` and therefore cannot run until someone writes a target
 that builds a Node-targeted wasm.
 
-Note that none of the scripts above is in the repository either. The two web
+Note that none of the scripts above is in the repository either. The three web
 tests that ARE tracked and that `make -C src test` runs are
-`tests/web_console_output.js` and `tests/web_reload_disks.js`, and they read
-`romwbw.html-template` directly rather than any wasm, so they are unaffected.
+`tests/web_console_output.js`, `tests/web_reload_disks.js` and
+`tests/web_manifest.js`, and all three lift functions out of
+`romwbw.html-template` by text extraction rather than loading any wasm, so they
+are unaffected - and a rename or a reindent in the template fails loudly in
+them.
 
-Sample images:
+The mirror:
 
-- `emu_avw.rom`, `emu_romwbw.rom` - 512KB ROM images built for the
-  emulator's C++ HBIOS (`emu_avw.rom` is the page's recommended default).
-- `hd1k_cpm22.img`, `hd1k_games.img`, `hd1k_infocom.img`,
-  `hd1k_zsdos.img` - 8MB single-slice hd1k disk images.
+- `catalog/manifest.json` and `catalog/v0/<release>/` - written by
+  `make serve`, `make mirror-dev` or `make mirror-prod`, gitignored, and the
+  only source of the page's ROM and disk lists.
 
-The page's dropdowns also offer `hd1k_combo.img` and `z80cpm_tools.img`,
-which live only in the deployment directory, not here.
+There is no longer a list of sample images here to go stale, and that is the
+point of the mirror. `emu_avw.rom` and `emu_romwbw.rom` were tracked in this
+directory until v1.40 as copies of two files in `../roms/`; the four
+`hd1k_*.img` names this section used to list beside them were in no directory
+of this repository at all, and neither was `z80cpm_tools.img`. Which disks
+exist, which is the recommended default, and which carry `r8.com` / `w8.com`
+are questions the catalog answers - `romwbw-get list` prints them, the
+manifest's `host_transfer` flag carries the last one, and the page builds its
+own "R8.COM and W8.COM are on ..." sentence from that rather than from a
+sentence somebody has to remember to edit.
 
-R8/W8 host file transfer availability on the web-served disks:
-`hd1k_combo.img` (slice 0), `hd1k_cpm22.img`, `hd1k_games.img`, and
-`z80cpm_tools.img` carry `r8.com` and `w8.com`; `hd1k_infocom.img` and
-`hd1k_zsdos.img` do not.
-
-Note that most files listed in this inventory (debug harnesses, Node test
-scripts, prebuilt node builds, sample disk images) exist only in the
-author's working tree or the deployment directory; a fresh clone contains
-only this README, the makefile, `romwbw_web.cc`, the HTML templates,
-`vendor/`, and the sample ROMs.
+So most of what this inventory names (the debug harnesses, the Node test
+scripts, the prebuilt node builds, the mirror) exists only in a working tree
+or a deployment directory. A fresh clone of this directory contains this
+README, the makefile, `romwbw_web.cc`, the HTML templates and `vendor/`.

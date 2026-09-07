@@ -1,3 +1,5 @@
+**Historical, and nothing here is current as of 2026-09-07.** Section 5 says to take the fixed `w8.com` out of this repository's `disks/hd1k_combo.img` and `disks/hd1k_infocom.img`, which v1.40 deleted along with every other tracked disk image. [CATALOG.md](CATALOG.md) is where a disk image comes from now.
+
 # Downstream Update Notice - 2026-07-21 (core v1.33 -> v1.34)
 
 Addressed to the iOS and Android ports of this emulator core. Core v1.34

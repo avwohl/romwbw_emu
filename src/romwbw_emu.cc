@@ -856,8 +856,11 @@ void print_usage(const char* prog) {
   fprintf(stderr, "  (default ~/.config/romwbw_emu/config.json). See docs/CONFIGURATION.md.\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Disk options:\n");
-  fprintf(stderr, "  --disk0=FILE      Attach disk image to slot 0\n");
-  fprintf(stderr, "  --disk1=FILE      Attach disk image to slot 1\n");
+  // The parser takes --disk0 through --disk15 (hbios_disks[16]); the help
+  // named only the first two, so a user reading it would not know slots 2-15
+  // were reachable at all.
+  fprintf(stderr, "  --diskN=FILE      Attach disk image to slot N, 0 through 15\n");
+  fprintf(stderr, "                    (--disk0=... --disk1=... and so on)\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "  Supported disk formats (auto-detected):\n");
   fprintf(stderr, "    hd1k  - Modern RomWBW format, 8MB per slice, 1024 dir entries\n");
@@ -883,10 +886,28 @@ void print_usage(const char* prog) {
   fprintf(stderr, "  Type 'help' in console mode for available commands.\n");
   fprintf(stderr, "  Use 'quit' to exit.\n");
   fprintf(stderr, "\n");
+  // No in-tree paths here.  This program ships no ROM and no disk image; both
+  // come from the romwbw_disks catalog, and tools/romwbw-get is what fetches
+  // and verifies them.  Naming roms/emu_avw.rom - which these three lines did
+  // for a long time - would now be telling every user to run a file that does
+  // not exist anywhere on their machine.
+  fprintf(stderr, "Getting a ROM and disks:\n");
+  fprintf(stderr, "  This program ships neither.  They are published at\n");
+  fprintf(stderr, "  github.com/avwohl/romwbw_disks and fetched with romwbw-get,\n");
+  fprintf(stderr, "  which verifies every download against the catalog's sha256:\n");
+  fprintf(stderr, "\n");
+  fprintf(stderr, "    romwbw-get run                    fetch the defaults and boot\n");
+  fprintf(stderr, "    romwbw-get versions               which RomWBW releases are published\n");
+  fprintf(stderr, "    romwbw-get use 3.5.1              pick one, and remember it\n");
+  fprintf(stderr, "    romwbw-get list                   what ROMs and disks it has\n");
+  fprintf(stderr, "\n");
   fprintf(stderr, "Examples:\n");
-  fprintf(stderr, "  %s --romwbw=roms/emu_avw.rom\n", prog);
-  fprintf(stderr, "  %s --romwbw=roms/emu_avw.rom --disk0=disks/hd1k_combo.img\n", prog);
-  fprintf(stderr, "  %s --romwbw=roms/emu_avw.rom --disk0=disks/hd1k_combo.img --boot=2.1\n", prog);
+  fprintf(stderr, "  %s --romwbw=\"$(romwbw-get path @rom)\"\n", prog);
+  fprintf(stderr, "  %s --romwbw=\"$(romwbw-get path @rom)\" \\\n", prog);
+  fprintf(stderr, "      --disk0=\"$(romwbw-get path --work @disk0)\" --boot=2.1\n");
+  fprintf(stderr, "\n");
+  fprintf(stderr, "  Use `romwbw-get path --work` for a disk: a guest writes to its\n");
+  fprintf(stderr, "  disks, and the cached copy is the hash-verified original.\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "  A slice is picked at boot, not in the disk name: --disk0= takes the\n");
   fprintf(stderr, "  rest of the argument as a literal path - there is no :SLICE suffix -\n");
@@ -1286,7 +1307,18 @@ int main(int argc, char** argv) {
   }
 
   if (!binary) {
-    fprintf(stderr, "Error: No binary file specified\n");
+    // Since v1.40 this is the normal state of a fresh install, not a typo:
+    // no ROM ships with the program.  Say where one comes from rather than
+    // just refusing.
+    fprintf(stderr, "Error: no ROM given, and no \"rom\" in a settings file.\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "ROM and disk images are not shipped with this program.\n");
+    fprintf(stderr, "Fetch them from the romwbw_disks catalog:\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "    romwbw-get run            fetch the defaults and boot\n");
+    fprintf(stderr, "    %s --romwbw=\"$(romwbw-get path @rom)\"\n", argv[0]);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Or pass a ROM you already have: --romwbw=FILE.  See --help.\n");
     return 1;
   }
 

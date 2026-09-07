@@ -33,7 +33,8 @@ a valid invocation.
 settings as JSON, prints the path, and exits without starting the emulator:
 
 ```bash
-romwbw_emu --romwbw=roms/emu_avw.rom --disk0=disks/hd1k_combo.img --boot=2 --save-config
+romwbw_emu --romwbw="$(romwbw-get path @rom)" \
+           --disk0="$(romwbw-get path --work @disk0)" --boot=2 --save-config
 # Saved config to romwbw_emu.json
 romwbw_emu            # now boots that machine
 ```
@@ -41,6 +42,11 @@ romwbw_emu            # now boots that machine
 The target is FILE if given, else the `--config` file, else
 `./romwbw_emu.json`. A discovered XDG path is never written implicitly. The
 write is atomic (temp file + rename).
+
+What lands in the file is the path, not the catalog id that produced it - this
+schema holds filenames and the emulator opens them directly. So a saved machine
+goes on naming one release's artifacts after a newer release is published; run
+the save again to move it.
 
 ## Schema (version 1)
 
@@ -63,16 +69,52 @@ Example:
 ```json
 {
   "version": 1,
-  "rom": "/home/me/roms/emu_avw.rom",
+  "rom": "/home/me/.cache/romwbw_emu/v0/3.5.1/assets/emu_avw-v0-3.5.1.rom",
   "boot": "2",
-  "disks": ["/home/me/disks/hd1k_combo.img", null, "/home/me/disks/hd1k_games.img"],
+  "disks": ["/home/me/.local/share/romwbw_emu/disks/3.5.1/hd1k_combo-v0-3.5.1.img",
+            null,
+            "/home/me/disks/mydisk.img"],
   "escape": "^E"
 }
 ```
 
+Those first two paths are what `romwbw-get path @rom` and `romwbw-get path
+--work @disk0` print; the third is a disk of your own. Note that `rom` comes out
+of the cache and the disk does not: the cached copy is the hash-verified
+original and is mode 0444, so a `disks[]` entry pointing into the cache boots
+read-only and the guest's first write comes back as `Bdos Err On A: Bad Sector`.
+The cache comes through that untouched and `romwbw-get verify` still passes;
+what is lost is the guest's work. See [CATALOG.md](CATALOG.md).
+
 Deliberately excluded (per-run debug switches, CLI only): `--trace`,
 `--load`, `--start`, `--sense`, `--mask-interrupt`, `--nmi`, and the config
 options themselves.
+
+## romwbw-get keeps its choice in a different file
+
+`romwbw-get use 3.5.1` remembers a RomWBW release and an artifact choice, and it
+writes them to `$XDG_CONFIG_HOME/romwbw_emu/catalog.json` - the same directory as
+this file, deliberately not the same document.
+
+The reason is `emu_config_save()`. It does not edit the settings file; it builds
+a fresh JSON object out of the C++ `EmuConfig` struct, field by field, and writes
+that. Every key it does not know about is gone. A `"romwbwRelease"` added to
+`config.json` by hand, or by another program, would survive right up until
+somebody ran `--save-config` and then silently disappear, taking the release
+choice with it - and the emulator would carry on booting, from the paths, with
+no sign anything had been lost.
+
+The second reason is the `version` gate. This schema refuses a `version` above 1
+outright (`config version 2 is newer than supported version 1`, exit 1) rather
+than ignoring what it does not understand, which is right for a file that
+decides which disks get attached. But it means an already-installed emulator
+binary is a veto on the format ever moving. `catalog.json` has its own versioning
+and its own reader, so `romwbw-get` can change shape without any installed
+`romwbw_emu` needing to know.
+
+Nothing is lost by the split: the two files answer different questions. This one
+says which files to open, `catalog.json` says which release those files should
+come from, and `romwbw-get path` is the bridge between them.
 
 ## The escape character
 

@@ -185,13 +185,26 @@ test: romwbw_emu $(addprefix test_,$(TESTS))
 	if command -v node >/dev/null 2>&1; then \
 	  node $(THIS_DIR)../tests/web_reload_disks.js || status=1; echo; \
 	  node $(THIS_DIR)../tests/web_console_output.js || status=1; echo; \
+	  node $(THIS_DIR)../tests/web_manifest.js || status=1; echo; \
 	else \
 	  echo "SKIP  web JS tests (node not on PATH)"; echo; \
+	fi; \
+	if command -v python3 >/dev/null 2>&1; then \
+	  python3 $(THIS_DIR)../tests/catalog_client_test.py || status=1; echo; \
+	else \
+	  echo "SKIP  catalog client test (python3 not on PATH)"; echo; \
 	fi; \
 	sh $(THIS_DIR)../disks/verify_disk_utils.sh || status=1; echo; \
 	sh $(THIS_DIR)../roms/verify_romwbw_pin.sh || status=1; echo; \
 	if [ $$status -ne 0 ]; then echo "TESTS FAILED"; exit 1; fi; \
 	echo "ALL TESTS PASSED"
+
+# tests/catalog_client_test.py runs tools/romwbw-get against a catalog it
+# builds and serves itself on 127.0.0.1, so it needs no network and no
+# romwbw_disks checkout.  It is in `test` and not in a separate target because
+# that script is now the only path from a fresh clone to a bootable ROM: this
+# repository ships neither, so a broken fetcher is a broken product, not a
+# broken convenience.
 
 # verify_romwbw_pin.sh runs here because nothing ran it.  Every ROM and disk
 # image in the tree, and the built binary, carry a RomWBW release, and until

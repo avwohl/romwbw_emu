@@ -244,26 +244,37 @@
   </div>
 
   <div class="controls">
+    <!--
+      The ROM, disk and RomWBW-version lists are EMPTY in this markup on
+      purpose.  They used to be five hardcoded .img filenames fetched by bare
+      relative name, four of which existed in no directory of the repository
+      and none of which any build or packaging step ever copied next to the
+      page - so a deployed page 404'd on both of its own default disks.  They
+      are now built at load time from catalog/manifest.json, which
+      `romwbw-get mirror` writes beside this file.  Publishing a new ROM or
+      disk in romwbw_disks and re-running that command is the whole of adding
+      one; nothing here names an artifact.
+    -->
+    <div class="file-input">
+      <label>RomWBW:</label>
+      <select id="romwbwVersionSelect" style="margin-right:4px;" title="Which RomWBW release to run.  The ROM and the disks must come from the same one.">
+        <option value="">-- no catalog mirror --</option>
+      </select>
+      <label style="margin-left:12px;">Boot:</label><input type="text" id="bootString" placeholder="2=disk, C=CPM" style="width:100px;" value="2">
+      <button id="clearNvramBtn" title="Clear boot config set by SYSCONF">Clear</button>
+    </div>
     <div class="file-input">
       <label>ROM:</label>
       <select id="romSelect" style="margin-right:4px;">
         <option value="">-- Select ROM --</option>
-        <option value="emu_avw.rom" selected>emu_avw.rom (Emulator HBIOS - recommended)</option>
       </select>
       <input type="file" id="romFile" accept=".rom,.bin" style="width:180px;">
-      <label style="margin-left:12px;">Boot:</label><input type="text" id="bootString" placeholder="2=disk, C=CPM" style="width:100px;" value="2">
-      <button id="clearNvramBtn" title="Clear boot config set by SYSCONF">Clear</button>
     </div>
     <div class="file-input">
       <label>Disk 0:</label>
       <select id="disk0Select" style="margin-right:4px;">
         <option value="">-- None --</option>
         <option value="__custom__">-- Custom --</option>
-        <option value="hd1k_combo.img" selected>hd1k_combo.img (49MB combo)</option>
-        <option value="z80cpm_tools.img">z80cpm_tools.img (Tools + R8/W8)</option>
-        <option value="hd1k_games.img">hd1k_games.img (Games)</option>
-        <option value="hd1k_cpm22.img">hd1k_cpm22.img (CP/M 2.2)</option>
-        <option value="hd1k_zsdos.img">hd1k_zsdos.img (ZSDOS)</option>
       </select>
       <input type="file" id="disk0File" accept=".img,.dsk" style="width:160px;">
       <button id="downloadDisk0Btn" disabled title="Download modified disk">↓</button>
@@ -274,11 +285,6 @@
       <select id="disk1Select" style="margin-right:4px;">
         <option value="">-- None --</option>
         <option value="__custom__">-- Custom --</option>
-        <option value="hd1k_combo.img">hd1k_combo.img (49MB combo)</option>
-        <option value="z80cpm_tools.img">z80cpm_tools.img (Tools + R8/W8)</option>
-        <option value="hd1k_games.img" selected>hd1k_games.img (Games)</option>
-        <option value="hd1k_cpm22.img">hd1k_cpm22.img (CP/M 2.2)</option>
-        <option value="hd1k_zsdos.img">hd1k_zsdos.img (ZSDOS)</option>
       </select>
       <input type="file" id="disk1File" accept=".img,.dsk" style="width:160px;">
       <button id="downloadDisk1Btn" disabled title="Download modified disk">↓</button>
@@ -300,18 +306,23 @@
     <p>1. Click <strong>Start</strong> to boot with default disks</p>
     <p>2. At <code>A&gt;</code> prompt, type <code>DIR</code> to see files, or run a game like <code>ZORK1</code></p>
 
-    <h3>ROM Types</h3>
-    <p><code>emu_avw.rom</code> - <strong>Recommended.</strong> Uses emulator's C++ HBIOS. Works with all hd1k disk images.</p>
-    <p>This emulator needs a ROM whose bank 0 is the C++ HBIOS proxy. A stock
-    RomWBW ROM built for real hardware - <code>SBC_simh_std.rom</code> and the
-    like - drives hardware that is not emulated here and produces no output at
-    all, so it is not offered. You can still load any ROM with <strong>Choose
-    File</strong> next to the ROM list.</p>
-
-    <h3>Disk Images (hd1k format, 8MB)</h3>
-    <p><code>hd1k_games.img</code> - Classic games: Colossal Cave Adventure, Castle, Dungeon, Hitchhiker's</p>
-    <p><code>hd1k_infocom.img</code> - Infocom text adventures: Zork 1-3, Hitchhiker's Guide, Enchanter trilogy</p>
-    <p><code>hd1k_cpm22.img</code> / <code>hd1k_zsdos.img</code> - Operating system disks</p>
+    <h3>Where the ROM and disks come from</h3>
+    <p>Nothing on this page is baked into it. The <strong>RomWBW</strong>,
+    <strong>ROM</strong> and <strong>Disk</strong> lists are read at load time
+    from <code>catalog/manifest.json</code> beside this page, which mirrors the
+    <a href="https://github.com/avwohl/romwbw_disks">romwbw_disks</a> catalog.
+    Every download is checked against the size and SHA-256 the catalog
+    publishes before the emulator is handed a byte of it.</p>
+    <p>The ROM and the disk have to come from the <em>same</em> RomWBW release:
+    each bootable image carries a CBIOS that checks itself against the version
+    the ROM's HBIOS reports, and a mismatched pair prints
+    <code>*** WARNING: HBIOS/CBIOS Version Mismatch ***</code> at boot.
+    Changing the RomWBW selection therefore rebuilds the ROM and disk lists.</p>
+    <p>This emulator needs a ROM whose bank 0 is the C++ HBIOS proxy - that is
+    what the catalog's <code>emu_*</code> ROMs are. A stock RomWBW ROM built
+    for real hardware drives hardware that is not emulated here and produces no
+    output at all, so none is offered. You can still load any ROM or image from
+    this computer with <strong>Choose File</strong>.</p>
 
     <h3>Boot Options</h3>
     <p><code>2</code> - Boot from disk (drive A:) | <code>C</code> - CP/M from ROM | <code>H</code> - Help</p>
@@ -321,7 +332,8 @@
     <p><code>R8 FILENAME</code> - import a host file into CP/M. Opens a file picker; the emulator waits until you pick or cancel. The CP/M name comes from the file you pick, uppercased and cut to 8.3 - characters CP/M cannot hold in a name become <code>_</code>, and R8 says so when it has to do that.</p>
     <p><code>W8 CPMFILE</code> - export a CP/M file: your browser downloads it, under the CP/M name lowercased.</p>
     <p><code>W8 CPMFILE somewhere/else.txt</code> also works, but a browser has no filesystem to put a directory in: only the last part is used, as the download name. W8 prints the name the download will really have, so you can see what happened.</p>
-    <p>R8.COM and W8.COM are on <code>hd1k_combo.img</code>, the default disk 0.</p>
+    <p id="hostTransferNote">R8.COM and W8.COM are on the disk the catalog
+    marks as carrying host transfer.</p>
 
     <h3>Drive Letters & Slices</h3>
     <p>The memory disks take the first letters - A:=MD0 (RAM), B:=MD1 (ROM) -
@@ -817,16 +829,29 @@
     //=========================================================================
     const SETTINGS_KEY = 'romwbw_emu_ui';
 
+    // What is persisted is the catalog ID (`hd1k_combo`), never the option's
+    // value, which is a mirror-relative URL carrying the RomWBW version
+    // (`catalog/v0/3.6.0/hd1k_combo-v0-3.6.0.img`). A stored URL stops
+    // resolving the moment the mirror gains or loses a release; a stored id
+    // survives, and is what makes "the same disk, on the other RomWBW
+    // version" mean anything.
+    function selId(id) {
+      const el = document.getElementById(id);
+      const opt = el.options[el.selectedIndex];
+      if (!opt) return null;
+      if (opt.value === '' || opt.value === '__custom__') return null;
+      return opt.dataset.id || opt.value;
+    }
+
     function saveSettings() {
-      const sel = id => document.getElementById(id).value;
-      const nullIfUnrestorable = v => (!v || v === '__custom__') ? null : v;
       const s = {
         v: 1,
-        rom: nullIfUnrestorable(sel('romSelect')),
-        bootString: sel('bootString'),
-        disk0: nullIfUnrestorable(sel('disk0Select')),
+        romwbwVersion: document.getElementById('romwbwVersionSelect').value || null,
+        rom: selId('romSelect'),
+        bootString: document.getElementById('bootString').value,
+        disk0: selId('disk0Select'),
         disk0NoWarn: document.getElementById('disk0NoWarn').checked,
-        disk1: nullIfUnrestorable(sel('disk1Select')),
+        disk1: selId('disk1Select'),
         disk1NoWarn: document.getElementById('disk1NoWarn').checked,
       };
       try {
@@ -834,24 +859,44 @@
       } catch (e) { /* Safari private mode / file:// - persistence unavailable */ }
     }
 
-    function restoreSettings() {
+    function storedSettings() {
       let s;
       try {
         s = JSON.parse(localStorage.getItem(SETTINGS_KEY));
-      } catch (e) { return; }
-      if (!s || s.v !== 1) return;
-      // Apply select values only if the option still exists (a stale value
-      // would silently become '' and e.g. turn a disk into None). No change
-      // events are dispatched: nothing is fetched here - Start re-reads the
-      // live control state and fetches what it needs.
-      function setSelect(id, val) {
+      } catch (e) { return null; }
+      // Still v:1. A field was added, not changed: an old payload has no
+      // romwbwVersion and falls through to the manifest default, and a stored
+      // id that the manifest no longer offers simply matches no option. Both
+      // are handled below, so bumping the version - which restoreSettings
+      // refuses outright - would throw away every returning visitor's boot
+      // string and warning preferences for nothing.
+      return (s && s.v === 1) ? s : null;
+    }
+
+    // Apply select values only if the option still exists (a stale value would
+    // silently become '' and e.g. turn a disk into None). No change events are
+    // dispatched: nothing is fetched here - Start re-reads the live control
+    // state and fetches what it needs.
+    //
+    // This MUST run after the selects have been populated from the manifest.
+    // It used to run at parse time, which was correct when the options were in
+    // the markup; with an async manifest, running it first would test every
+    // stored value against a select holding nothing but "-- None --" and
+    // discard all of them, silently, on every reload.
+    function restoreSettings() {
+      const s = storedSettings();
+      if (!s) return;
+      function setSelectById(id, val) {
         if (!val) return;
         const el = document.getElementById(id);
-        if ([...el.options].some(o => o.value === val)) el.value = val;
+        for (let i = 0; i < el.options.length; i++) {
+          const o = el.options[i];
+          if ((o.dataset.id || o.value) === val) { el.selectedIndex = i; return; }
+        }
       }
-      setSelect('romSelect', s.rom);
-      setSelect('disk0Select', s.disk0);
-      setSelect('disk1Select', s.disk1);
+      setSelectById('romSelect', s.rom);
+      setSelectById('disk0Select', s.disk0);
+      setSelectById('disk1Select', s.disk1);
       // Restore the boot string whenever the field was saved, including ''
       // (a cleared boot box stays cleared across reloads)
       if (typeof s.bootString === 'string') {
@@ -860,8 +905,6 @@
       document.getElementById('disk0NoWarn').checked = !!s.disk0NoWarn;
       document.getElementById('disk1NoWarn').checked = !!s.disk1NoWarn;
     }
-
-    restoreSettings();
 
     // fetch() resolves for 404 and 500 as well, so reading the body without
     // checking the status hands the emulator the error page as if it were a
@@ -875,15 +918,211 @@
       });
     }
 
-    // Load ROM from server select
-    document.getElementById('romSelect').addEventListener('change', function(e) {
-      const filename = e.target.value;
+    //=========================================================================
+    // The catalog mirror
+    //
+    // A browser cannot fetch a romwbw_disks release asset directly: those URLs
+    // send no access-control-allow-origin on either redirect hop and the CORS
+    // preflight 404s, and the images are release assets only, so the
+    // CORS-capable raw.githubusercontent and jsdelivr copies 404 on them. So
+    // the page reads a manifest and files from its OWN origin, written by
+    // `romwbw-get mirror <this directory>`.
+    //
+    // Everything below keys on the manifest's `id`, never on a filename and
+    // never on an array position, and ignores fields it does not know - the
+    // conformance rules romwbw_disks publishes for a catalog consumer, which
+    // this is one hop removed from.
+    //=========================================================================
+    const MANIFEST_URL = 'catalog/manifest.json';
+    let catalogManifest = null;
+
+    function manifestVersion(manifest, version) {
+      const vs = (manifest && manifest.romwbw_versions) || [];
+      for (let i = 0; i < vs.length; i++) {
+        if (vs[i].romwbw_version === version) return vs[i];
+      }
+      return null;
+    }
+
+    function versionRunnable(manifest, version) {
+      // emu_supported is what the CLI binary beside the wasm reported at
+      // mirror time; both are compiled from the same src/romwbw_pin.h. A
+      // manifest that does not say (an older mirror) is trusted rather than
+      // second-guessed - the ROM's own load-time check is the real gate.
+      const sup = manifest && manifest.emu_supported;
+      if (!sup || !sup.length) return true;
+      return sup.indexOf(version) !== -1;
+    }
+
+    function fillVersionSelect(manifest) {
+      const el = document.getElementById('romwbwVersionSelect');
+      const vs = (manifest && manifest.romwbw_versions) || [];
+      el.innerHTML = '';
+      if (!vs.length) {
+        el.appendChild(new Option('-- no catalog mirror --', ''));
+        return 0;
+      }
+      let preferred = '';
+      for (let i = 0; i < vs.length; i++) {
+        const v = vs[i];
+        const runs = versionRunnable(manifest, v.romwbw_version);
+        const label = (v.label || ('RomWBW ' + v.romwbw_version))
+                    + (runs ? '' : ' (needs a newer build)');
+        const opt = new Option(label, v.romwbw_version);
+        opt.dataset.id = v.romwbw_version;
+        // Shown and disabled rather than hidden: a user who mirrored a release
+        // this core cannot run should see why it is not selectable.
+        opt.disabled = !runs;
+        el.appendChild(opt);
+        if (runs && (!preferred || v.default)) preferred = v.romwbw_version;
+      }
+      el.value = preferred || vs[0].romwbw_version;
+      return vs.length;
+    }
+
+    function fillCatalogSelects(manifest, version) {
+      const block = manifestVersion(manifest, version);
+      const rom = document.getElementById('romSelect');
+      const d0 = document.getElementById('disk0Select');
+      const d1 = document.getElementById('disk1Select');
+
+      rom.innerHTML = '';
+      rom.appendChild(new Option('-- Select ROM --', ''));
+      d0.innerHTML = '';
+      d0.appendChild(new Option('-- None --', ''));
+      d0.appendChild(new Option('-- Custom --', '__custom__'));
+      d1.innerHTML = '';
+      d1.appendChild(new Option('-- None --', ''));
+      d1.appendChild(new Option('-- Custom --', '__custom__'));
+      if (!block) return 0;
+
+      function add(sel, it, base) {
+        const opt = new Option(
+          (it.name || it.id) + ' (' + formatSize(it.size || 0) + ')',
+          base + it.url);
+        opt.dataset.id = it.id;
+        opt.dataset.filename = it.filename || it.id;
+        if (it.size != null) opt.dataset.size = String(it.size);
+        if (it.sha256) opt.dataset.sha256 = it.sha256;
+        if (it.description) opt.title = it.description;
+        sel.appendChild(opt);
+        return opt;
+      }
+
+      const base = MANIFEST_URL.replace(/manifest\.json$/, '');
+      const roms = block.roms || [];
+      let n = 0;
+      for (let i = 0; i < roms.length; i++) {
+        const opt = add(rom, roms[i], base);
+        n++;
+        // default:true, else the first - never by name. Nothing here may
+        // assume `emu_avw` exists.
+        if (roms[i].default || rom.selectedIndex === 0) opt.selected = true;
+      }
+      const disks = block.disks || [];
+      for (let i = 0; i < disks.length; i++) {
+        const a = add(d0, disks[i], base);
+        const b = add(d1, disks[i], base);
+        n++;
+        // defaultSlot, not `default`: no disk in either published catalog
+        // carries a `default` field, and exactly one carries defaultSlot.
+        if (disks[i].defaultSlot === 0) a.selected = true;
+        if (disks[i].defaultSlot === 1) b.selected = true;
+      }
+
+      // Say what a partial mirror is missing, rather than offering a shorter
+      // list that looks complete. Counted over DISKS only: this line is
+      // appended to the two disk selects, and not_mirrored also holds any ROM
+      // the mirror left out, so counting the whole array told the user there
+      // was one more disk missing than there was.
+      const missing = (block.not_mirrored || [])
+        .filter(function (x) { return x.kind !== 'rom'; }).length;
+      if (missing) {
+        const opt = new Option('(' + missing + ' more not mirrored)', '');
+        opt.disabled = true;
+        d0.appendChild(opt.cloneNode(true));
+        d1.appendChild(opt);
+      }
+
+      // The host-transfer sentence comes from whichever disk the catalog flags,
+      // so it cannot go stale when that changes.
+      const note = document.getElementById('hostTransferNote');
+      if (note) {
+        const ht = disks.filter(function (x) { return x.host_transfer; });
+        note.textContent = ht.length
+          ? 'R8.COM and W8.COM are on ' + ht.map(function (x) { return x.name || x.id; }).join(', ') + '.'
+          : 'No disk in this RomWBW release carries R8.COM / W8.COM.';
+      }
+      return n;
+    }
+
+    async function loadManifest() {
+      try {
+        const buf = await fetchChecked(MANIFEST_URL);
+        catalogManifest = JSON.parse(new TextDecoder().decode(buf));
+        if (catalogManifest.schema !== 'romwbw-emu-mirror') {
+          throw new Error('not a romwbw-emu-mirror document');
+        }
+      } catch (err) {
+        // Not fatal, and not silent. An installed package and a deploy that
+        // has not been mirrored both land here; the page still works with the
+        // file pickers, and now says so instead of 404ing on names nobody
+        // chose.
+        catalogManifest = null;
+        fillVersionSelect(null);
+        fillCatalogSelects(null, null);
+        restoreSettings();
+        statusDiv.textContent = 'No catalog mirror beside this page';
+        noMirrorNotice = 'No catalog/manifest.json was found beside this page, '
+          + 'so no ROM or disk is offered for download. Populate it with:\n'
+          + '    romwbw-get mirror <the directory holding this page>\n'
+          + 'or load a ROM and an image with the Choose File buttons.';
+        return false;
+      }
+      fillVersionSelect(catalogManifest);
+      fillCatalogSelects(catalogManifest,
+                         document.getElementById('romwbwVersionSelect').value);
+      // Only now are there options for a stored selection to match against.
+      restoreSettings();
+      // A stored RomWBW version has to be applied before the lists it governs.
+      const s = storedSettings();
+      if (s && s.romwbwVersion && manifestVersion(catalogManifest, s.romwbwVersion)
+          && versionRunnable(catalogManifest, s.romwbwVersion)) {
+        document.getElementById('romwbwVersionSelect').value = s.romwbwVersion;
+        fillCatalogSelects(catalogManifest, s.romwbwVersion);
+        restoreSettings();
+      }
+      return true;
+    }
+
+    let noMirrorNotice = '';
+
+    document.getElementById('romwbwVersionSelect').addEventListener('change', function (e) {
+      // A ROM and a disk from different RomWBW releases boot with
+      // "*** WARNING: HBIOS/CBIOS Version Mismatch ***", so changing the
+      // release rebuilds both lists rather than leaving a stale pairing
+      // selected.
+      fillCatalogSelects(catalogManifest, e.target.value);
       saveSettings();
-      if (!filename) return;
-      statusDiv.textContent = 'Loading ' + filename + '...';
-      fetchChecked(filename)
-        .then(buf => {
-          loadRomData(new Uint8Array(buf), filename);
+    });
+
+    const manifestReady = loadManifest();
+
+    // Load ROM from server select. The option's value is a mirror-relative
+    // URL; its dataset carries the catalog's filename, size and sha256.
+    document.getElementById('romSelect').addEventListener('change', function(e) {
+      const url = e.target.value;
+      const expect = expectOf(e.target);
+      const shown = (expect && expect.name) || url;
+      saveSettings();
+      if (!url) return;
+      statusDiv.textContent = 'Loading ' + shown + '...';
+      fetchChecked(url)
+        .then(async buf => {
+          const bytes = new Uint8Array(buf);
+          const note = await verifyAsset(bytes, expect, null);
+          loadRomData(bytes, shown);
+          if (note) statusDiv.textContent += ' (' + note + ')';
           romFile.value = '';  // Clear file input
         })
         .catch(err => { statusDiv.textContent = 'Error loading ROM: ' + err; });
@@ -904,13 +1143,18 @@
 
     // Load disk 0 from server select (manifest disk)
     document.getElementById('disk0Select').addEventListener('change', function(e) {
-      const filename = e.target.value;
+      const url = e.target.value;
+      const expect = expectOf(e.target);
+      const shown = (expect && expect.name) || url;
       saveSettings();
-      if (!filename || filename === '__custom__') return;
-      statusDiv.textContent = 'Loading ' + filename + '...';
-      fetchChecked(filename)
-        .then(buf => {
-          loadDiskData(0, new Uint8Array(buf), filename, true);  // isManifest = true
+      if (!url || url === '__custom__') return;
+      statusDiv.textContent = 'Loading ' + shown + '...';
+      fetchChecked(url)
+        .then(async buf => {
+          const bytes = new Uint8Array(buf);
+          const note = await verifyAsset(bytes, expect, null);
+          loadDiskData(0, bytes, shown, true);  // isManifest = true
+          if (note) statusDiv.textContent += ' (' + note + ')';
           disk0File.value = '';
         })
         .catch(err => { statusDiv.textContent = 'Error loading disk: ' + err; });
@@ -931,13 +1175,18 @@
 
     // Load disk 1 from server select (manifest disk)
     document.getElementById('disk1Select').addEventListener('change', function(e) {
-      const filename = e.target.value;
+      const url = e.target.value;
+      const expect = expectOf(e.target);
+      const shown = (expect && expect.name) || url;
       saveSettings();
-      if (!filename || filename === '__custom__') return;
-      statusDiv.textContent = 'Loading ' + filename + '...';
-      fetchChecked(filename)
-        .then(buf => {
-          loadDiskData(1, new Uint8Array(buf), filename, true);  // isManifest = true
+      if (!url || url === '__custom__') return;
+      statusDiv.textContent = 'Loading ' + shown + '...';
+      fetchChecked(url)
+        .then(async buf => {
+          const bytes = new Uint8Array(buf);
+          const note = await verifyAsset(bytes, expect, null);
+          loadDiskData(1, bytes, shown, true);  // isManifest = true
+          if (note) statusDiv.textContent += ' (' + note + ')';
           disk1File.value = '';
         })
         .catch(err => { statusDiv.textContent = 'Error loading disk: ' + err; });
@@ -1039,6 +1288,50 @@
     }
 
     // Fetch with progress tracking
+    // Check a downloaded asset against the size and sha256 the catalog
+    // publishes, before a byte of it reaches the emulator. `expect` comes
+    // straight off the <option>'s dataset, so an option built from a manifest
+    // that carries neither is size-checked only.
+    //
+    // crypto.subtle exists only in a secure context - https, or
+    // http://localhost. `make -C web serve` reached over a LAN by IP is
+    // plain http and has none, which is exactly the case where silently not
+    // checking would be worst, so that case SAYS it skipped rather than
+    // reporting a pass it did not perform.
+    async function verifyAsset(bytes, expect, itemId) {
+      if (!expect) return '';
+      if (expect.size != null && bytes.length !== expect.size) {
+        throw new Error('size ' + bytes.length + ', the catalog says ' + expect.size);
+      }
+      if (!expect.sha256) return '';
+      if (!(globalThis.crypto && crypto.subtle)) {
+        if (itemId) updateLoadingProgress(itemId, 100,
+            formatSize(bytes.length) + ' (size only - no SubtleCrypto here)');
+        return 'size-checked only: this origin is not a secure context, so '
+             + 'SHA-256 was not available';
+      }
+      const digest = await crypto.subtle.digest('SHA-256', bytes);
+      const hex = Array.from(new Uint8Array(digest))
+        .map(function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+      if (hex !== String(expect.sha256).toLowerCase()) {
+        throw new Error('sha256 ' + hex.slice(0, 12)
+                      + ', the catalog says ' + String(expect.sha256).slice(0, 12));
+      }
+      return '';
+    }
+
+    // The size/sha256 an <option> carries, or null for one that has none
+    // (a hand-picked file, or "-- None --").
+    function expectOf(sel) {
+      const el = typeof sel === 'string' ? document.getElementById(sel) : sel;
+      const opt = el && el.options[el.selectedIndex];
+      if (!opt || !opt.dataset) return null;
+      if (opt.dataset.size == null && !opt.dataset.sha256) return null;
+      return { size: opt.dataset.size == null ? null : Number(opt.dataset.size),
+               sha256: opt.dataset.sha256 || '',
+               name: opt.dataset.filename || opt.value };
+    }
+
     async function fetchWithProgress(url, itemId) {
       updateLoadingProgress(itemId, 0, 'connecting...');
       const response = await fetch(url);
@@ -1096,6 +1389,9 @@
     // Start button
     startBtn.addEventListener('click', async function() {
       startBtn.disabled = true;
+      // The manifest is fetched at page load; a user who clicks Start before
+      // it lands would otherwise read empty selects as "None".
+      await manifestReady;
       saveSettings();  // catches a typed-but-not-blurred boot string
 
       // Check what's selected (empty string = None selected)
@@ -1121,54 +1417,64 @@
       }
 
       // A disk the page offered and could not fetch has to be SAID, not just
-      // flashed past.  The selects below are a hardcoded list fetched by bare
-      // relative filename, and nothing in web/makefile or in release.yml's
-      // staging step copies a single .img - so an installed deb serves the
-      // page, the wasm and the ROMs, and 404s on both default disks.  The
-      // failure was already caught, written into the loading overlay, and then
-      // hidden two lines later by hideLoading(); the emulator started anyway
-      // and the user got a machine with no disk in it and no reason given.
+      // flashed past.  The failure was already caught, written into the
+      // loading overlay, and then hidden two lines later by hideLoading(); the
+      // emulator started anyway and the user got a machine with no disk in it
+      // and no reason given.
       const diskFailures = [];
 
       try {
         // Auto-load the selected ROM if none loaded (a selection restored
         // from localStorage has not been fetched yet - honor it rather than
-        // clobbering it back to the default)
+        // clobbering it back to the default).  There is no fallback filename
+        // any more: with nothing mirrored there is nothing to fall back TO,
+        // and inventing a name is how the page came to 404 on assets nobody
+        // had ever put beside it.
         if (needRom) {
           const romSel = document.getElementById('romSelect');
-          const defaultRom = romSel.value || 'emu_avw.rom';
-          const data = await fetchWithProgress(defaultRom, 'load-rom');
-          if (!loadRomData(data, defaultRom)) {
+          const romUrl = romSel.value;
+          if (!romUrl) {
+            updateLoadingProgress('load-rom', 100, 'no ROM selected');
+            hideLoading();
+            term.clear();
+            term.writeln('RomWBW Emulator v' + EMU_VERSION);
+            term.writeln('');
+            (noMirrorNotice || 'Select a ROM, or load one with Choose File.')
+              .split('\n').forEach(function (l) { term.writeln(l); });
+            statusDiv.textContent = 'No ROM to start with';
+            startBtn.disabled = false;
+            return;
+          }
+          const expect = expectOf(romSel);
+          const shown = (expect && expect.name) || romUrl;
+          const data = await fetchWithProgress(romUrl, 'load-rom');
+          await verifyAsset(data, expect, 'load-rom');
+          if (!loadRomData(data, shown)) {
             // Starting the CPU on a ROM the core refused just produces a
             // dead terminal; stop here with the reason on screen instead.
             updateLoadingProgress('load-rom', 100, 'rejected');
             return;
           }
-          if (!romSel.value) romSel.value = defaultRom;  // reflect the default that was loaded
         }
 
         // Reload any previously loaded disks (ROM load resets emulator state)
         reloadDisks();
 
-        // Auto-load disk 0 from selection if not already loaded and not "None"
-        if (needDisk0 && disk0Selection && disk0Selection !== '__custom__') {
+        // Auto-load the selected disks if not already loaded and not "None"
+        for (const slot of [0, 1]) {
+          const need = slot === 0 ? needDisk0 : needDisk1;
+          const sel = document.getElementById('disk' + slot + 'Select');
+          const url = sel.value;
+          if (!need || !url || url === '__custom__') continue;
+          const expect = expectOf(sel);
+          const shown = (expect && expect.name) || url;
           try {
-            const data = await fetchWithProgress(disk0Selection, 'load-disk0');
-            loadDiskData(0, data, disk0Selection, true);  // isManifest = true
+            const data = await fetchWithProgress(url, 'load-disk' + slot);
+            await verifyAsset(data, expect, 'load-disk' + slot);
+            loadDiskData(slot, data, shown, true);  // isManifest = true
           } catch (err) {
-            updateLoadingProgress('load-disk0', 100, 'failed: ' + err.message);
-            diskFailures.push('Disk 0: ' + disk0Selection + ' - ' + err.message);
-          }
-        }
-
-        // Auto-load disk 1 from selection if not already loaded and not "None"
-        if (needDisk1 && disk1Selection && disk1Selection !== '__custom__') {
-          try {
-            const data = await fetchWithProgress(disk1Selection, 'load-disk1');
-            loadDiskData(1, data, disk1Selection, true);  // isManifest = true
-          } catch (err) {
-            updateLoadingProgress('load-disk1', 100, 'failed: ' + err.message);
-            diskFailures.push('Disk 1: ' + disk1Selection + ' - ' + err.message);
+            updateLoadingProgress('load-disk' + slot, 100, 'failed: ' + err.message);
+            diskFailures.push('Disk ' + slot + ': ' + shown + ' - ' + err.message);
           }
         }
       } catch (err) {

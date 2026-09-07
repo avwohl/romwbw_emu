@@ -1,3 +1,5 @@
+**Historical, and nothing here is current as of 2026-09-07.** Not one of the four ROMs in the compatibility table below is in the tree: v1.40 removed every tracked ROM image, and a ROM is fetched and hash-checked by `tools/romwbw-get` now. See [../CATALOG.md](../CATALOG.md).
+
 # iOS/macOS Porting Notes
 
 Notes for the ioscpm iOS/iPad and macOS projects that use this emulator library.

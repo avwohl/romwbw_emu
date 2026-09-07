@@ -15,7 +15,17 @@ romwbw_disks version's generation, and a generation bump is what makes a client
 invalidate its cached images - every user re-downloads their disks.  that is not
 theoretical: HB_BNKCALL (e47c948, d4f4a2a, 2026-09-06) cost exactly that, a
 generation-2 republish of both 3.5.1 and 3.6.0.  budget it before the next
-emu_hbios.asm change.  the finished HB_BNKCALL work is CHANGELOG.md:356.
+emu_hbios.asm change.  the finished HB_BNKCALL work is CHANGELOG.md:586.
+  UPDATE 2026-09-07: the ROM comparison that would have caught the two copies
+diverging no longer runs.  check_source_drift.sh reads
+romwbw_emu/roms/emu_avw.rom, which v1.40 deleted, so its artifact half prints an
+info line and the script still exits 0; its comparison of the four .asm sources
+is untouched and still works, and is why those four sources stay in this tree.
+what replaces the ROM half here is roms/build_emu_rom.sh, which assembles bank 0
+and compares the result against the sha256 the catalog publishes - a stronger
+question, because it is asked against what users download rather than against a
+second copy in a sibling checkout.  the generation cost above is unchanged: an
+edit here still moves every published ROM and still makes every user re-download.
 
 - [BROWSER] no browser has drawn the page since xterm was vendored, since a
 zero-byte export started downloading, and since the download name became the
@@ -37,6 +47,15 @@ clean), as are the December 2025 romwbw_node.* and romwbw_test.* pairs that
 and both deploy targets now fail on absent emcc instead of shipping a stale one.
 what is left is a person at a browser: emcc, node and every browser are absent
 from this machine.
+  UPDATE 2026-09-07: that deb is still the only built page on this machine and
+it no longer answers for HEAD.  romwbw.html-template was rewritten for v1.40 -
+the hardcoded <option> lists are gone, and the ROM, disk and RomWBW selects are
+built at load time from catalog/manifest.json beside the page - so the packaged
+1.38 page and the template here are two different programs, and serving the deb
+now answers the three checks above for the OLD one only.  VERSION says 1.40
+where that deb says 1.38.  the deb's emu_avw.rom is still c7abc580 and still
+pre-e47c948; a v1.40 package carries no ROM at all, so the next deb cannot be
+served this way until `romwbw-get mirror` has been run beside its page.
 
 - [BROWSER] the wasm's video, DSKY, sound and printer callbacks are wired to
 names nothing implements.  emu_io_wasm.cc emits Module.onVideo*, Module.onDsky*
@@ -46,6 +65,22 @@ emitter in the core at all, five of the eight onVda* handlers have no
 counterpart, and onVdaWriteChar takes an attribute byte the emitter never
 sends.  about 200 lines on each side that have never executed - wire it
 properly behind a browser, or delete one side.
+
+- [BROWSER] nobody has opened the v1.40 page in a browser, and four things in it
+are new.  the ROM, disk and RomWBW-release selects are built from
+catalog/manifest.json at load time rather than from hardcoded <option> lists;
+each download is checked against the manifest's size and sha256 through
+crypto.subtle, which needs a secure context and says so rather than claiming a
+pass it did not perform; a directory with no mirror in it gets an explanatory
+status line and working file pickers instead of a 404; and the RomWBW select
+disables a release this build cannot boot.  all four are covered by
+tests/web_manifest.js under node, which `make -C src test` runs, and none has
+been DRAWN: no browser is installed here and neither is emcc, so the wasm beside
+the page has not been rebuilt since the rewrite either.  what this needs is one
+person on a machine with emcc and the checklist in MANUAL_CHECKS.md.  `make -C
+web serve` mirrors emu_avw and hd1k_combo into web/ before starting the server,
+so a local serve has a bootable ROM and disk for the first time - that half is
+worth checking too, because nothing has ever exercised it.
 
 - [EMSCRIPTEN] the web Boot field never reads NVRAM back.  the page pushes the
 string with _romwbw_set_boot_string and clears it with _romwbw_clear_nvram, and
@@ -62,6 +97,25 @@ user is free to ignore - and the comment there carries the whole argument.
 changing it needs a name parameter on emu_host_file_provide_data() and a change
 to the page's picker callback.  until then the browser answers 0xFF and R8
 prints what was typed, which is what it always did.
+
+- [EMSCRIPTEN] the page decides which RomWBW releases it can boot from a value
+recorded at mirror time, not by asking the core it is running.  `romwbw-get
+mirror` runs the CLI binary's --version and writes the answer into
+catalog/manifest.json as emu_supported; the page disables anything outside that
+list.  so the two can disagree - a mirror written by one build, served next to a
+wasm compiled from another - and the page would then offer a release the wasm
+refuses, or grey out one it would run.  the honest source is
+emu_romwbw_supported_list(), which already exists in src/emu_init.h and
+src/emu_init.cc, and emu_init.cc is already in web/makefile's ROMWBW_SRCS, so
+this is one name added to EXPORTED_FUNCTIONS plus a few lines in the page.  it
+was not done because it cannot be built or checked without emcc, which is absent
+here, and shipping an untested export is worse than the mismatch it fixes.
+tagged [EMSCRIPTEN] rather than [ANY] for that reason.
+what makes it worth doing rather than merely correct: the whole point of the
+mirror is that re-running it publishes a newly released disk with no wasm
+rebuild.  the moment somebody re-mirrors without rebuilding - which is the
+intended workflow, not an accident - emu_supported is a fact about a binary that
+is no longer the one in the page.  do it the next time emcc is on the machine.
 
 - [RELEASE] the pin those three ports carried is GONE, and what is left is
 shipping.  Step 4 published the refreshed images as ioscpm v1.4.12 (2026-09-01,
@@ -90,9 +144,17 @@ install already gets the fixed R8, and it is TWO of three that do not: cpmdroid
 1.25 / versionCode 27 (35873d0, RELEASE_TAG "v1.4.5") and z80cpmw 1.0.23
 (dbd53b1, L"v1.4.5") still fetch the erasing R8.  derive that from the commit
 each store's build was cut from - not from a release tag, which none of these
-three shipped builds has.  nothing here needs a release for any of it: this repository publishes no
-disk image and fetches no catalog, so no romwbw_emu tag stands between the fix
-and a user.
+three shipped builds has.  nothing here needs a release for any of it, though
+no longer for the reason this used to give.  it said "this repository publishes
+no disk image and fetches no catalog"; since v1.40 it fetches one -
+tools/romwbw-get reads romwbw_disks' index-v0.json, the same document all three
+ports now read.  the
+conclusion survives the correction, and for a better reason than the old one:
+the catalog is read at RUN time, so a disk published there reaches an installed
+romwbw_emu with no tag cut here at all.  what a tag here is still needed for is
+a new RomWBW RELEASE, because ROMWBW_SUPPORTED_RELEASES is compile-time - and
+that is not what is stuck.  so no romwbw_emu tag stands between the fix and a
+user.
 what is behind that wall grew on 2026-09-06: e47c948 and d4f4a2a made HB_BNKCALL
 work, so every ROM's bytes moved.  romwbw_disks republished all four as
 generation 2 - emu_avw 3.5.1 is 4b11402a where it was c7abc580, emu_rcz80
@@ -143,6 +205,43 @@ index", which is a join between two checks that already exist and neither perfor
   romwbw_emu is the exception and already proves the shape works: its
   tools/check-store-version.sh --assets downloads the published .deb and reads
   emu_avw.rom out of it, which is how the shipped ROM was measured as c7abc580.
+  UPDATE 2026-09-07: the artifact half has an implementation now, and this
+  repository is in the table.  three things landed.  ports gained a romwbw_emu
+  row keyed on tools/romwbw-get's INDEX_URL - which is why that URL is kept on
+  one over-long line in the script, since a string split across two lines is
+  invisible to a line grep and reads as a port that has been repointed back off
+  the catalog.  the index-v0 branch gained a case for a port that bundles no ROM
+  at all, because bundled_rom_of deliberately has no romwbw_emu entry: since
+  v1.40 nothing is bundled, so there is no offline-first-launch hazard to check
+  and "no bundled ROM" must not read as "could not read one", which is a fault.
+  and scan_artifact_for learned to open a .deb with ar+tar and an .rpm with
+  rpm2cpio+cpio.  that last one is not tidiness: a .deb is an ar archive holding
+  data.tar.xz, so a raw byte grep of the file finds nothing that is inside it,
+  and a correct romwbw_emu package was being reported as "does not name
+  index-v0.json" - a red gate for a working port, which is the wolf-cry this
+  script was written after.  each unpacker returns "could not look" rather than a
+  verdict when its tool is missing, which is the honest answer on a stock macOS
+  or Ubuntu runner with no rpm2cpio.
+  WHAT IS STILL NOT COVERED is the structural gap this item opened with.
+  artifacts_for() globs local build outputs, this machine builds no .deb, .msix,
+  .apk or .app, and so the loop still runs zero times here and the run still ends
+  on NO PACKAGE WAS INSPECTED.  the join described above - does the version the
+  store serves correspond to a commit whose source names the v0 index - is still
+  unbuilt.
+  TWO FALSE ALARMS, BOTH SETTLED 2026-09-07, and both worth keeping written down
+  because the next person will hit the same shape.  the local ../ioscpm checkout
+  was at 669ce34, 24 commits behind and PREDATING ioscpm's 2026-09-05 move to
+  the v0 index, so the script printed `ioscpm     NO v0 INDEX URL` and exited 1
+  for a port that had migrated.  a `git -C ../ioscpm merge --ff-only origin/main`
+  fixed it; check the checkout before believing that line and do not "fix" the
+  table back.  the second was real and in this script: bundled_rom_of still
+  named z80cpmw's roms/emu_avw.rom, and z80cpmw's own migration deleted that
+  directory - it tracks no ROM at all now - so the gate printed CANNOT READ and
+  exited 1 for a second working port.  its case is removed, which drops it into
+  the no-bundled-ROM branch beside romwbw_emu.  the rule this leaves: a port
+  that stops bundling a ROM has to lose its bundled_rom_of case in the same
+  change, or this gate goes red for it.  all four ports are green as of
+  2026-09-07.
 
 - [ANY] a green pin does not mean a user has the fixed R8, and the gate implies
 it does.  All three ports decide "already downloaded" by filename alone -
@@ -190,21 +289,63 @@ is that file's version attribute whose bump fires the disk-wipe hazard.
   the two-image list, and release.yml never stages disks/.  What the ports fetch
   is a different file entirely - ioscpm's published catalog - and that is what
   tools/check-shipped-disks.sh reads, over HTTP, so it is untouched by this.
+  (v1.40 moved two of those three readers without changing the conclusion:
+  rebuild_disk_utils.sh is deleted, and verify_disk_utils.sh takes a directory to
+  scan instead of a hardcoded pair.  neither reads a .xml, and neither ever did.)
 
-- [ANY] nothing in this tree notices when the four copies of one ROM stop
-agreeing, and on 2026-09-06 they did.  e47c948 rebuilt roms/emu_avw.rom and left
-roms/emu_romwbw.rom, web/emu_avw.rom, web/emu_romwbw.rom and roms/emu_rcz80.rom
-carrying the bank call it had just fixed; every gate stayed green and d4f4a2a
-caught it by eye.  roms/verify_romwbw_pin.sh reads each ROM's HCB and never
-compares two of them, romwbw_disks' check_source_drift.sh compares
-roms/emu_avw.rom alone, and the Tests workflow hashes no ROM at all.  it is not
-tidiness: release.yml:179 stages roms/*.rom into every deb and rpm and :186
-stages roms/emu_avw.rom next to the packaged page, and a served web/ fetches
-web/emu_avw.rom by bare relative name, so a package or web user keeps whatever
-the missed copies hold.  one sha256 comparison of the four would have failed at
-e47c948.  DECISIONS.md section 4 would delete the class rather than guard it,
-and its own record of those four is now stale: the md5 it names, 826c3bcf, is
-what they were before e47c948; they are e8f2958c now.
+- [ANY] CROSS-REPO, DONE IN THE WORKING TREE, NOT COMMITTED: romwbw_disks'
+tools/check_source_drift.sh lost both of its artifact comparisons to the v1.40
+migration - each read a file this repository no longer tracks, printed an info
+line and exited 0 - and both are now replaced by something stronger.
+  what it does now: assemble BOTH trees' emu_hbios.asm for 3.5.1 and compare the
+32 KB bank 0 (generating romwbw_ver.inc for whichever copy includes it), and
+build romwbw_emu's src/{r8,w8}.asm with um80 and compare against that repo's own
+build/utils/{r8,w8}.com.  no ROM, no disk image, no cpmtools, no network.  it
+isolates bank 0 from the 480 KB of upstream banks that were identical by
+construction, which the old whole-ROM compare could not.  measured 2026-09-07:
+"emu_hbios.asm assembles to identical bank 0 in both trees (3.5.1)" and both
+.com files byte-identical, PASS.
+  .github/workflows/verify.yml there now sparse-checks out `src` alone in both
+jobs, where it took `src roms` and `src roms disks`.
+  WHAT IS LEFT: both edits are uncommitted in /Users/wohl/src/romwbw_disks.
+They need reviewing and committing there.
+
+- [ANY] docs/ROM_ATTESTATION.md is stale in three places and none of them is
+safe to fix unasked.  it lives here rather than in DECISIONS.md because the work
+is a document edit any machine can make; what is missing is agreement on the
+wording, not a capability.  it is a signed filing to Apple - "I hereby
+affirm", "I hereby grant Apple Inc. permission", "Digital Signature" - so the
+signed text is not something to reword quietly, and the v1.40 migration
+deliberately touched none of it.  three things in it are now out of date.  its
+Component 2 says "Version: 3.5.1", which was the whole truth when a single
+pinned ROM shipped and is narrower than what the
+binary supports since v1.39 (3.5.1 and 3.6.0, and the version a guest sees is
+read from the ROM it loads).  its "Date: December 2024" is two years stale.  and
+ioscpm carries a near-identical copy of the same document that differs from this
+one only in that date, so there are two signed filings and no rule about which
+is the original.  the ruling is whose document it is, whether it is re-signed
+today naming both releases, and whether one of the two copies goes.  what did
+not need a ruling has been done: a dated note below the signature records that
+the ROM has left this repository and that roms/build_emu_rom.sh reproduces the
+published bytes and says so, which is what makes the GPL and attestation claim
+checkable rather than asserted.  that note is additive and stops at the
+signature line; everything above it is untouched.
+
+- [ANY] DONE 2026-09-07: archive/cpm22/ is down to one tracked binary.  Six of
+the seven went, each because it was rebuildable from a source beside it or a
+copy of something published elsewhere; all six are in git history.
+Binary/SBC_std.rom was byte-identical to the stock SBC_std.rom in the upstream
+RomWBW v3.5.1 Package.zip - verified with cmp against what
+`tools/romwbw-get path @upstream` fetches - so it was a RomWBW artifact after
+all, which is what this migration removes.  Binary/HD0.img was zero bytes.
+cpm_bios was an x86-64 ELF built from cpm_bios.cc beside it.  cpm22.sys,
+cpm22asm/cpm22.sys and cpm22asm/cpm22.bin are what cpm22asm/build_cpm.sh
+assembles from cpm22asm/cpm22.asm, two lines of um80/ul80, still present.
+  com/mbasic.com stays and is now the whole of CI's archive/ exception: it is
+third-party CP/M software with no source in this tree and no upstream this
+project controls, so deleting it would lose it outright.
+archive/cpm22/README.md carries the table, and test.yml's guard comment names
+the one file rather than five.
 
 - [MAC/LINUX] the last integer-narrowing warnings in a clean build are not this
 repository's to fix.  qkz80_MK_INT16 in cpmemu's qkz80_types.h builds an int

@@ -198,6 +198,32 @@ find "$ROOT" \( "$@" \) -prune -o \
     -type f -name '*.img' \
     -print 2>/dev/null | sort > "$scratch/disks"
 
+# ...and whatever tools/romwbw-get has fetched, which since v1.40 is where the
+# artifacts actually are.  A tree with no ROM and no image is now the normal
+# state, so scanning only the tree would leave this script with nothing to say
+# on every machine - a check that passes because it looked at nothing, which is
+# the exact failure this file was added to `make test` to stop.
+#
+# The cache is a SECOND find root, not a new $ROOT: $ROOT is also where the
+# built binary is looked for at the end (src/romwbw_emu), and that check - the
+# binary's own --version list against ROMWBW_SUPPORTED_RELEASES in this header
+# - is the one thing here that nothing in romwbw_disks can do.  Re-rooting
+# would silently turn it into "info  not built".
+CACHE="${ROMWBW_GET_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/romwbw_emu}"
+cached_artifacts=0
+if [ -d "$CACHE" ]; then
+    # .superseded holds artifacts a generation bump replaced: kept on purpose,
+    # current on purpose no longer.  Reporting them would mean a re-publish
+    # made this check complain about files nobody is claiming are in use.
+    find "$CACHE" \( -name .superseded -o -name .partial \) -prune -o \
+         -type f -name '*.rom' -print 2>/dev/null | sort >> "$scratch/roms"
+    find "$CACHE" \( -name .superseded -o -name .partial \) -prune -o \
+         -type f -name '*.img' -print 2>/dev/null | sort >> "$scratch/disks"
+    if [ -s "$scratch/roms" ] || [ -s "$scratch/disks" ]; then
+        cached_artifacts=1
+    fi
+fi
+
 # Label a file by its path relative to the tree root, so two ROMs with the
 # same basename in different directories stay distinguishable.
 relname() {
@@ -267,7 +293,7 @@ while IFS= read -r f; do
     case " $ROM_RELEASES " in *" $got_str "*) ;; *) ROM_RELEASES="$ROM_RELEASES $got_str" ;; esac
     ok "$name" "emulator ROM for RomWBW v$got_str"
 done < "$scratch/roms"
-[ "$found_rom" -eq 1 ] || note "(none found)"
+[ "$found_rom" -eq 1 ] || note "(none found - this repository tracks no ROM; fetch one with tools/romwbw-get)"
 echo
 
 # --- Disk images ------------------------------------------------------------
@@ -312,7 +338,7 @@ while IFS= read -r f; do
         ok "$name" "boot slice CBIOS v$versions"
     fi
 done < "$scratch/disks"
-[ "$found_disk" -eq 1 ] || note "(none found)"
+[ "$found_disk" -eq 1 ] || note "(none found - this repository tracks no disk image; fetch one with tools/romwbw-get)"
 echo
 
 # --- Pairing ----------------------------------------------------------------
@@ -326,7 +352,7 @@ echo
 # with no disks) is normal - ports bundle a ROM and download disks.
 echo "Pairing:"
 if [ -z "$DISK_RELEASES" ] && [ -z "$ROM_RELEASES" ]; then
-    note "(no RomWBW artifacts found in this tree)"
+    note "(no RomWBW artifacts in this tree or in $CACHE)"
 else
     for v in $DISK_RELEASES; do
         case " $ROM_RELEASES " in
@@ -368,7 +394,20 @@ fi
 
 echo
 if [ "$fail" -eq 0 ]; then
-    echo "PASS: every artifact names a RomWBW release this core can run ($warn warning(s))"
+    # Say which of the two things passed.  With no artifact anywhere the first
+    # sentence would be true of an empty set, and a check that inspected
+    # nothing must not print the same line as one that inspected twenty
+    # images - that is how a silently-scoped-to-nothing check goes on reading
+    # as a pass for months.
+    if [ "$found_rom" -eq 1 ] || [ "$found_disk" -eq 1 ]; then
+        echo "PASS: every artifact names a RomWBW release this core can run ($warn warning(s))"
+    else
+        echo "PASS: src/romwbw_pin.h is consistent and the built binary agrees with it"
+        echo "      NO ARTIFACT WAS INSPECTED - none in the tree (expected since"
+        echo "      v1.40) and none in $CACHE."
+        echo "      tools/romwbw-get fetch  populates it, and re-running this"
+        echo "      then checks what was actually downloaded."
+    fi
     exit 0
 fi
 echo "FAIL: $fail problem(s) ($warn warning(s))"

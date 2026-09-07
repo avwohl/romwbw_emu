@@ -115,9 +115,16 @@ highest_version() { # tags on stdin
 # kind "index-v0" - migrated to romwbw_disks' two-level catalog; there is no tag
 #                   in its source to compare, and looking for one is how this
 #                   script would silently stop covering it.
+#
+# romwbw_emu is a port too, and was missing from this table for as long as it
+# had a bundled ROM to be checked against - which it no longer does.  It is the
+# emulator core rather than a store app: since v1.40 it bundles NOTHING and its
+# tools/romwbw-get is what fetches from the v0 index.  bundled_rom_of has no
+# case for it on purpose, and the index-v0 branch below has a branch for that.
 ports='ioscpm|iOSCPM/Views/EmulatorViewModel.swift|indexURL[[:space:]]*=|index-v0
 cpmdroid|app/src/main/java/com/awohl/cpmdroid/data/DiskCatalogRepository.kt|INDEX_URL[[:space:]]*=|index-v0
-z80cpmw|z80cpmw/CatalogV0.cpp|INDEX_URL[[:space:]]*=|index-v0'
+z80cpmw|z80cpmw/CatalogV0.cpp|INDEX_URL[[:space:]]*=|index-v0
+romwbw_emu|tools/romwbw-get|INDEX_URL[[:space:]]*=|index-v0'
 
 pin_of() { # $1 = port dir, $2 = file, $3 = pattern -> prints vX.Y.Z
     f="$1/$2"
@@ -174,11 +181,18 @@ rom_release_of() { # $1 = rom file -> prints e.g. 3.5.1
 
 # Which ROM a migrated port bundles.  One line per port so that adding the next
 # one is an edit here rather than a new function.
-bundled_rom_of() { # $1 = port name, $2 = checkout -> prints a path
+bundled_rom_of() { # $1 = port name, $2 = checkout -> prints a path, or nothing
     case "$1" in
         cpmdroid) echo "$2/app/src/main/assets/emu_avw.rom" ;;
         ioscpm)   echo "$2/iOSCPM/Resources/emu_avw.rom" ;;
-        z80cpmw)  echo "$2/roms/emu_avw.rom" ;;
+        # z80cpmw and romwbw_emu bundle NOTHING and print nothing here: both
+        # fetch every artifact from the v0 catalog.  z80cpmw's roms/ held three
+        # checked-in 512 KB ROMs until its migration deleted the directory, and
+        # this function kept naming roms/emu_avw.rom afterwards - so the gate
+        # printed CANNOT READ and exited 1 for a port that was working
+        # correctly, which is verbatim the cry-wolf failure this file's header
+        # was written after.  Printing nothing takes the no-bundled-ROM branch
+        # below; if a port starts bundling one again, add its case back.
     esac
 }
 
@@ -216,6 +230,41 @@ scan_bytes() {
 scan_artifact_for() { # $1 = file, $2 = ERE -> exit 0 when found
     spat="$2"
     case "$1" in
+        *.deb)
+            # ar(1) then tar: a .deb is an ar archive holding data.tar.xz, so a
+            # raw byte grep of the .deb finds nothing whatever is inside it.
+            # Without this, a correct romwbw_emu package would be reported as
+            # "does not name index-v0.json" - a red gate for a port that is
+            # working, which is exactly the wolf-cry this script's header was
+            # written after.
+            command -v ar >/dev/null 2>&1 || return 1
+            rm -rf "$tmp/y"; mkdir -p "$tmp/y"
+            ( cd "$tmp/y" && ar x "$1" ) 2>/dev/null || { rm -rf "$tmp/y"; return 1; }
+            for d in "$tmp/y"/data.tar.*; do
+                [ -f "$d" ] || continue
+                tar -xf "$d" -C "$tmp/y" 2>/dev/null || true
+            done
+            rm -f "$tmp/y.hit"
+            find "$tmp/y" -type f 2>/dev/null | while read -r m; do
+                grep -a -qE "$spat" "$m" 2>/dev/null && : > "$tmp/y.hit"
+            done
+            rm -rf "$tmp/y"
+            [ -f "$tmp/y.hit" ] ;;
+        *.rpm)
+            # rpm2cpio is not on a stock macOS or a stock Ubuntu runner, so
+            # this returns "could not look" rather than a verdict when it is
+            # absent - the caller treats that as no evidence, which is right.
+            command -v rpm2cpio >/dev/null 2>&1 || return 1
+            command -v cpio >/dev/null 2>&1 || return 1
+            rm -rf "$tmp/y"; mkdir -p "$tmp/y"
+            ( cd "$tmp/y" && rpm2cpio "$1" | cpio -idm ) >/dev/null 2>&1 ||
+                { rm -rf "$tmp/y"; return 1; }
+            rm -f "$tmp/y.hit"
+            find "$tmp/y" -type f 2>/dev/null | while read -r m; do
+                grep -a -qE "$spat" "$m" 2>/dev/null && : > "$tmp/y.hit"
+            done
+            rm -rf "$tmp/y"
+            [ -f "$tmp/y.hit" ] ;;
         *.msix|*.apk|*.zip|*.aab)
             command -v unzip >/dev/null 2>&1 || return 1
             rm -rf "$tmp/y"
@@ -255,6 +304,13 @@ artifacts_for() { # $1 = port name, $2 = checkout
             find "$2/app/build/outputs" \( -name '*.apk' -o -name '*.aab' \) 2>/dev/null ;;
         ioscpm)
             find "$2/build" "$2/DerivedData" -name '*.app' -prune 2>/dev/null ;;
+        romwbw_emu)
+            # A .deb or .rpm built by .github/workflows/release.yml and left in
+            # the tree root by a local `fpm` run.  There is no local build step
+            # that produces one, so most of the time this finds nothing and the
+            # artifact half reports "no package inspected" - which is the
+            # honest answer, not a pass.
+            ls "$2"/*.deb "$2"/*.rpm 2>/dev/null ;;
     esac
 }
 
@@ -321,12 +377,23 @@ echo "$ports" | while IFS='|' read -r port file pat kind; do
             continue
         fi
 
+        # A port with no bundled ROM has no first-launch-offline hazard to
+        # check, and no ROM whose release could have drifted from its catalog
+        # selection.  That is a different answer from "the ROM could not be
+        # read", which is a fault - so bundled_rom_of returning nothing is
+        # handled here rather than falling into the CANNOT READ branch, which
+        # is what a bare table row would have done.
         rom=$(bundled_rom_of "$port" "$dir")
-        romver=$(rom_release_of "$rom")
-        if [ -z "$romver" ]; then
-            printf '%-10s CANNOT READ the RomWBW release out of %s\n' "$port" "$rom"
-            echo 1 > "$tmp/fail"
-            continue
+        if [ -z "$rom" ]; then
+            printf '%-10s v0 index, bundles no ROM - fetches every artifact\n' "$port"
+            romver=""
+        else
+            romver=$(rom_release_of "$rom")
+            if [ -z "$romver" ]; then
+                printf '%-10s CANNOT READ the RomWBW release out of %s\n' "$port" "$rom"
+                echo 1 > "$tmp/fail"
+                continue
+            fi
         fi
 
         if ! get "$idx" "$tmp/$port-index.json"; then
@@ -338,7 +405,18 @@ echo "$ports" | while IFS='|' read -r port file pat kind; do
         # Whitespace stripped first so this does not depend on how the generator
         # happens to indent.  One field, not a pair, so it does not depend on
         # field order either.
-        if tr -d ' \n' < "$tmp/$port-index.json" |
+        if [ -z "$romver" ]; then
+            # Nothing bundled: what matters instead is that the index is
+            # reachable and publishes at least one release, which the get above
+            # and this check together establish.
+            if tr -d ' \n' < "$tmp/$port-index.json" | grep -q '"romwbw_version":"'; then
+                printf '%-10s   the v0 index it names publishes at least one release\n' ""
+            else
+                printf '%-10s THE v0 INDEX IT NAMES PUBLISHES NO RELEASE\n' "$port"
+                echo 1 > "$tmp/fail"
+                continue
+            fi
+        elif tr -d ' \n' < "$tmp/$port-index.json" |
                 grep -q "\"romwbw_version\":\"$romver\""; then
             printf '%-10s v0 index, bundled ROM RomWBW %s is published\n' "$port" "$romver"
         else

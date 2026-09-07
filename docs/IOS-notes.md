@@ -47,8 +47,13 @@ static constexpr size_t HD512_SINGLE_SIZE = 8519680;     // 8.32 MB
 ## Command Line Changes
 
 ### New Options
-- `--disk0=<path>` - Primary disk (boots as C:)
-- `--disk1=<path>` - Secondary disk (boots as D:)
+- `--diskN=<path>` - attach an image to slot N, `--disk0` through `--disk15`.
+  Slot N is HBIOS unit N+2, so `--disk0` is the first hard disk. The unit is
+  fixed; the drive letters are not - CBIOS gives each hard disk
+  `max(2, 8 / number of hard disks)` slices, and a booted slice takes A:, so
+  `--disk0` alone on a ROM boot is C: through J: and not C: D: E: F:. See
+  `DISK_FORMATS.md`. The CLI help documented only 0 and 1 for a long time; the
+  sixteen slots were always there.
 
 ### Validation
 - Files must exist (no auto-creation on typos)
@@ -66,7 +71,7 @@ Both take the whole rest of the command line as the path, so a directory name ma
 
 W8 copies the file whole, dropping only the trailing run of `^Z` - the padding CP/M writes into a file's last record. It used to stop at the first `^Z`, which silently truncated every binary export (`W8.COM` itself came out 368 bytes of 1408).
 
-Z80 sources: `src/r8.asm`, `src/w8.asm`. Neither has an `ORG`: M80 assembles each as one relocatable code segment and L80 bases a `.COM` at 0100h already, so an `org 0100h` in the source is applied on top of that and puts the code at 0200h behind 256 NOPs. `disks/verify_disk_utils.sh` checks the images against the sources, `disks/rebuild_disk_utils.sh` refreshes them.
+Z80 sources: `src/r8.asm`, `src/w8.asm`. Neither has an `ORG`: M80 assembles each as one relocatable code segment and L80 bases a `.COM` at 0100h already, so an `org 0100h` in the source is applied on top of that and puts the code at 0200h behind 256 NOPs. `disks/verify_disk_utils.sh` assembles both and asserts that the `w8.com` it builds still carries the HBF_HOST_CAPS interlock - that half needs no network and no disk image, and `make -C src test` runs it. Given a directory of images, or by default a `romwbw-get` cache, it additionally checks the `r8.com` and `w8.com` on those images against what it just built. `disks/rebuild_disk_utils.sh` is gone with the tracked images: romwbw_disks builds the utilities into the images it publishes and asserts the same interlock there.
 
 ### HBIOS Functions Used
 
@@ -95,46 +100,97 @@ Footnote: each backend has a fallback name for a null write filename ("output.bi
 ## Disk Images
 
 ### Recommended Disk
-**hd1k_combo.img** (51,380,224 bytes) - Contains multiple OS slices:
-- Slice 0: CP/M 2.2 with R8.COM and W8.COM
+**hd1k_combo** (51,380,224 bytes) - the catalog gives it `defaultSlot` 0, so
+`@disk0` resolves to it. Six slices, as the catalog's own description of
+`hd1k_combo` gives them - `romwbw-get list --disks` prints it verbatim, so that
+is the copy to trust rather than this one:
+- Slice 0: CP/M 2.2, with R8.COM and W8.COM for host file transfer
 - Slice 1: ZSDOS
-- Slice 2: CP/M 3 (ZPM3)
-- Slice 3-5: Additional systems
+- Slice 2: NZCOM
+- Slice 3: CP/M 3 - booting it headless prints `CP/M v3.0 [BANKED] for HBIOS`
+- Slice 4: ZPM3
+- Slice 5: word processing
 
-### File Locations
-- Source: `disks/hd1k_combo.img`
-- Web deploy: `~/www/romwbw1/hd1k_combo.img`
+### Where it comes from
+
+This repository ships no disk image, and has not since v1.40. `hd1k_combo` and
+the two dozen others are published by
+[avwohl/romwbw_disks](https://github.com/avwohl/romwbw_disks) and fetched by
+`tools/romwbw-get`, which checks every byte against the catalog's SHA-256.
+[CATALOG.md](CATALOG.md) is the account of it.
+
+```bash
+romwbw-get list --disks          # what a release publishes
+romwbw-get path @disk0           # the verified original, mode 0444
+romwbw-get path --work @disk0    # a writable copy - what the emulator opens
+```
+
+The two are different files on purpose: `hbios_dispatch.cc` opens every image
+`"rw"`, so the first CP/M `SAVE` into the cached copy would break the hash it
+was verified against. Any port with a download cache needs the same split.
+
+`~/www/romwbw` and `~/www/romwbw1` are still the production and development web
+trees, but they are populated by `romwbw-get mirror` as part of `make -C web
+deploy-*`, not copied from a working tree.
+
+**What a port should take from this is not a path.** A native client should read
+the same catalog rather than embed an image or a download URL: `index-v0.json`
+-> `catalog-v0-<release>.json` -> the assets, hash-checked at each step, so that
+a newly published disk reaches an already-installed app with no release. All
+three GUI clients moved to it on 2026-09-05, and `tools/romwbw-get` is a working
+reference implementation in 1300 lines of standard-library Python.
 
 ### Adding Files to Disk Images
-Use cpmtools with the RomWBW diskdefs. `DISKDEFS` must point at a diskdefs file containing the `wbw_*` formats:
+
+Use cpmtools with this repository's `disks/diskdefs`, which carries `wbw_hd1k`
+and the per-slice `wbw_hd1k_0` through `wbw_hd1k_5`. Run cpmtools from `disks/`:
+cpmtools reads `./diskdefs` if there is one and the system copy otherwise, one
+or the other and never both, so the working directory is the whole of the setup.
+
+**Do not set `DISKDEFS`.** A path that does not exist is silently ignored, and
+no distribution's system copy can be assumed to have the slice definitions -
+Debian's and Ubuntu's cpmtools 2.23 has `wbw_hd1k` and no `wbw_hd1k_0` at all.
+[DISK_FORMATS.md](DISK_FORMATS.md) has the detail.
 
 ```bash
-export DISKDEFS="$HOME/esrc/RomWBW-v3.5.1/Tools/cpmtools/diskdefs"
+cd disks
 
-# Single-slice hd1k image
-cpmrm -f wbw_hd1k disks/hd1k_utils.img 0:oldfile.com
-cpmcp -f wbw_hd1k disks/hd1k_utils.img file1.com file2.com 0:
+# a plain 8 MB image
+cpmcp -T logical -f wbw_hd1k "$(../tools/romwbw-get path --work hd1k_cpm22)" file1.com file2.com 0:
 
-# Combo image: the RomWBW diskdefs include slice-offset variants
-# (wbw_hd1k_0 = slice 0 after the 1MB prefix, wbw_hd1k_1, ...)
-cpmcp -f wbw_hd1k_0 disks/hd1k_combo.img file1.com 0:
+# a combo image: wbw_hd1k_0 is slice 0, past the 1 MB MBR prefix
+cpmcp -T logical -f wbw_hd1k_0 "$(../tools/romwbw-get path --work @disk0)" file1.com 0:
 ```
 
-If your diskdefs file lacks the slice-offset variants, extract slice 0 (it starts at the 1MB mark, after the MBR prefix) with dd, patch it, and write it back in place:
+Do not drop the `-T logical`. cpmtools 2.23 cannot be configured without libdsk,
+and its default libdsk path double-counts `boottrk` on a diskdef that carries no
+`offset` - which `wbw_hd1k` is - so the bare form writes one boot area too far
+into the file, exits 0, and puts the file's data over a block that was already
+in use. `-T logical` bypasses the auto-probe and it lands where the geometry
+says. The cause and the measured byte offsets are in
+[DISK_FORMATS.md](DISK_FORMATS.md#always-pass--t-logical).
 
-```bash
-dd if=disks/hd1k_combo.img of=slice0.img bs=1M skip=1 count=8
-cpmcp -f wbw_hd1k slice0.img file1.com 0:
-dd if=slice0.img of=disks/hd1k_combo.img bs=1M seek=1 conv=notrunc
-```
+The dd extract-patch-write-back this section used to prescribe is not needed
+for slice 0. `wbw_hd1k_0` accounts for the 1 MB prefix itself, and the case it
+was written for - a diskdefs file without the slice variants - is answered by
+running from `disks/` rather than by cutting the image apart. Slices 1 to 5 are
+the exception: they sit past libdsk's 8 MB addressing ceiling, `-T logical` does
+not lift it, and cutting the slice out is still the way in
+([DISK_FORMATS.md](DISK_FORMATS.md#reaching-slices-1-to-5)).
 
-## GitHub Release (avwohl/ioscpm)
+## GitHub Release (avwohl/ioscpm) - history, superseded 2026-09-05
 
-The iOS/macOS app fetches disk images from GitHub releases:
-- **Catalog URL**: `https://github.com/avwohl/ioscpm/releases/latest/download/disks.xml`
-- **Disk base URL**: `https://github.com/avwohl/ioscpm/releases/latest/download/`
+**Nothing in this section is current.** It describes the distribution channel
+the GUI clients used until 2026-09-05, when all three moved to romwbw_disks'
+`index-v0.json`. It is kept because the URLs in it are still live and have to
+stay that way.
 
-### Current Release Assets (v1.1)
+Until then the iOS/macOS app fetched disk images from an `ioscpm` release,
+through an XML catalog:
+- Catalog URL: `https://github.com/avwohl/ioscpm/releases/latest/download/disks.xml`
+- Disk base URL: `https://github.com/avwohl/ioscpm/releases/latest/download/`
+
+The v1.1 release assets:
 
 | File | Size | Contains R8/W8 |
 |------|------|----------------|
@@ -145,26 +201,25 @@ The iOS/macOS app fetches disk images from GitHub releases:
 | hd1k_zpm3.img | 8,388,608 bytes | No |
 | hd1k_zsdos.img | 8,388,608 bytes | No |
 
-### Updating Release Assets
+### Those tags stay live indefinitely
 
-To update disk images in the release:
+Shipped builds are hardwired to those asset URLs and have no way of being told
+otherwise. Deleting a tag or an asset breaks a copy of the app that is already
+on somebody's phone, and there is no server-side redirect to soften it. Do not
+tidy them up, and do not renumber them.
 
-```bash
-# Upload/replace assets in existing release
-gh release upload v1.1 --repo avwohl/ioscpm --clobber hd1k_combo.img disks.xml
+Equally, do not publish into them. `gh release upload v1.1 --clobber ...`, which
+this section used to give as the update procedure, would now change what an old
+build downloads while changing nothing for any current one - a silent divergence
+between two populations of users, which is the opposite of what a `--clobber`
+was ever for.
 
-# Or create a new release
-gh release create v1.2 --repo avwohl/ioscpm --title "v1.2" hd1k_combo.img disks.xml
-```
+### Where a port should look instead
 
-### Adding Files to Combo Disk
-
-Use cpmtools with the RomWBW diskdefs - see "Adding Files to Disk Images" above. For slice 0 of a combo image:
-
-```bash
-export DISKDEFS="$HOME/esrc/RomWBW-v3.5.1/Tools/cpmtools/diskdefs"
-cpmcp -f wbw_hd1k_0 disks/hd1k_combo.img r8.com w8.com 0:
-```
+The catalog described in [CATALOG.md](CATALOG.md):
+`index-v0.json` -> `catalog-v0-<release>.json` -> the assets, each step checked
+against a hash named by the step above it. New disks appear there without any
+client release, which is the entire reason the move happened.
 
 ## Reference Files
 
