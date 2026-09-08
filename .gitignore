@@ -58,5 +58,12 @@ web/catalog/
 src/local.mk
 web/*.img
 
+# Python bytecode. tools/romwbw-get is Python and so are the suites under
+# tests/, and importing any of them writes __pycache__ beside the source - so
+# running the tests left the tree dirty until this existed, which is one `git
+# add .` away from committing bytecode.
+__pycache__/
+*.pyc
+
 # Node.js
 node_modules/
