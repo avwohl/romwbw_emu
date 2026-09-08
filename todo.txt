@@ -185,10 +185,46 @@ deleted their vN.N.N literal when they moved to romwbw_disks' index-v0.json.
 cpmdroid's copy had grown an "index-v0" kind that asks the right question - does
 this source still name the v0 index, is the legacy pin really gone, does that index
 still publish the RomWBW release this build's bundled ROM declares - and its header
-said the other four needed the same edit.  That copy is now canonical in all five
-repositories (md5 2dd4a7f63226c2723f65b5c95e560175), with ioscpm and z80cpmw moved
-into the index-v0 row.  Note z80cpmw's file is CatalogV0.cpp, not DiskCatalog.cpp
-where the old pin lived.
+said the other four needed the same edit.  That copy was propagated to all five
+repositories, with ioscpm and z80cpmw moved into the index-v0 row.
+  IT IS NOT CANONICAL ANY MORE, and this line said it was.  Re-measured
+2026-09-08: the five copies have five different md5s - ioscpm ba456daf, cpmemu
+2dd4a7f6, romwbw_emu 29fd68a7, cpmdroid 9a703420, z80cpmw 7e6a2c90 - so only
+cpmemu still hashes to the value this entry named for all five.  Two divergences
+matter, and both are ioscpm's copy being ahead:
+    * The *.app arms.  `grep -c 'bundle DIRECTORY'` is 1 in ioscpm and 0 in the
+      other four, and ioscpm has *.app handling in both scan_artifact() and
+      scan_artifact_for() that no sibling has.  Since every copy checks every
+      port, running a sibling copy on a Mac still skips the iOS .app - which is
+      the artifact half this item is about.
+    * The ROM arm, which is now the wrong question entirely.  This repository,
+      z80cpmw and cpmemu gate it on `if [ -n "$rom" ]` alone, so with every
+      port's bundled ROM deleted they call rom_release_of() on a path with no
+      file, get nothing back, print `CANNOT READ the RomWBW release out of
+      .../emu_avw.rom` and EXIT 1 against a family that is entirely correct.
+      Measured by running all five: cpmdroid and ioscpm exit 0; romwbw_emu,
+      z80cpmw and cpmemu exit 1.  Nothing is red - no repository runs this in
+      CI - but this script's own header says "a gate that cries wolf is a gate
+      that stops being read, which is the exact failure this script was written
+      after".
+        DO NOT repair it by adding `[ -f "$rom" ]`.  ioscpm's copy did that and
+      it only hid the arm: `bundled_rom_of()` was a table of three paths that
+      were deleted on purpose, kept because "a ROM that reappears at that path
+      gets checked again".  The rule is the other way round - no repository but
+      romwbw_disks may carry a ROM - so a ROM that reappears is the violation,
+      not a case to check.  ioscpm inverted the arm on 2026-09-08:
+      `bundled_rom_of()` and `rom_release_of()` are gone, and `roms_in_tree()`
+      asks `git ls-files --cached --others --exclude-standard` for any `*.rom`
+      anywhere in the checkout and fails the port if there is one.  Verified by
+      planting a 512 KB file: exit 1 naming the path, exit 0 once removed.
+  Take the whole of ioscpm's copy - it carries both this and the *.app arms.
+Raised from ioscpm on 2026-09-08, whose copy carries "THIS COPY HAS DIVERGED and
+the other four need the same edit".
+  NOTE for this repository: archive/cpm22/com/mbasic.com is a CP/M application
+in an archive tree, not a ROM, and the check looks only for *.rom.  It is
+untouched by any of this.
+  Note z80cpmw's file is CatalogV0.cpp, not DiskCatalog.cpp where the old pin
+lived.
   WHAT IS STILL OPEN is the artifact half itself, and the shape it should take has
 changed since this item was written.  This item said the three authorities were the
 iTunes lookup, the Play listing, and "for Windows a human-maintained note".  That
