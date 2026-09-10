@@ -491,6 +491,56 @@ def _tests(tmp, web, base):
     check(len(block["disks"]) == 0 and block["not_mirrored"],
           "a partial mirror records what it left out rather than looking complete")
 
+    # A re-cut does NOT change an artifact's size - a ROM is always 512 KB, an
+    # hd1k image always exactly 8 MB - so a mirror that decided by size skipped
+    # the copy and then wrote the catalog's NEW sha256 into the manifest beside
+    # LAST generation's bytes.  The page checks what it downloads against that
+    # manifest, so the deploy exited 0 and published a web root that failed its
+    # own integrity check.
+    fx4 = Fixture(web)
+    fx4.base = base
+    recut = fx4.rom("emu_avw", "3.6.0", default=True,
+                    body=b"Y" * len(b"gen4rom" * 100))  # same SIZE as before
+    c360d = fx4.catalog("3.6.0", [recut, fx4.rom("emu_rcz80", "3.6.0")],
+                        [fx4.disk("hd1k_combo", "3.6.0", slot=0,
+                                  host_transfer=True, body=b"gen4disk" * 100),
+                         fx4.disk("hd1k_msx", "3.6.0")],
+                        generation=5)
+    fx4.write(base, [("3.5.1", c351, False, 1), ("3.6.0", c360d, True, 5)])
+    r = run(cache, base, "--refresh", "mirror", site, "--versions", "all")
+    check(r.returncode == EX_OK, "a mirror after a re-cut succeeds")
+    doc = json.load(open(man))
+    # Both releases publish an id "emu_avw"; pick the block for the one that
+    # was re-cut rather than whichever the index happens to list first.
+    mblock = [b for b in doc["romwbw_versions"]
+              if b["romwbw_version"] == "3.6.0"][0]
+    ment = [e for e in mblock["roms"] if e["id"] == "emu_avw"][0]
+    on_disk = open(os.path.join(site, "catalog", *ment["url"].split("/")), "rb").read()
+    check(ment["sha256"] == recut["sha256"],
+          "the manifest carries the re-cut's new hash")
+    check(sha(on_disk) == ment["sha256"],
+          "and the bytes beside it are the ones that hash to it - a same-size "
+          "re-cut is re-copied, not skipped")
+
+    # mirror keeps the 1/2 split.  A full mirror pulls every asset of every
+    # release - hundreds of megabytes.  One 5xx or reset in that is a GitHub
+    # hiccup, not a defect in this repository, and it used to come out as
+    # exit 1 alongside real contradictions.
+    dead_assets = "http://127.0.0.1:9/"      # discard port: refuses at once
+    fx5 = Fixture(web)
+    fx5.base = base
+    c_dead = fx5.catalog("3.6.0", [fx5.rom("emu_avw", "3.6.0", default=True)],
+                         [fx5.disk("hd1k_combo", "3.6.0", slot=0)],
+                         generation=6, base=dead_assets)
+    fx5.write(base, [("3.6.0", c_dead, True, 6)])
+    site2 = os.path.join(tmp, "site2")
+    r = run(os.path.join(tmp, "mcache"), base, "mirror", site2, "--versions", "all")
+    check(r.returncode == EX_UNVERIFIED,
+          "a mirror whose assets are unreachable is CANNOT VERIFY (2), not a "
+          "contradiction (1) - a transient GitHub failure is not a defect here")
+    check(os.path.exists(os.path.join(site2, "catalog", "manifest.json")),
+          "and it still writes the manifest for what it did get")
+
     # 11. `use` persists a choice, and refuses an unrunnable one ----------------
     conf = os.path.join(tmp, "conf")
     r = run(cache, base, "--refresh", "use", "3.6.0", confdir=conf)

@@ -1186,6 +1186,7 @@ def cmd_mirror(cat, args):
     }
     kept = set()
     failures = []
+    contradictions, unverifieds = [], []
 
     for version in want:
         e = cat.entry(version)
@@ -1216,6 +1217,13 @@ def cmd_mirror(cat, args):
                 try:
                     src = cat.fetch(version, ident, trust_cache=args.trust_cache)
                 except (Contradiction, Unverified) as ex:
+                    # Which KIND of failure this was decides the exit code
+                    # below.  Folding both into one list made a single 5xx or
+                    # reset - one asset out of the ~460 MB a full mirror pulls -
+                    # exit 1, the code this program reserves for "something is
+                    # demonstrably wrong", and CI turns red for a GitHub hiccup.
+                    (contradictions if isinstance(ex, Contradiction)
+                     else unverifieds).append(ex)
                     failures.append("%s %s/%s: %s" % (kind, version, ident, ex))
                     block["not_mirrored"].append(
                         {"id": ident, "kind": kind, "name": it.get("name", ""),
@@ -1225,8 +1233,21 @@ def cmd_mirror(cat, args):
                 out = os.path.join(vdir, fname)
                 rel = os.path.relpath(out, cdir)
                 kept.add(os.path.abspath(out))
-                if not (os.path.exists(out)
-                        and os.path.getsize(out) == it.get("size")):
+                # Size first, because it is free and it settles the common
+                # case; then the hash, because a RE-CUT DOES NOT CHANGE THE
+                # SIZE.  A ROM is always 512 KB and an hd1k image is always
+                # exactly 8 MB, so "same size" was true of every re-publish
+                # this repository will ever mirror.  The copy was skipped, the
+                # manifest below was still written with the catalog's NEW
+                # sha256, and the page then fetched last generation's bytes and
+                # rejected them against this generation's hash - silently, and
+                # with the deploy exiting 0.
+                need = not (os.path.exists(out)
+                            and os.path.getsize(out) == it.get("size"))
+                if not need:
+                    want = (it.get("sha256") or "").lower()
+                    need = bool(want) and sha256_file(out) != want
+                if need:
                     os.makedirs(vdir, exist_ok=True)
                     info("  mirroring %s" % rel, cat.quiet)
                     tmp = out + ".tmp"
@@ -1266,7 +1287,11 @@ def cmd_mirror(cat, args):
     if failures:
         for f in failures:
             warn(f)
-        return EX_CONTRADICTION
+        if contradictions:
+            return EX_CONTRADICTION
+        warn("nothing above is known to be wrong - %d asset(s) could not be "
+             "fetched.  Re-run the mirror." % len(unverifieds))
+        return EX_UNVERIFIED
     return EX_OK
 
 
