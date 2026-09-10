@@ -60,15 +60,31 @@ import urllib.request
 # This URL is the root of trust.  It has no hash above it - HTTPS is the whole
 # of its integrity - which is why the catalog it points at is verified against
 # a hash the index carries, and every asset against a hash the catalog carries.
-# A floating tag on purpose: `catalog-v0` is rewritten when a RomWBW version is
-# added, and it is cut last, after the assets it names.
-
+# IT NAMES NO RELEASE TAG, and that is the point.  It was
+# `releases/download/catalog-v0/index-v0.json` until 2026-09-10, and the comment
+# here called the tag "floating on purpose" - which was true of the tag's
+# CONTENT and false of everything else.  Rewriting `catalog-v0` in place ships a
+# new RomWBW version freely; it does nothing about the tag's NAME, so
+# romwbw_disks could not rename that release, move the index, or publish a v1
+# anywhere a shipped client would look.  docs/CATALOG_SCHEMA.md's own migration
+# plan was "a v1 lives alongside v0: new release tags, a new index URL", and a
+# new index URL is unreachable from a constant naming the old one - so the plan
+# silently meant "and release Windows, Android, iOS and Linux at once", which is
+# the coupling this catalog exists to remove.
 #
-# Kept on ONE line, over the line length: tools/check-shipped-disks.sh looks
+# `releases/latest/download/` is resolved by GitHub to whichever release carries
+# the Latest flag, so where the index lives belongs to romwbw_disks.  A v1 ships
+# as index-v1.json BESIDE index-v0.json on that same release: v0 clients keep
+# reading v0, v1 clients read v1, nobody rebuilds anything.  The cost is that
+# "Latest" is one flag and `gh release create` claims it by default -
+# romwbw_disks' tools/check_latest.py fails that repository if it ever lands on
+# a release with no index on it.
+#
+# Kept on ONE line: tools/check-shipped-disks.sh looks
 # for the whole URL in a single line of source, the same way it does in the
 # three GUI clients, and a string split across two lines is invisible to it -
 # which reads as "this port has been repointed back off the catalog".
-INDEX_URL = "https://github.com/avwohl/romwbw_disks/releases/download/catalog-v0/index-v0.json"
+INDEX_URL = "https://github.com/avwohl/romwbw_disks/releases/latest/download/index-v0.json"
 INTERFACE = "v0"
 
 INDEX_SCHEMA = "romwbw-disks-index"

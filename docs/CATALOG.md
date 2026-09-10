@@ -40,9 +40,12 @@ the 49 MB is the disk `run` fetches beside it.
       -> catalog-v0-<release>.json   one per RomWBW release, hash named by the index
         -> the ROMs and disk images  hash and size named by the catalog
 
-The index lives on a floating tag and is a few kilobytes; the per-release
-catalogs and the assets live on immutable tags and never move. So the thing
-that changes is tiny and the things a client caches are permanent.
+The index is fetched through `releases/latest/download/`, which names no release
+tag: GitHub resolves it to whichever release carries the Latest flag, so where
+the index lives belongs to romwbw_disks and can change with no release of any
+client. It is a few kilobytes; the per-release catalogs and the assets live on
+immutable tags and never move. So the thing that changes is tiny and the things
+a client caches are permanent.
 
 `romwbw-get` verifies in that order and no other: the catalog document is
 checked against the index's `catalog_sha256` and `catalog_size` **before a byte
