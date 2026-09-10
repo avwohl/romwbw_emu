@@ -104,8 +104,30 @@ output any more. romwbw_disks builds the published ROM and the disk-resident
 compares them against these and asserts they are here. Deleting one turns that
 check red in another repository.
 
-- **Z80 Assembler**: Use `um80` for assembling Z80 code. Do NOT use pasmo, z80asm, or other assemblers.
-  - Add `.z80` directive at start of file to enable Z80 instructions
+- **Z80 Assembler: `um80`, and there is no second one.** `um80` and `ul80` are
+  this project's own assembler and linker, from
+  [avwohl/um80_and_friends](https://github.com/avwohl/um80_and_friends), and they
+  assemble every Z80 and 8080 source in this repository and in all the sibling
+  projects. They install with one command on any platform:
+
+      pip install um80          # provides um80, ul80 and four more
+
+  **Do not install pasmo. Do not install z80asm. Do not add a fallback to
+  either, or to z88dk, and do not write a branch that tries one and then the
+  other.** If `um80` is not on `PATH`, install it - that is the whole remedy.
+  This is not a preference between comparable tools: the sources here are
+  MACRO-80 dialect and carry `.z80`, `.rel` intermediates and a separate link
+  step, which is not what pasmo or z80asm read. A session that reaches for one
+  of them is about to report that this tree does not assemble.
+
+  cpmemu's test suite accepted `pasmo` if it was on `PATH` and `z80asm`
+  otherwise until 2026-09-10, and the cost was not wrong output - it was that
+  the program which assembled the guests depended on the machine, and a third
+  outcome, *neither installed*, skipped 42 checks and exited 0.
+
+  - Add the `.z80` directive at the start of the file to enable Z80
+    instructions. Without it `um80` is an 8080 assembler and the first `LD`
+    fails the file: `Unknown instruction or directive: LD`.
   - Assemble: `um80 -g file.asm` (creates file.rel in same directory as source)
   - Link: `ul80 -o output.bin -p 0000 file.rel`
   - **Building the ROM is one command.** `roms/build_emu_rom.sh` does the
