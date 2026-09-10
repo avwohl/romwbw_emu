@@ -213,16 +213,16 @@ address past 8 MB from the start of a file, which put combo slices 1–5 out of
 reach entirely. `cpm_disk.py` reads the whole file and indexes it, so
 `--slice 5` is no harder than `--slice 0`.
 
-**Two limits worth knowing before you reach for it:**
+**One limit worth knowing before you reach for it:** the **cache is mode 0444**.
+Anything you intend to write to has to be a `tools/romwbw-get path --work`
+copy; see the section above.
 
-- `add` on a **combo** refuses files over 16,384 bytes rather than truncating
-  them. `ComboDisk` writes a single logical extent; `Hd1kDisk` handles
-  multi-extent files correctly and `ComboDisk` is an older parallel
-  implementation that does not. For a bigger file, cut the slice out with
-  `dd ... bs=1048576 skip=$((1 + 8*N)) count=8`, use the plain path, and write
-  it back. The real fix is for `ComboDisk` to stop reimplementing `Hd1kDisk`.
-- The **cache is mode 0444**. Anything you intend to write to has to be a
-  `tools/romwbw-get path --work` copy; see the section above.
+There used to be a second — `add` on a combo refused files over 16,384 bytes,
+because `ComboDisk` wrote a single logical extent while `Hd1kDisk` handled
+multi-extent files correctly. `ComboDisk` is a subclass of `Hd1kDisk` now
+(cpmemu `566fd00`), so there is one implementation and the limit is gone: files
+of any size that fit the slice round-trip, and both classes refuse a file that
+would run past the end of the disk rather than growing the image.
 
 This section used to prescribe cpmtools in detail — which diskdef per image,
 why `-T logical` "is not optional", which distributions ship which `wbw_*`

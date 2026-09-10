@@ -335,11 +335,10 @@ None of that applies to `cpm_disk.py`, so `disks/diskdefs` went with the
 cpmtools recipes that needed it. romwbw_disks still uses cpmtools to *build*
 the published images, and keeps its own `tools/diskdefs` for that.
 
-One limit to know: `add` on a **combo** refuses a file over 16,384 bytes rather
-than truncating it, because `ComboDisk` writes a single logical extent. For
-anything larger, cut the slice out with
-`dd if=combo.img of=slice.img bs=1048576 skip=$((1 + 8*N)) count=8`, use the
-plain path, and write the slice back.
+`ComboDisk` is a subclass of `Hd1kDisk` (cpmemu `566fd00`) — a slice is a plain
+hd1k image at an offset, so there is one implementation of the format rather
+than two. A file of any size that fits the slice round-trips; one that would run
+past the end of the disk is refused rather than growing the image.
 
 ### Drive Letters
 
