@@ -17,18 +17,118 @@ symlinks into `src/`, `z80cpmw`'s vcxproj compiles it in place, and `cpmdroid`'s
 CMakeLists pulls it from a sibling checkout — so a commit here reaches all three
 on their next build, tag or no tag.
 
-## [Unreleased]
+## [1.41] - 2026-09-10
 
-`VERSION` is `1.40`. The rule `[1.37]` was cut to establish is that a
+`VERSION` is `1.41`. The rule `[1.37]` was cut to establish is that a
 **binary-affecting** change landing here bumps it, so that no build answers with
 a tag's version while differing from it. The RomWBW runtime-version change below
 touches four files in `src/`, so it bumped to `1.39`; the artifact migration
 took it to `1.40`, which is the same rule read strictly - `src/romwbw_emu.cc`
 changed, so the binary changed, even though all that changed in it is help text
-and the message printed when no ROM is given. Cutting a release from here takes
-a dated heading, a `VERSION` that already matches the tag, and a green
-`workflow_dispatch` run of `release.yml` before the tag exists; that dry run is
-what replaced the dependency pins, so it is a step rather than a courtesy.
+and the message printed when no ROM is given. This release also carries `1.39` and `1.40`, neither of which
+was ever tagged, so everything under this heading reaches users together for the
+first time. The catalog-client work below took it to `1.41`: `src/emu_init.cc`
+changed, which is the same rule read strictly.
+
+Cutting a release takes a dated heading, a `VERSION` that already matches the
+tag, and a green `workflow_dispatch` run of `release.yml` before the tag exists;
+that dry run is what replaced the dependency pins, so it is a step rather than a
+courtesy.
+
+### The catalog client, after an audit of what a changed `romwbw_disks` does to it
+
+The artifact migration below moved the ROMs and images out; this is what came of
+asking whether the client could really absorb a *changed* catalog without a
+release here. Most of it could. Six things could not.
+
+- **A re-cut that changed more than one artifact reported the second one as
+  local damage.** `fetch` judged a stale cache entry by the release's
+  `generation` counter, and stamped that counter after the *first* asset was
+  repaired - so every other artifact of the same re-cut found a generation that
+  had "not moved" and was refused with "this is local damage rather than a
+  re-publish", exit 1. `romwbw_disks` publishes exactly that shape of re-cut.
+  The question is asked per asset now, against the sha256 the catalog published
+  for that file when it was downloaded, kept in `fetched.json`.
+- **`mirror` decided by size, and a re-cut never changes the size.** A ROM is
+  always 512 KB and an hd1k image always exactly 8 MB, so the copy was skipped
+  while the manifest beside it was written with the catalog's *new* sha256. The
+  deploy exited 0 and published a web root that failed its own integrity check.
+- **A 404 on a URL the catalog promised was reported as "could not verify".**
+  The index names each `catalog_url` beside its hash and size; a catalog names
+  every asset the same way. A 404 on one of those is a broken publish, not an
+  outage, and it left every gate green. It is exit 1 now. The index's *own* URL
+  stays amber, deliberately: nothing promises it, and that is what lets a
+  warm cache ride out a `gh release create` that grabbed the Latest flag.
+- **An index that did not validate replaced the one that did.** The fetched
+  bytes were cached before they were parsed, so one bad publish overwrote a
+  working install's index and the mtime bump meant it would not retry for an
+  hour. Caching happens after validation now; a refused index leaves the last
+  good one byte for byte.
+- **`--allow-untested` got past this program and was then refused by the
+  binary.** Every "this build cannot run that release" message offers the flag;
+  it was never passed on to the emulator, so the user took the advice, waited
+  for 51 MB, and was refused by a binary that would have loaded it.
+- **A non-default index shared the default's cache.** Pointing the client at a
+  fork wrote the fork's index over the real one's cache entry and collided its
+  assets by filename - so within the index TTL an ordinary run afterwards was
+  served the fork's index, and a same-named asset left the next default run
+  reporting damage on a file it had never touched. Every path a non-default
+  index produces is namespaced now, `--cache` is no longer needed for it, and
+  the default is the empty scope so no existing cache moves.
+
+### Every single-slice disk the catalog publishes was called a FAT16 volume
+
+`emu_check_disk_mbr()` asked its questions in an order that made the Z80
+boot-code test unreachable for the images `romwbw_disks` actually ships. A
+RomWBW hd1k slice has no partition table - sector 0 is its boot record, and the
+byte where partition slot 2's type would sit happens to be `0x06`. So all 23
+single-slice images in both published catalogs printed
+
+    WARNING: disk has FAT16/FAT32 MBR but no RomWBW partition - may not work
+    correctly
+
+and then booted perfectly. A warning that fires on every artifact the publisher
+ships is one people learn to scroll past. The boot-record test comes first now;
+a genuinely FAT-formatted 8 MB image still warns.
+
+### Disk images are read with `cpm_disk.py`, not cpmtools
+
+`disks/verify_disk_utils.sh` used `cpmls`/`cpmcp` with a diskdef guessed from
+the file size, and `.claude/CLAUDE.md` carried 78 lines prescribing that - which
+diskdef per image, why `-T logical` "is not optional", which distributions ship
+which `wbw_*` definitions. All of it accurate about cpmtools and all of it the
+wrong tool: the family's CP/M image tool is `cpmemu`'s `util/cpm_disk.py`, which
+needs no diskdefs, has no `-T logical` and is not linked against libdsk.
+
+The hazards were real and are simply absent from the replacement. cpmtools 2.23
+cannot be configured without libdsk, whose default path double-counts `boottrk`
+on a diskdef with no `offset`: measured against the published `hd1k_infocom`,
+`cpmls -f wbw_hd1k` listed nothing and `cpmcp` exited 0 having written at 32768,
+into the data area, over a file that was already there. And libdsk cannot
+address past 8 MB from the start of a file, so combo slices 1-5 were out of
+reach entirely.
+
+Two things got better rather than merely different: the check now looks at
+**every slice** of a combo instead of only the first, and it runs at all on a
+machine with no cpmtools - which is where its image half had been skipping
+silently while CI carried it alone. `disks/diskdefs` is deleted with the recipes
+that needed it, and `.github/workflows/test.yml` stops installing cpmtools.
+
+### Docs
+
+- [`docs/CATALOG.md`](docs/CATALOG.md) gains **"Fetching from a fork, or from
+  anywhere else"**: the three ways to point the client at another index and
+  their precedence, that the URL is used verbatim, what a fork has to publish
+  field by field, and the namespacing. The whole subject was undocumented -
+  `--index-url` and `$ROMWBW_INDEX_URL` appeared nowhere.
+- The same file documented **no global flags at all**, which is how
+  `romwbw-get run --emu=...` becomes a usage error nobody expects, and never
+  mentioned `INDEX_TTL`, so "I published a disk and it is not listed" had no
+  answer. Both are tables now.
+- `tools/check-shipped-disks.sh` exited 1 in all four repositories that carry
+  it, for three ports that were all correct - a stale file column, a test
+  fixture's deliberately fake fork URL, and two ports that had legitimately
+  deleted their bundled ROM. Fixed here and in the other three.
 
 ### The ROMs and the disk images have left this repository
 
