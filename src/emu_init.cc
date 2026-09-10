@@ -655,14 +655,26 @@ const char* emu_check_disk_mbr(const uint8_t* data, size_t size) {
     return nullptr;  // Has proper RomWBW partition, OK
   }
 
-  if (has_fat_partition) {
-    return "WARNING: disk has FAT16/FAT32 MBR but no RomWBW partition - may not work correctly";
+  // A proper hd1k slice starts with Z80 boot code (JR or JP), and this sector
+  // is then its BOOT RECORD, not a partition table: the 0x55AA above is the
+  // signature RomWBW writes there, and bytes 0x1BE-0x1FD are boot data that
+  // happen to sit where a partition table would be.  Reading a "partition
+  // type" out of them is reading noise.
+  //
+  // This test used to come AFTER the FAT one, which made it unreachable for
+  // every single-slice image romwbw_disks publishes.  Their boot record holds
+  // 0x06 at offset 0x1D2 - where partition slot 2's type byte would be - so
+  // has_fat_partition was true and all 23 of them (measured 2026-09-10, every
+  // 8 MB image in both the 3.5.1 and the 3.6.0 catalogs) printed
+  // "FAT16/FAT32 MBR but no RomWBW partition - may not work correctly" and
+  // then booted perfectly.  A warning that fires on every artifact the
+  // publisher ships is a warning nobody can act on.
+  if (data[0] == 0x18 || data[0] == 0xC3) {
+    return nullptr;
   }
 
-  // Has MBR but no RomWBW partition and no FAT - check first bytes
-  // A proper hd1k slice starts with Z80 boot code (JR or JP instruction)
-  if (data[0] == 0x18 || data[0] == 0xC3) {
-    return nullptr;  // Looks like Z80 boot code - probably just has stale MBR signature
+  if (has_fat_partition) {
+    return "WARNING: disk has FAT16/FAT32 MBR but no RomWBW partition - may not work correctly";
   }
 
   return "WARNING: disk has MBR but no RomWBW partition (0x2E) - format may be invalid";
