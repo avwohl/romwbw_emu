@@ -29,8 +29,9 @@ name: Tests
 # what was actually downloaded, which is a stronger question than the one two
 # tracked images could answer.
 #
-# cpmtools is installed for disks/verify_disk_utils.sh's image half. It SKIPS
-# silently when um80, ul80 or cpmcp are missing - which is right on a
+# cpm_disk.py, out of the cpmemu clone this job already makes for qkz80, is
+# what disks/verify_disk_utils.sh's image half reads images with. It SKIPS
+# silently when um80, ul80 or cpm_disk.py are missing - which is right on a
 # developer's machine and wrong here, where a skip would report a green disk
 # check that never opened an image. The step after the suite asserts it ran.
 #
@@ -76,8 +77,10 @@ jobs:
       - name: Install build and test dependencies
         run: |
           sudo apt-get update
-          # cpmtools: cpmls/cpmcp/cpmrm, for disks/verify_disk_utils.sh.
-          sudo apt-get install -y build-essential cpmtools
+          # No cpmtools.  disks/verify_disk_utils.sh reads images with
+          # cpm_disk.py now, which is stdlib-only Python out of the cpmemu
+          # checkout this job already makes for qkz80.
+          sudo apt-get install -y build-essential
           # um80/ul80: the MACRO-80 toolchain src/r8.asm and src/w8.asm are
           # written for.  Unpinned, like everything else here - see "On
           # pinning" in release.yml.  Note what that accepts: disks/
@@ -94,7 +97,7 @@ jobs:
           # verify_disk_utils.sh exits 0 when these are missing. That is
           # deliberate - they are not build dependencies - but here it would
           # turn a missing package into a passing job, so fail early instead.
-          for t in um80 ul80 cpmls cpmcp cpmrm; do
+          for t in um80 ul80; do
             command -v "$t" >/dev/null || { echo "missing: $t"; exit 1; }
           done
           um80 --version || true
@@ -110,6 +113,17 @@ jobs:
           git clone https://github.com/avwohl/cpmemu.git
           cd cpmemu/src
           make libqkz80.a
+
+      - name: Check cpm_disk.py came with the cpmemu clone
+        run: |
+          # disks/verify_disk_utils.sh looks for $CPM_DISK, then a sister
+          # checkout, then $GITHUB_WORKSPACE/cpmemu - which is where the step
+          # above clones it.  It SKIPS the image half when it finds none, so
+          # without this assertion a cpmemu layout change would quietly turn
+          # the image half off and leave this job green.
+          test -f cpmemu/util/cpm_disk.py || {
+            echo "missing: cpmemu/util/cpm_disk.py"; exit 1; }
+          python3 cpmemu/util/cpm_disk.py --help >/dev/null
 
       - name: Build and test
         run: |

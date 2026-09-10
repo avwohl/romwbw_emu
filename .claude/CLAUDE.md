@@ -175,83 +175,64 @@ Key points:
   a bare `path`: the guest writes to the image, and the cached copy is the
   hash-verified original.
 
-**cpmtools: pick the right diskdef, and do not set DISKDEFS**
+**Read and write CP/M images with `cpm_disk.py`. Not with cpmtools.**
 
-`disks/diskdefs` in this repository is the definitive one, and
-`disks/verify_disk_utils.sh` `cd`s into `disks/` before every cpmtools command
-so that it is the one picked up. Do the same by hand. Do not rely on the
-system file: cpmtools reads `./diskdefs` OR the system copy, never both, and
-what the system copy holds depends on the distribution. This file used to say
-the stock file "already defines the whole `wbw_hd1k` family including the
-per-slice `wbw_hd1k_0..3`. There is nothing to export." That is true of
-homebrew and false of Debian and Ubuntu, whose cpmtools 2.23 has `wbw_hd1k`
-and no per-slice definition at all - and it is what once sent a reading of
-this astray and turned CI red for a file that was on the image. Nobody's
-copy is upstream's: the 2.23 tarball from moria.de ships 139 diskdefs and
-not one of them mentions RomWBW, so every `wbw_*` definition anywhere is a
-packager's addition and has to be checked rather than assumed. Setting
-`DISKDEFS` to a path that does not exist is *silently ignored*, so the wrong
-instruction looks like it works.
+`cpm_disk.py` is the family's CP/M image tool: one stdlib-only Python file,
+owned by **cpmemu** at `util/cpm_disk.py`, used by every repository here. It
+lives in exactly one repo on purpose — romwbw_disks vendored a copy, called it
+"the canonical one" while calling it from nothing, and that copy was deleted on
+2026-09-10 (romwbw_disks `ff6adec`).
 
-`disks/diskdefs` now carries `wbw_hd1k` and `wbw_hd1k_0..5`, all six slice
-definitions checked against the published `hd1k_combo` image. Its comment
-header records the one thing worth knowing before using the higher slices:
-cpmtools 2.23 cannot be built without libdsk, and its libdsk backend cannot
-address anything past 8 MB from the start of the image, so on any cpmtools
-linked against libdsk - which is every packaged build, homebrew's as much as
-Debian's - `wbw_hd1k_1` and up answer "cannot read superblock (Bad parameter)"
-and even `wbw_hd1k_0` cannot reach the last 1 MB of slice 0. Measured on
-homebrew's cpmtools 2.23, whose `cpmls` links `libdsk.3.dylib`: `wbw_hd1k_1`
-through `_5` all report it. That is a limit of the build, not of the
-definitions; a device_posix build of the same sources reads all six.
-
-The images are not in this tree, so the first step is fetching one. Read from
-the cache copy; write only to a `--work` copy. A write aimed at the cache does
-not land: `cpmcp` prints `can not umount device: Disc is read-only.` and exits
-1, `cpmrm` exits 0 in silence, and either way the image is byte-for-byte what
-it was. The cache is never damaged - the edit is just not there.
+There is no copy in this tree and there should not be one. Find it the way
+`src/makefile` finds qkz80 — `$CPM_DISK`, then a sister checkout, then whatever
+`make install` put on PATH. `disks/verify_disk_utils.sh` already does exactly
+that; copy its probe rather than hardcoding a path.
 
 ```bash
-cd disks    # so cpmtools reads ./diskdefs, not the system one
-COMBO=$(../tools/romwbw-get path @disk0)             # 49 MB combo, mode 0444
-INFOCOM=$(../tools/romwbw-get path hd1k_infocom)     # fetched on demand
+CPM=~/src/cpmemu/util/cpm_disk.py
+COMBO=$(tools/romwbw-get path @disk0)            # 49 MB combo, mode 0444
 
-cpmls -T logical -f wbw_hd1k   "$INFOCOM"            # plain 8 MB image
-cpmls -T logical -f wbw_hd1k_0 "$COMBO"              # combo: slice 0, past the 1 MB MBR
-cpmcp -T logical -f wbw_hd1k_0 "$COMBO" 0:w8.com ./w8.com    # extract
+python3 "$CPM" list "$COMBO"                     # slice 0, auto-detected
+python3 "$CPM" list --slice 3 "$COMBO"           # any slice, 0-5
+python3 "$CPM" extract "$COMBO" W8.COM -o ./out  # -o must already exist
 
-WORK=$(../tools/romwbw-get path --work @disk0)       # writable copy
-cpmrm -T logical -f wbw_hd1k_0 "$WORK" 0:w8.com      # cpmcp will NOT
-cpmcp -T logical -f wbw_hd1k_0 "$WORK" ./w8.com 0:w8.com     # overwrite
+WORK=$(tools/romwbw-get path --work @disk0)      # writable copy
+python3 "$CPM" delete --slice 0 "$WORK" W8.COM
+python3 "$CPM" add    --slice 0 "$WORK" ./w8.com
 ```
 
-**`-T logical` is not optional, and leaving it off destroys data.** cpmtools
-2.23 cannot be configured without libdsk, and its default libdsk path
-double-counts `boottrk` on a diskdef that carries no `offset` - which
-`wbw_hd1k` is - so everything the bare form addresses lands one boot area too
-far into the file. Measured here against the published `hd1k_infocom`, whose
-directory is at `boottrk*sectrk*seclen` = 16384: bare `cpmls` prints 373 entries
-of mojibake where 69 files are, and bare `cpmcp` exits 0 in silence having put
-the directory entry at 32768 and the file's data at 102400 - over 4 KB of
-`amfv.z4`, which was already there. With `-T logical` the same copy writes at
-23232 and into a free block. The offset-carrying slice definitions are
-unaffected either way, which is why the combo always looked fine; pass them the
-flag anyway, so there is one recipe rather than two. `docs/DISK_FORMATS.md` has
-the full measurements and the `dd` recipe for slices 1 to 5, which are past
-libdsk's separate 8 MB ceiling and which `-T logical` does not reach.
-`disks/verify_disk_utils.sh` passes the flag when the local cpmtools advertises
-`-T`.
+Format is auto-detected from size — 8 MB is a plain hd1k slice, 51,380,224 is a
+combo — so there is **no diskdefs file, no `-T logical`, and no libdsk**. That
+retires the entire hazard this section used to describe, and it was a real one:
+cpmtools 2.23 cannot be configured without libdsk, its default path
+double-counts `boottrk` on a diskdef carrying no `offset`, and the failure is
+silent. Measured against the published `hd1k_infocom`, whose directory is at
+16384: `cpmls -f wbw_hd1k` listed nothing, and `cpmcp` exited 0 having written
+at 32768 — into the data area, over a file already there. libdsk also cannot
+address past 8 MB from the start of a file, which put combo slices 1–5 out of
+reach entirely. `cpm_disk.py` reads the whole file and indexes it, so
+`--slice 5` is no harder than `--slice 0`.
 
-The `wbw_hd1k_0` definition is what handles the combo image's 1 MB prefix, so
-the dd slice-extract-and-write-back dance this file used to prescribe is not
-needed for slice 0. It is still the only way into slices 1 to 5, which are past
-libdsk's 8 MB ceiling: `dd ... bs=1048576 skip=$((1 + 8*N)) count=8`, then read
-the cut as a plain `wbw_hd1k` image. **The real hazard is the one worth
-keeping:** the wrong diskdef does not fail, it prints a garbage directory, which
-reads as "no such file". That is exactly how `hd1k_infocom.img` was once
-recorded as carrying no `w8.com` when it carries both. `-T logical` does not
-retire that hazard - it only removes the largest instance of it, which was a
-correct diskdef reading the wrong part of the file.
+**Two limits worth knowing before you reach for it:**
+
+- `add` on a **combo** refuses files over 16,384 bytes rather than truncating
+  them. `ComboDisk` writes a single logical extent; `Hd1kDisk` handles
+  multi-extent files correctly and `ComboDisk` is an older parallel
+  implementation that does not. For a bigger file, cut the slice out with
+  `dd ... bs=1048576 skip=$((1 + 8*N)) count=8`, use the plain path, and write
+  it back. The real fix is for `ComboDisk` to stop reimplementing `Hd1kDisk`.
+- The **cache is mode 0444**. Anything you intend to write to has to be a
+  `tools/romwbw-get path --work` copy; see the section above.
+
+This section used to prescribe cpmtools in detail — which diskdef per image,
+why `-T logical` "is not optional", which distributions ship which `wbw_*`
+definitions. All of it was accurate about cpmtools and all of it was the wrong
+tool, and because it was written down here it is what a reader reached for. It
+went on 2026-09-10, along with `disks/diskdefs` (nothing in this repository
+reads it any more) and cpmtools from `.github/workflows/test.yml`. romwbw_disks
+still uses cpmtools in `tools/build_disks.sh` to build the published images;
+that is its own repository's business, and its `tools/diskdefs` is load-bearing
+there.
 
 For `r8.com` / `w8.com` specifically, do not do any of this by hand.
 `disks/rebuild_disk_utils.sh` is gone with the images it installed into:

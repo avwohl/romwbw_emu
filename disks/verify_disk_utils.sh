@@ -86,36 +86,74 @@ has_caps_interlock() {
 
 filesize() { wc -c < "$1" | tr -d ' '; }
 
-# -T logical, when cpmtools has it, and why it is not optional here.
+# HOW AN IMAGE IS READ: cpm_disk.py, and not cpmtools.
 #
-# cpmtools 2.23 cannot be configured without libdsk, and its default libdsk
-# path DOUBLE-COUNTS boottrk on a diskdef that carries no `offset`.  Measured
-# 2026-09-07 against the published hd1k_infocom, whose directory is at
-# boottrk*sectrk*seclen = 16384:
+# cpm_disk.py is the family's CP/M image tool - one stdlib-only Python file,
+# owned by cpmemu (util/cpm_disk.py) and used by every repository here.  It
+# needs no diskdefs, has no -T logical, and is not linked against libdsk, so
+# the whole class of hazard this file used to carry is gone with it:
 #
-#   cpmls -f wbw_hd1k             lists nothing at all
-#   cpmcp -f wbw_hd1k ... 0:f.txt exits 0 and writes at 32768 - exactly 16384
-#                                 too far, into the data area
-#   cpmcp -T logical -f wbw_hd1k  writes at 23233, inside the directory
+#   - cpmtools 2.23 cannot be configured without libdsk, and its default path
+#     DOUBLE-COUNTS boottrk on a diskdef with no `offset`.  Measured against
+#     the published hd1k_infocom, whose directory is at 16384: `cpmls -f
+#     wbw_hd1k` listed nothing, and `cpmcp` exited 0 having written at 32768 -
+#     into the data area, over a file that was already there.  It did not fail;
+#     it corrupted the image and then read the corruption back as a plausible
+#     directory.
+#   - Which diskdef an image wants had to be guessed from its size here, and
+#     guessing wrong printed a garbage directory rather than an error - which
+#     reads as "the utility is not on this image".  That is how hd1k_infocom
+#     was once recorded as carrying no w8.com when it carries both.
+#   - libdsk cannot address past 8 MB from the start of a file, so slices 1-5
+#     of a combo were unreachable and slice 0's last 1 MB was too.
 #
-# So the bare form does not merely fail to read: it silently corrupts an image
-# it is asked to write to, and then a bare cpmls reads the corruption back as a
-# plausible directory.  `-T logical` bypasses the auto-probe and both read and
-# write land where the geometry says.  The offset-carrying slice definitions
-# are unaffected either way, which is why hd1k_combo always looked fine.
-TFLAG=""
-if cpmls 2>&1 | grep -q '\-T'; then
-    TFLAG="-T logical"
+# cpm_disk.py auto-detects hd1k from combo by size, addresses any slice with
+# --slice N, and reads the whole file.  So this check now looks at EVERY slice
+# of a combo instead of only the first.  Measured 2026-09-10 against the
+# published hd1k_combo: R8.COM and W8.COM are on slice 0 and on no other, which
+# is what the catalog's host_transfer flag says.
+#
+# Found the same way src/makefile finds qkz80: an explicit variable, then a
+# sister checkout, then whatever `make install` put on PATH.  $CPM_DISK is
+# spelled to match the mpm2 repository, which already drives this tool that way.
+CPM_DISK="${CPM_DISK:-}"
+if [ -z "$CPM_DISK" ]; then
+    for cand in \
+        "$SELF_ROOT/../cpmemu/util/cpm_disk.py" \
+        "$SELF_ROOT/cpmemu/util/cpm_disk.py"
+    do
+        [ -f "$cand" ] && { CPM_DISK="$cand"; break; }
+    done
 fi
 
-# Which diskdef an image wants, from its size.  Exactly 8 MB is a plain
-# single-slice hd1k; anything larger is a combo whose slice 0 sits behind a
-# 1 MB MBR prefix.  Same rule the emulator's own auto-detect uses
-# (docs/DISK_FORMATS.md), so a disagreement here is a disagreement there.
-diskdef_for() {
+# How to run it: a path needs an interpreter, an installed `cpm_disk` does not.
+#
+# NOT named cpm_disk.  A shell function shadows the command of the same name in
+# `command -v`, so have_cpm_disk() answered yes on a machine with neither, the
+# skip below never fired, and the run reported "0 disk-resident binaries
+# checked" as a PASS - a green check that had opened nothing, which is the one
+# outcome this file exists to prevent.
+run_cpm_disk() {
+    if [ -n "$CPM_DISK" ]; then
+        python3 "$CPM_DISK" "$@"
+    else
+        cpm_disk "$@"
+    fi
+}
+
+have_cpm_disk() {
+    [ -n "$CPM_DISK" ] && return 0
+    command -v cpm_disk >/dev/null 2>&1
+}
+
+# How many slices to look at.  Exactly 8 MB is a plain single-slice hd1k;
+# a combo is a 1 MB MBR prefix plus six of them.  Same rule the emulator's own
+# auto-detect uses (docs/DISK_FORMATS.md), so a disagreement here is a
+# disagreement there.
+slices_of() {
     case "$(filesize "$1")" in
-        8388608) echo wbw_hd1k ;;
-        *)       echo wbw_hd1k_0 ;;
+        8388608) echo "" ;;          # plain image: no --slice at all
+        *)       echo "0 1 2 3 4 5" ;;
     esac
 }
 
@@ -198,9 +236,10 @@ fi
 echo
 echo "Images on this machine:"
 
-if ! command -v cpmcp >/dev/null 2>&1; then
-    note "skip  cpmtools is not on PATH - cannot look inside an image"
-    note "      (the source gate above does not need it)"
+if ! have_cpm_disk; then
+    note "skip  cpm_disk.py not found - cannot look inside an image"
+    note "      (the source gate above does not need it).  Set CPM_DISK, or put"
+    note "      a cpmemu checkout beside this one, or run cpmemu's make install."
 else
     for dir in $DIRS; do
         if [ ! -d "$dir" ]; then
@@ -218,106 +257,77 @@ else
                            -type f -name '*.img' -print 2>/dev/null | sort); do
             [ -f "$path" ] || continue
             images_seen=$((images_seen + 1))
-            def=$(diskdef_for "$path")
             base=$(basename "$path")
-            # DID THIS DISKDEF READ THE IMAGE AT ALL?  Asked before anything
-            # is concluded from the listing, because the way a wrong diskdef
-            # fails is the reason this file exists: cpmls does not error, it
-            # prints a directory that is empty or is mojibake, and both read as
-            # "the utility is not on this image".
-            #
-            # Measured on macOS with homebrew cpmtools 2.23 (linked against
-            # libdsk 3), against images that demonstrably contain files - the
-            # directory entries are visible with od at boottrk*sectrk*seclen:
-            #
-            #   hd1k_infocom  wbw_hd1k -> an empty listing
-            #   hd1k_games    wbw_hd1k -> 711 bytes of mojibake
-            #   the same bytes behind a 512-byte prefix, read through an
-            #   otherwise identical definition carrying `offset 512` -> correct
-            #
-            # An explicit `offset 0` does not help, so it is the presence of a
-            # nonzero offset that matters, not the value.  wbw_hd1k has no
-            # offset line, which is why the combo slices (wbw_hd1k_0, offset
-            # 1048576) read here and the plain images do not.  On the Ubuntu
-            # runner this same definition worked, so it is a property of the
-            # cpmtools build rather than of the definition or the image.
-            #
-            # A note rather than a failure: a machine whose cpmtools cannot
-            # open an image has not found anything wrong with the image. What
-            # it must not do is go quiet and let the run report a pass.
-            listing=$( ( cd "$SELF_ROOT/disks" && cpmls $TFLAG -f "$def" "$path" ) \
-                         2>/dev/null | sed 's/^[0-9]*://' )
-            names=$(printf '%s' "$listing" | tr -d ' \t\n')
-            # CP/M 2.2 allows letters, digits and a small punctuation set in a
-            # filename; anything else on the line means the bytes being read as
-            # a directory are not one.
-            if [ -z "$names" ] || printf '%s' "$names" | LC_ALL=C grep -q '[^A-Za-z0-9._$!#%&()@~^{}+-]'; then
-                if [ -z "$names" ]; then
-                    note "note  $base: diskdef $def lists an EMPTY directory"
+            for sl in $(slices_of "$path") ""; do
+                # The loop always ends with an empty element so a plain image
+                # runs exactly once with no --slice; for a combo the empty
+                # element is skipped, because slice 0 was already done.
+                if [ -z "$sl" ]; then
+                    [ "$(filesize "$path")" = 8388608 ] || continue
+                    sflag=""; label="$base"
                 else
-                    note "note  $base: diskdef $def lists a GARBAGE directory"
+                    sflag="--slice $sl"; label="$base slice $sl"
                 fi
-                note "      so nothing was compared on this image.  Either it is"
-                note "      blank, or this cpmtools cannot read it: a libdsk-linked"
-                note "      build returns nothing usable for a diskdef with no"
-                note "      offset, which is what $def is.  A device_posix build"
-                note "      of the same cpmtools sources reads them."
-                continue
-            fi
-            for util in $built; do
-                # Every cpmtools command runs from disks/, which carries its own
-                # diskdefs.  cpmtools reads ./diskdefs if there is one and the
-                # system file otherwise, and not every distribution's system file
-                # has the combo slice definitions - Debian and Ubuntu's cpmtools
-                # 2.23 has wbw_hd1k but not wbw_hd1k_0, on which this check once
-                # reported hd1k_combo.img as holding neither utility.
-                if ! ( cd "$SELF_ROOT/disks" && cpmls $TFLAG -f "$def" "$path" ) 2>/dev/null |
-                        grep -qi "^$util\.com$"; then
-                    # Not a failure any more.  This repository used to ship two
-                    # images that were known to carry both utilities, so a
-                    # missing copy could only mean damage.  Now the images come
-                    # from a catalog that publishes twenty-odd of them and marks
-                    # the ones carrying host transfer with `host_transfer`; the
-                    # other twenty are supposed not to have it.
+
+                listing=$(run_cpm_disk list $sflag "$path" 2>/dev/null | sed 1,2d)
+                if [ -z "$listing" ]; then
+                    # Not a failure: an empty slice is a normal thing for a
+                    # combo to contain, and cpm_disk.py needs no diskdef to
+                    # get wrong, so "empty" here means empty.
                     continue
                 fi
-                if ! ( cd "$SELF_ROOT/disks" && \
-                       cpmcp $TFLAG -f "$def" "$path" "0:$util.com" "$TMP/from_img.com" ) 2>/dev/null; then
-                    bad "$base $util.com" "could not be extracted (diskdef $def?)"
-                    continue
-                fi
-                if [ "$util" = w8 ]; then
-                    if has_caps_interlock "$TMP/from_img.com"; then
-                        interlocked=$((interlocked + 1))
-                        ok "$base w8.com" "asks HBF_HOST_CAPS before using a host path"
-                    else
-                        bad "$base w8.com" "hands over a host path with no interlock"
-                        note "      This image carries a W8 from before v1.36.  It is not"
-                        note "      one this repository can fix - re-fetch it, and if the"
-                        note "      published image really is that old, say so upstream:"
-                        note "      romwbw-get verify --repair"
+                for util in $built; do
+                    if ! printf '%s\n' "$listing" |
+                            awk '{print $2}' | grep -qi "^$util\.com$"; then
+                        # The catalog publishes twenty-odd images and marks the
+                        # ones carrying host transfer with `host_transfer`; the
+                        # rest are supposed not to have it.
+                        continue
                     fi
-                fi
-                if is_zero_padded "$TMP/from_img.com"; then
-                    bad "$base $util.com" "is a padded memory image, not a bare .COM"
-                    note "      Every address constant differs by 0x100, so cmp cannot"
-                    note "      speak.  This image was built by a tree with an ORG in"
-                    note "      src/$util.asm."
-                    continue
-                fi
-                checked=$((checked + 1))
-                if cmp -s "$TMP/$util.com" "$TMP/from_img.com"; then
-                    ok "$base $util.com" "matches src/$util.asm"
-                else
-                    b=$(filesize "$TMP/$util.com")
-                    h=$(filesize "$TMP/from_img.com")
-                    bad "$base $util.com" \
-                        "differs from src/$util.asm (built $b bytes, image holds $h)"
-                    note "      The published images are built by romwbw_disks from its"
-                    note "      own copy of these sources; a difference here means the"
-                    note "      two trees have drifted.  romwbw_disks'"
-                    note "      tools/check_source_drift.sh is the check for that."
-                fi
+                    rm -rf "$TMP/img" "$TMP/from_img.com"
+                    mkdir -p "$TMP/img" || exit 1
+                    if ! run_cpm_disk extract $sflag "$path" "$(echo "$util" | tr a-z A-Z).COM" \
+                            -o "$TMP/img" >/dev/null 2>&1; then
+                        bad "$label $util.com" "could not be extracted"
+                        continue
+                    fi
+                    mv "$TMP/img/$util.com" "$TMP/from_img.com" 2>/dev/null || {
+                        bad "$label $util.com" "extracted to an unexpected name"
+                        continue
+                    }
+                    if [ "$util" = w8 ]; then
+                        if has_caps_interlock "$TMP/from_img.com"; then
+                            interlocked=$((interlocked + 1))
+                            ok "$label w8.com" "asks HBF_HOST_CAPS before using a host path"
+                        else
+                            bad "$label w8.com" "hands over a host path with no interlock"
+                            note "      This image carries a W8 from before v1.36.  It is not"
+                            note "      one this repository can fix - re-fetch it, and if the"
+                            note "      published image really is that old, say so upstream:"
+                            note "      romwbw-get verify --repair"
+                        fi
+                    fi
+                    if is_zero_padded "$TMP/from_img.com"; then
+                        bad "$label $util.com" "is a padded memory image, not a bare .COM"
+                        note "      Every address constant differs by 0x100, so cmp cannot"
+                        note "      speak.  This image was built by a tree with an ORG in"
+                        note "      src/$util.asm."
+                        continue
+                    fi
+                    checked=$((checked + 1))
+                    if cmp -s "$TMP/$util.com" "$TMP/from_img.com"; then
+                        ok "$label $util.com" "matches src/$util.asm"
+                    else
+                        b=$(filesize "$TMP/$util.com")
+                        h=$(filesize "$TMP/from_img.com")
+                        bad "$label $util.com" \
+                            "differs from src/$util.asm (built $b bytes, image holds $h)"
+                        note "      The published images are built by romwbw_disks from its"
+                        note "      own copy of these sources; a difference here means the"
+                        note "      two trees have drifted.  romwbw_disks'"
+                        note "      tools/check_source_drift.sh is the check for that."
+                    fi
+                done
             done
         done
     done

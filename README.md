@@ -290,60 +290,56 @@ File Size			Format			Works?
 
 See `docs/DISK_FORMATS.md` for details.
 
-### Reading an Image with cpmtools
+### Reading an Image with `cpm_disk.py`
 
-`disks/diskdefs` is the definitive format file for these images: it carries
-`wbw_hd1k` plus `wbw_hd1k_0` through `wbw_hd1k_5`, all six checked against the
-`hd1k_combo` image. It exists because a stock cpmtools need not have them -
-Debian and Ubuntu's cpmtools 2.23 ships `wbw_hd1k` and nothing per-slice, which
-is what once made a disk script report "not on the image" for a file that was on
-it.
-
-```bash
-cd disks
-cpmls -T logical -f wbw_hd1k_0 "$(../tools/romwbw-get path @disk0)"      # combo: slice 0, past the 1 MB MBR
-cpmls -T logical -f wbw_hd1k   "$(../tools/romwbw-get path hd1k_games)"  # plain 8 MB image
-```
-
-The `-T logical` is required, not tidiness: cpmtools 2.23 double-counts
-`boottrk` on a diskdef with no `offset` - which `wbw_hd1k` is - so the bare form
-reads and writes one boot area too far into the file, exits 0, and on a copy-in
-overwrites a file that was already there. The cause, the measured byte offsets
-and the `dd` recipe for slices 1 to 5 are in
-[docs/DISK_FORMATS.md](docs/DISK_FORMATS.md#always-pass--t-logical).
-
-`path` prints the cached download - mode 0444, and the file `romwbw-get verify`
-re-hashes - so it is the right thing to read and the wrong thing to write.
-Anything that modifies an image wants the working copy instead:
+`cpm_disk.py` is the family's CP/M image tool, and the only one this repository
+uses. It is a single stdlib-only Python file owned by
+[cpmemu](https://github.com/avwohl/cpmemu) at `util/cpm_disk.py`; there is no
+copy here, and there should not be one. Point `$CPM_DISK` at it, put a cpmemu
+checkout beside this one, or run cpmemu's `make install`, which puts it on PATH
+as `cpm_disk`.
 
 ```bash
-cd disks
-img="$(../tools/romwbw-get path --work @disk0)"
-cpmcp -T logical -f wbw_hd1k_0 "$img" 0:w8.com ./w8.com   # read it out
-cpmrm -T logical -f wbw_hd1k_0 "$img" 0:w8.com            # cpmcp will NOT overwrite,
-cpmcp -T logical -f wbw_hd1k_0 "$img" ./w8.com 0:w8.com   # so delete first, then put back
+CPM=~/src/cpmemu/util/cpm_disk.py
+COMBO=$(tools/romwbw-get path @disk0)              # 49 MB combo, mode 0444
+
+python3 "$CPM" list "$COMBO"                       # slice 0, auto-detected
+python3 "$CPM" list --slice 3 "$COMBO"             # any of the six slices
+mkdir -p out && python3 "$CPM" extract "$COMBO" W8.COM -o out
+
+WORK=$(tools/romwbw-get path --work @disk0)        # a writable copy
+python3 "$CPM" delete --slice 0 "$WORK" W8.COM
+python3 "$CPM" add    --slice 0 "$WORK" ./w8.com
 ```
 
-A write aimed at the cached copy does not take, and damages nothing. `cpmcp`
-refuses it with `can not umount device: Disc is read-only.` and exits 1;
-`cpmrm` exits 0 without a word. Neither changes a byte, so the image still
-hashes as it did and `romwbw-get verify` still passes - what is missing is the
-edit you thought you had made. A guest write to a cached image is stopped just
-as harmlessly, coming back as `Bdos Err On A: Bad Sector`;
-[docs/CATALOG.md](docs/CATALOG.md) has that measurement.
+The format is auto-detected from the file size - 8,388,608 bytes is a plain
+hd1k slice, 51,380,224 is a combo - so there is **no diskdefs file to pick, no
+`-T logical`, and no libdsk**. `--slice N` addresses any of a combo's six
+slices; the tool reads the whole file and indexes into it, so slice 5 is no
+harder than slice 0.
 
-Run cpmtools from `disks/` so that it picks up the local file: cpmtools reads
-`./diskdefs` OR the system copy, never both, and a `DISKDEFS` variable pointing
-at a path that does not exist is ignored silently. **The wrong diskdef does not
-fail** - it prints a garbage directory, which reads as "no such file". The other
-build-specific limit: cpmtools 2.23 cannot be configured without libdsk, and
-the libdsk backend cannot address anything past 8 MB from the start of the
-image, so on any cpmtools linked against libdsk - which is every packaged
-build, homebrew's as much as Debian's - `wbw_hd1k_1` and up answer "cannot read
-superblock (Bad parameter)" and `wbw_hd1k_0` cannot reach the last 1 MB of
-slice 0. That is the build, not the definitions - the header comment in
-`disks/diskdefs` says so, and only a `device_posix` build of the same sources
-reads all six.
+This used to be a section about cpmtools, and the hazards it described were
+real. cpmtools 2.23 cannot be configured without libdsk; its default path
+double-counts `boottrk` on a diskdef that carries no `offset`, and it fails
+silently rather than loudly. Measured against the published `hd1k_infocom`,
+whose directory sits at 16384: `cpmls -f wbw_hd1k` listed nothing at all, and
+`cpmcp` exited 0 having written at 32768 - into the data area, over a file that
+was already there. Picking the diskdef was left to the caller, and picking wrong
+printed a plausible-looking garbage directory, which reads as "the file is not
+on this image": that is how `hd1k_infocom.img` was once recorded as carrying no
+`w8.com` when it carries both. And libdsk cannot address past 8 MB from the
+start of a file, so combo slices 1-5 were out of reach on every packaged build,
+homebrew's as much as Debian's.
+
+None of that applies to `cpm_disk.py`, so `disks/diskdefs` went with the
+cpmtools recipes that needed it. romwbw_disks still uses cpmtools to *build*
+the published images, and keeps its own `tools/diskdefs` for that.
+
+One limit to know: `add` on a **combo** refuses a file over 16,384 bytes rather
+than truncating it, because `ComboDisk` writes a single logical extent. For
+anything larger, cut the slice out with
+`dd if=combo.img of=slice.img bs=1048576 skip=$((1 + 8*N)) count=8`, use the
+plain path, and write the slice back.
 
 ### Drive Letters
 
@@ -833,7 +829,7 @@ romwbw_emu/
   tools/
     romwbw-get			Fetches and verifies the ROM and the disk images
   roms/				build_emu_rom.sh and verify_romwbw_pin.sh - no ROM is tracked
-  disks/			diskdefs and verify_disk_utils.sh - no image is tracked
+  disks/			verify_disk_utils.sh - no image, no diskdefs
   docs/				Technical documentation
   archive/			Retired material kept for reference
   CHANGELOG.md DECISIONS.md DOWNSTREAM.md MANUAL_CHECKS.md todo.txt VERSION
