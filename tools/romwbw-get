@@ -977,6 +977,13 @@ def cmd_run(cat, args):
             continue
         pristine = cat.fetch(version, ident, trust_cache=args.trust_cache)
         argv.append("--disk%d=%s" % (slot, cat.working_copy(version, pristine)))
+    # resolve_version() honours --allow-untested, so this is the path that gets
+    # to a ROM the binary has not been checked against.  Without passing the
+    # flag on, the user follows this program's own advice ("or pass
+    # --allow-untested", above), waits for ~51 MB, and is then refused by
+    # emu_validate_rom_hcb - with a message about a flag they did pass.
+    if args.allow_untested:
+        argv.append("--allow-untested-romwbw")
     argv.extend(args.emu_args)
 
     info("+ " + " ".join(argv), cat.quiet)
