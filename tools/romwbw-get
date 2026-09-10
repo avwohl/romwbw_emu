@@ -343,6 +343,35 @@ def human(n):
     return "%.1f MB" % (n / (1024.0 * 1024.0))
 
 
+def fnv1a32(text):
+    """FNV-1a 64, folded to 32 bits, as eight hex digits.
+
+    THE SAME FUNCTION, FOLDED THE SAME WAY, as the three GUI clients use:
+    cpmdroid's SettingsRepository.fnv1a32, ioscpm's CatalogMigration.fnv1a and
+    z80cpmw's equivalent.  Verified against ioscpm's Swift on 2026-09-10 -
+    compiled and run side by side, identical output for the default index URL,
+    a custom one and the empty string.  Keep it that way: it is not a hash
+    anyone needs to reproduce across ports, but four ports naming the same
+    namespace the same way is worth more than four slightly different ones.
+    """
+    h = 0xcbf29ce484222325
+    for b in text.encode("utf-8"):
+        h ^= b
+        h = (h * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+    return "%08x" % (((h >> 32) ^ h) & 0xFFFFFFFF)
+
+
+def index_scope(url):
+    """The namespace every download from `url` lives under.
+
+    Empty for the compiled-in default, so its paths are exactly what they have
+    always been and no existing cache has to be migrated.  Anything else gets
+    "@" + a hash of the URL, which is how a fork's index and assets stop
+    colliding with the real ones.
+    """
+    return "" if url == INDEX_URL else "@" + fnv1a32(url)
+
+
 def sha256_file(path):
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -412,13 +441,36 @@ class Catalog(object):
         self.quiet = args.quiet
         self._index = None
         self._catalogs = {}
+        # EVERY DOWNLOAD A NON-DEFAULT INDEX PRODUCES LANDS IN ITS OWN
+        # NAMESPACE, and the default's is the empty string so its paths are
+        # exactly what they have always been - no migration, nothing moved.
+        #
+        # Without this, a fork's index was written over the real one's cache
+        # entry and its assets collided with the real ones by filename.  Two
+        # ways that bit: within INDEX_TTL an ordinary run afterwards was served
+        # the FORK's index from cache with no warning, because the warning below
+        # is keyed on the URL passed in and not on what is cached; and a fork
+        # asset sharing a filename left the next default run reporting local
+        # damage on a file it had never touched.  `--cache DIR` was the
+        # workaround and is not needed now.
+        #
+        # Scoped the way the three GUI clients scope theirs, with the same hash
+        # of the same string - see fnv1a32.
+        self.index_scope = index_scope(self.index_url)
         if self.index_url != INDEX_URL:
             warn("using a non-default index URL: %s" % self.index_url)
+            warn("its downloads are kept under %s, separate from the default's"
+                 % os.path.join(self.cache, INTERFACE, "<release>" + self.index_scope))
+
+    def scoped(self, version):
+        """The per-release directory name, namespaced by which index named it."""
+        return version + self.index_scope
 
     # -- index ---------------------------------------------------------------
     @property
     def index_file(self):
-        return os.path.join(self.cache, "index", "index-v0.json")
+        return os.path.join(self.cache, "index",
+                            "index-v0%s.json" % self.index_scope)
 
     def index(self):
         if self._index is not None:
@@ -569,7 +621,7 @@ class Catalog(object):
         if version in self._catalogs:
             return self._catalogs[version]
         e = self.entry(version)
-        d = os.path.join(self.cache, INTERFACE, version)
+        d = os.path.join(self.cache, INTERFACE, self.scoped(version))
         cfile = os.path.join(d, "catalog.json")
         want_sha = (e.get("catalog_sha256") or "").lower()
         want_size = e.get("catalog_size")
@@ -637,7 +689,7 @@ class Catalog(object):
 
     # -- assets ---------------------------------------------------------------
     def assets_dir(self, version):
-        return os.path.join(self.cache, INTERFACE, version, "assets")
+        return os.path.join(self.cache, INTERFACE, self.scoped(version), "assets")
 
     def resolve_id(self, version, ident):
         """Map an id or a pseudo-id onto ('rom'|'disk'|'upstream', entry).
@@ -791,7 +843,8 @@ class Catalog(object):
     # release's catalog, not inside assets/, so `verify` (which walks assets/)
     # does not have to learn to skip it.
     def _fetched_file(self, version):
-        return os.path.join(self.cache, INTERFACE, version, "fetched.json")
+        return os.path.join(self.cache, INTERFACE, self.scoped(version),
+                            "fetched.json")
 
     def _fetched_map(self, version):
         try:
@@ -838,7 +891,7 @@ class Catalog(object):
         return rec != (want_sha or "").lower()
 
     def _gen_file(self, version):
-        return os.path.join(self.cache, INTERFACE, version, "generation")
+        return os.path.join(self.cache, INTERFACE, self.scoped(version), "generation")
 
     def _record_generation(self, version):
         g = self.entry(version).get("generation")
@@ -881,7 +934,9 @@ class Catalog(object):
         SAVE breaks the hash, and the obvious repair destroys the user's work.
         Verified bytes and mutable bytes are therefore different files.
         """
-        d = os.path.join(data_root(), "disks", version)
+        # Scoped too: a fork publishing hd1k_combo-v0-3.6.0.img must not write
+        # over the working copy the user has been saving into.
+        d = os.path.join(data_root(), "disks", self.scoped(version))
         os.makedirs(d, exist_ok=True)
         work = os.path.join(d, os.path.basename(pristine))
         if not os.path.exists(work):

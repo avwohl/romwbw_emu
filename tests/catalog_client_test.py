@@ -52,6 +52,38 @@ def check(ok, what):
 
 # --- a catalog to serve --------------------------------------------------------
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "tools"))
+# The script has no .py suffix, so it is loaded by path rather than imported.
+# Only fnv1a32 is taken: the rest is exercised through the CLI, as a user meets
+# it, and importing more would start testing internals instead of behaviour.
+import importlib.machinery as _im
+import importlib.util as _iu
+_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "..", "tools", "romwbw-get")
+_spec = _iu.spec_from_loader("romwbw_get",
+                             _im.SourceFileLoader("romwbw_get", _path))
+_rg = _iu.module_from_spec(_spec)
+_spec.loader.exec_module(_rg)
+fnv1a32 = _rg.fnv1a32
+index_scope = _rg.index_scope
+default_index_url = _rg.INDEX_URL
+
+
+def assets_dir(cache, version, index_url):
+    """Where this cache keeps <version>'s assets for this index URL.
+
+    Namespaced: only the compiled-in default index is unscoped, and these tests
+    serve their own, so every path here carries an @<hash> suffix.  Computed
+    rather than written out, so the suite does not have to be edited again if
+    the scheme changes.
+    """
+    # index_scope(), not a second copy of the rule: a helper that computed the
+    # namespace its own way would keep passing if the production rule changed,
+    # which is the opposite of what a test is for.
+    return os.path.join(cache, "v0", version + index_scope(index_url), "assets")
+
+
 def sha(b):
     return hashlib.sha256(b).hexdigest()
 
@@ -271,7 +303,8 @@ def _tests(tmp, web, base):
     datadir = os.path.join(tmp, "data")
     r = run(cache, base, "path", "--work", "@disk0", datadir=datadir)
     work = r.stdout.strip()
-    pristine = os.path.join(cache, "v0", "3.6.0", "assets", "hd1k_combo-v0-3.6.0.img")
+    pristine = os.path.join(assets_dir(cache, "3.6.0", base + "index-v0.json"),
+                            "hd1k_combo-v0-3.6.0.img")
     check(work != pristine and os.path.exists(work),
           "path --work hands back a copy, not the cached original")
     check(os.access(work, os.W_OK),
@@ -302,7 +335,8 @@ def _tests(tmp, web, base):
         r = run(bcache, badbase, "fetch", "@rom")
         check(r.returncode == EX_CONTRADICTION and "sha256" in r.stderr,
               "an asset whose sha256 does not match is a contradiction, exit 1")
-        landed = os.path.join(bcache, "v0", "3.6.0", "assets", "emu_avw-v0-3.6.0.rom")
+        landed = os.path.join(assets_dir(bcache, "3.6.0", badbase + "index-v0.json"),
+                              "emu_avw-v0-3.6.0.rom")
         check(not os.path.exists(landed),
               "and nothing is left behind under the real filename")
         check(".bad" in r.stderr,
@@ -382,7 +416,15 @@ def _tests(tmp, web, base):
         bcache = os.path.join(tmp, "bendy-cache")
         r = run(bcache, bbase, "list")
         check(r.returncode == EX_OK, "a good index is cached")
-        idx = os.path.join(bcache, "index", "index-v0.json")
+        # Found rather than named: a non-default index URL is namespaced, so
+        # the file is index-v0@<hash>.json and hardcoding the plain name only
+        # worked while nothing was scoped.
+        idxdir = os.path.join(bcache, "index")
+        cached = [f for f in os.listdir(idxdir)
+                  if f.startswith("index-v0") and f.endswith(".json")
+                  and not f.endswith(".meta.json")]
+        check(len(cached) == 1, "exactly one cached index for this URL")
+        idx = os.path.join(idxdir, cached[0])
         good = open(idx, "rb").read()
 
         # The publisher edits interface in place instead of adding a v1 beside
@@ -436,7 +478,8 @@ def _tests(tmp, web, base):
         esrv.shutdown()
 
     # 7. cache damage vs. a moved generation ------------------------------------
-    rom_path = os.path.join(cache, "v0", "3.6.0", "assets", "emu_avw-v0-3.6.0.rom")
+    rom_path = os.path.join(assets_dir(cache, "3.6.0", base + "index-v0.json"),
+                            "emu_avw-v0-3.6.0.rom")
     os.chmod(rom_path, 0o644)
     with open(rom_path, "r+b") as f:
         f.write(b"XX")
@@ -468,7 +511,8 @@ def _tests(tmp, web, base):
           "when the generation HAS moved, a changed asset is re-fetched")
     check(sha(open(rom_path, "rb").read()) == newrom["sha256"],
           "and the new bytes are what land")
-    sup = os.path.join(cache, "v0", "3.6.0", "assets", ".superseded")
+    sup = os.path.join(assets_dir(cache, "3.6.0", base + "index-v0.json"),
+                       ".superseded")
     check(os.path.isdir(sup) and os.listdir(sup),
           "the bytes it replaced are kept, not deleted - a generation bump is "
           "not a licence to destroy what is on disk")
@@ -479,7 +523,7 @@ def _tests(tmp, web, base):
     # release counter was stamped by the first asset repaired, so every other
     # artifact of the same re-cut was then reported to the user as local
     # damage.  The question is per-asset now.
-    disk_path = os.path.join(cache, "v0", "3.6.0", "assets",
+    disk_path = os.path.join(assets_dir(cache, "3.6.0", base + "index-v0.json"),
                              "hd1k_combo-v0-3.6.0.img")
     r = run(cache, base, "path", "@disk0")
     check(r.returncode == EX_OK and os.path.exists(disk_path),
@@ -638,6 +682,89 @@ def _tests(tmp, web, base):
             os.path.join(tmp, "site3"), "--versions", "all")
     check(r.returncode == EX_CONTRADICTION,
           "but an asset the catalog lists and the release lacks is still red")
+
+    # 10c. a non-default index gets its own namespace ---------------------------
+    #
+    # Without this, a fork's index was written over the real one's cache entry
+    # and its assets collided by filename: within INDEX_TTL a plain run
+    # afterwards was served the fork's index, and a same-named asset left the
+    # next default run reporting local damage on a file it had never touched.
+    # `--cache DIR` was the workaround; this asserts it is not needed.
+    #
+    # Two fixtures of its own rather than the suite's shared one, which earlier
+    # tests have deliberately damaged.
+    two = {}
+    for name, body in (("alpha", b"ALPHA!!"), ("beta", b"BETA!!!")):
+        fx = Fixture(os.path.join(tmp, "ns-" + name))
+        os.makedirs(fx.root)
+        srv, b = serve(fx.root)
+        fx.base = b
+        rom = fx.rom("emu_avw", "3.6.0", default=True, body=body * 512)
+        fx.write(b, [("3.6.0", fx.catalog("3.6.0", [rom],
+                      [fx.disk("hd1k_combo", "3.6.0", slot=0,
+                               body=body * 1024)]), True, 1)])
+        two[name] = (b, srv, body * 512)
+    try:
+        shared = os.path.join(tmp, "ns-cache")
+        for name in ("alpha", "beta"):
+            r = run(shared, two[name][0], "--refresh", "fetch", "@rom", "@disk0")
+            check(r.returncode == EX_OK,
+                  "index %s fetches into the shared cache root" % name)
+
+        roms = []
+        for dp, _dirs, fs in os.walk(shared):
+            roms += [os.path.join(dp, f) for f in fs if f.endswith(".rom")]
+        check(len(roms) == 2,
+              "both ROMs are kept - one namespace per index, not one file "
+              "overwritten by the other")
+        bodies = set()
+        for f in roms:
+            with open(f, "rb") as fh:
+                bodies.add(fh.read())
+        check(bodies == {two["alpha"][2], two["beta"][2]},
+              "and they are the two different bodies, so neither index "
+              "superseded the other's asset")
+
+        idx = [f for f in os.listdir(os.path.join(shared, "index"))
+               if f.endswith(".json") and not f.endswith(".meta.json")]
+        check(len(idx) == 2,
+              "two index documents, so a cached index can never be served to a "
+              "run that asked for a different one")
+
+        r = run(shared, two["beta"][0], "path", "@rom")
+        check("@" in r.stdout.strip().splitlines()[-1],
+              "a non-default index gets an @<hash> suffix on the release "
+              "directory")
+        check("separate from the default" in r.stderr,
+              "and the warning says so, rather than leaving it to be inferred")
+
+        works = set()
+        for name in ("alpha", "beta"):
+            r = run(shared, two[name][0], "path", "--work", "@disk0")
+            works.add(r.stdout.strip().splitlines()[-1])
+        check(len(works) == 2,
+              "a fork's disk image does not write over the working copy the "
+              "user has been saving into")
+    finally:
+        for name in ("alpha", "beta"):
+            two[name][1].shutdown()
+
+    # THE DEFAULT INDEX IS UNSCOPED, which is what keeps an existing cache
+    # working and means nothing has to be migrated.  Asserted on the rule rather
+    # than through the CLI, because reaching the real default URL would need the
+    # network and this suite has none.
+    check(index_scope(default_index_url) == "",
+          "the compiled-in default index has the empty scope, so its paths are "
+          "exactly what they have always been")
+    check(index_scope("https://example.invalid/index-v0.json") == "@017dbcf1",
+          "and any other URL gets an @<hash> of its own")
+
+    # The hash is shared with the three GUI clients; a drift here would put the
+    # same catalog in two different namespaces depending on which port you used.
+    check(fnv1a32("") == "4fd0bfc1" and
+          fnv1a32("https://example.invalid/index-v0.json") == "017dbcf1",
+          "fnv1a32 matches ioscpm's Swift and cpmdroid's Kotlin, verified by "
+          "compiling and running all three")
 
     # 11. `use` persists a choice, and refuses an unrunnable one ----------------
     conf = os.path.join(tmp, "conf")

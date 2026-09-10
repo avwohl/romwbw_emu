@@ -77,6 +77,101 @@ Anything after a bare `--` goes to the emulator:
 
     tools/romwbw-get run -- --boot=2.1 --escape=none
 
+The flags that apply to every subcommand go **before** it, which is easy to get
+wrong — `romwbw-get run --emu=...` is a usage error, `romwbw-get --emu=... run`
+is not:
+
+| | |
+|---|---|
+| `--index-url URL` | read a different catalog (see below) |
+| `--cache DIR` | a different cache root; `$ROMWBW_GET_CACHE` does the same |
+| `--offline` | never open a socket |
+| `--refresh` | ignore the one-hour index cache TTL |
+| `--romwbw VER` | use this RomWBW release for this run |
+| `--allow-untested` | allow a release this build has not been checked against |
+| `--emu PATH` | the `romwbw_emu` binary to run, and to ask what it supports |
+| `--trust-cache` | check cached sizes but not their sha256 |
+
+**The index is cached for an hour** (`INDEX_TTL`), and a cached one is used for
+up to 30 days if the network is unreachable. So a newly published disk may not
+appear immediately: `--refresh` is what skips the wait.
+
+## Fetching from a fork, or from anywhere else
+
+Nothing about the catalog is specific to `avwohl/romwbw_disks` except the
+compiled-in default. Point the client at your own index and it will read yours.
+There are three ways, and this is the precedence — first one set wins:
+
+| | |
+|---|---|
+| `--index-url URL` | this run only. A **global** flag, so it goes *before* the subcommand |
+| `$ROMWBW_INDEX_URL` | every run in that shell |
+| `romwbw-get --index-url URL use <release>` | remembered, until `use --clear` |
+
+```sh
+# one run
+tools/romwbw-get --index-url https://github.com/you/romwbw_disks/releases/latest/download/index-v0.json list
+
+# this shell
+export ROMWBW_INDEX_URL=https://github.com/you/romwbw_disks/releases/latest/download/index-v0.json
+tools/romwbw-get run
+
+# remembered, and how to stop
+tools/romwbw-get --index-url https://.../index-v0.json use 3.6.0
+tools/romwbw-get use --clear
+```
+
+It says so on every run, so you cannot forget which catalog you are on:
+
+    romwbw-get: using a non-default index URL: https://...
+    romwbw-get: its downloads are kept under ~/.cache/romwbw_emu/v0/<release>@6658478e, separate from the default's
+
+**Each index gets its own namespace, so you do not need `--cache`.** The release
+directory and the cached index carry `@` plus a hash of the URL, and so does the
+writable-copy directory:
+
+    ~/.cache/romwbw_emu/index/index-v0@6658478e.json
+    ~/.cache/romwbw_emu/v0/3.6.0@6658478e/assets/
+    ~/.local/share/romwbw_emu/disks/3.6.0@6658478e/
+
+The **default** index is the empty scope, so its paths are exactly what they
+have always been and an existing cache needs no migration. Before this, a fork's
+index was written over the real one's cache entry and its assets collided by
+filename: within the one-hour index TTL an ordinary run afterwards was served
+the *fork's* index with no warning, and a same-named asset left the next default
+run reporting local damage on a file it had never touched. `--cache DIR` was the
+workaround and still exists, but is no longer needed for this.
+
+The hash is FNV-1a, folded to 32 bits — the same function over the same string
+that cpmdroid, ioscpm and z80cpmw use, so the four clients name the same
+namespace the same way.
+
+### What a fork has to publish
+
+The URL is used **verbatim**, so it need not be a GitHub release — any HTTPS URL
+serving the document will do. What it serves has to satisfy the client:
+
+- the index: `"schema": "romwbw-disks-index"`, `"interface": "v0"`, and a
+  non-empty `romwbw_versions[]`;
+- each entry: `romwbw_version`, an **absolute** `catalog_url`, and
+  `catalog_sha256` / `catalog_size` / `generation`;
+- the catalog it names: `"schema": "romwbw-disks-catalog"`, a `base_url`, and
+  `roms[]` / `disks[]` entries carrying `filename`, `size` and `sha256`;
+- the assets themselves, at `base_url + filename`.
+
+Every hash is checked, and the catalog document is verified against the index's
+hash and size **before a byte of it is parsed** — so a fork has to publish real
+hashes. Generate them; do not transcribe them. `romwbw_disks`'
+`tools/gen_catalog.py` computes every one from the built artifact, and
+`tools/verify_catalog.py` re-derives them independently.
+
+One constraint is not negotiable: a fork can only publish RomWBW releases this
+binary lists in `ROMWBW_SUPPORTED_RELEASES` — 3.5.1 and 3.6.0 today. Anything
+else is refused by name before a byte is downloaded, because bank 0 of an
+`emu_*` ROM is this repository's HBIOS proxy and a release whose CBIOS calls
+something the dispatcher does not implement would load and then misbehave.
+`--allow-untested` gets past that, on both this program and the binary.
+
 ## Pristine bytes and working copies
 
 **A guest writes to its disks.** `hbios_dispatch.cc` opens every image `"rw"`.
