@@ -109,17 +109,33 @@ that the guest's writes land somewhere instead of coming back as a bad sector.
 ## When something does not verify
 
 A cached file that no longer matches is one of two different things, and
-`romwbw-get` does not guess:
+`romwbw-get` does not guess. It asks the question **per asset**, against the
+SHA-256 the catalog published for that one file at the moment it was
+downloaded — kept in `<cache>/v0/<release>/fetched.json`:
 
-- **`generation` moved** — romwbw_disks re-cut that release. Expected. The old
-  file is moved aside into `.superseded/` and the new one downloaded.
-- **`generation` did not move** — the bytes changed under a catalog that did
-  not. That is local damage or tampering, and it is reported rather than
-  silently overwritten. `romwbw-get verify --repair` is the explicit fix.
+- **the catalog's hash for it changed** — romwbw_disks re-cut that artifact.
+  Expected. The old file is moved aside into `.superseded/` and the new one
+  downloaded.
+- **the catalog's hash for it is what it always was** — the bytes changed under
+  a catalog that did not. That is local damage or tampering, and it is reported
+  rather than silently overwritten. `romwbw-get verify --repair` is the
+  explicit fix.
 
-Nothing is ever deleted on a generation bump. Two of the three GUI clients took
-the same position, and named the third's deletion behaviour as a bug they were
-not going to acquire.
+This used to be asked per *release*, against the index's `generation` counter,
+and that was wrong whenever one re-cut changed **more than one** artifact —
+which is the ordinary shape of a re-cut, and one romwbw_disks has already
+published ("HB_BNKCALL works, which rebuilds every ROM and bumps both
+generations"). The counter was stamped as soon as the first artifact was
+repaired, so every other artifact of the same re-cut then found a generation
+that had not moved and was reported to the user as local damage: `fetch @rom
+@disk0` repaired the ROM and then refused the disk, exit 1, telling them to
+inspect a file that was perfectly good. A cache written by an older client has
+no per-asset record; those fall back to the `generation` counter until each
+asset is next read, which records one.
+
+Nothing is ever deleted on a re-cut. Two of the three GUI clients took the same
+position, and named the third's deletion behaviour as a bug they were not going
+to acquire.
 
 `verify` walks the assets directory rather than the catalog's `roms[]` and
 `disks[]`, so it also re-hashes the upstream `RomWBW-v<ver>-Package.zip` that

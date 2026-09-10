@@ -359,9 +359,10 @@ def _tests(tmp, web, base):
     with open(rom_path, "r+b") as f:
         f.write(b"XX")
     r = run(cache, base, "path", "@rom")
-    check(r.returncode == EX_CONTRADICTION and "generation has NOT moved" in r.stderr,
-          "a cached file that stopped matching while the generation stood still "
-          "is damage, and is reported rather than silently re-downloaded over")
+    check(r.returncode == EX_CONTRADICTION and "local damage" in r.stderr,
+          "a cached file that stopped matching while the catalog still "
+          "publishes the same hash for it is damage, and is reported rather "
+          "than silently re-downloaded over")
     r = run(cache, base, "verify")
     check(r.returncode == EX_CONTRADICTION and "FAIL" in r.stdout,
           "verify finds it too")
@@ -389,6 +390,46 @@ def _tests(tmp, web, base):
     check(os.path.isdir(sup) and os.listdir(sup),
           "the bytes it replaced are kept, not deleted - a generation bump is "
           "not a licence to destroy what is on disk")
+
+    # ...and a re-cut that changes MORE THAN ONE artifact under one generation
+    # bump, which is the shape romwbw_disks actually publishes ("HB_BNKCALL
+    # works, which rebuilds every ROM and bumps both generations").  The
+    # release counter was stamped by the first asset repaired, so every other
+    # artifact of the same re-cut was then reported to the user as local
+    # damage.  The question is per-asset now.
+    disk_path = os.path.join(cache, "v0", "3.6.0", "assets",
+                             "hd1k_combo-v0-3.6.0.img")
+    r = run(cache, base, "path", "@disk0")
+    check(r.returncode == EX_OK and os.path.exists(disk_path),
+          "both artifacts of the release are cached before the re-cut")
+
+    fx2b = Fixture(web)
+    fx2b.base = base
+    rom_g4 = fx2b.rom("emu_avw", "3.6.0", default=True, body=b"gen4rom" * 100)
+    disk_g4 = fx2b.disk("hd1k_combo", "3.6.0", slot=0, host_transfer=True,
+                        body=b"gen4disk" * 100)
+    c360c = fx2b.catalog("3.6.0", [rom_g4, fx2b.rom("emu_rcz80", "3.6.0")],
+                         [disk_g4, fx2b.disk("hd1k_msx", "3.6.0")],
+                         generation=4)
+    fx2b.write(base, [("3.5.1", c351, False, 1), ("3.6.0", c360c, True, 4)])
+    r = run(cache, base, "--refresh", "fetch", "@rom", "@disk0")
+    check(r.returncode == EX_OK,
+          "a re-cut that changes two artifacts under one generation bump "
+          "repairs BOTH, instead of calling the second one local damage")
+    check(sha(open(rom_path, "rb").read()) == rom_g4["sha256"] and
+          sha(open(disk_path, "rb").read()) == disk_g4["sha256"],
+          "and both carry the new bytes")
+
+    # The damage branch is still reachable after all that: same catalog, bytes
+    # changed underneath.
+    os.chmod(disk_path, 0o644)
+    with open(disk_path, "r+b") as f:
+        f.write(b"ZZ")
+    r = run(cache, base, "path", "@disk0")
+    check(r.returncode == EX_CONTRADICTION and "local damage" in r.stderr,
+          "and damage to one artifact is still damage, not a re-publish")
+    r = run(cache, base, "verify", "--repair")
+    check(r.returncode == EX_OK, "verify --repair still fixes it")
 
     # 8. a release disappearing from a version, and unknown fields --------------
     fx3 = Fixture(web)

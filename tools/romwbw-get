@@ -658,19 +658,43 @@ class Catalog(object):
         if os.path.exists(dest):
             ok, why = self._verify_cached(dest, want_size, want_sha, trust_cache)
             if ok:
+                # Record what the catalog claimed, so a cache written by an
+                # older client (or by a `path --trust-cache` run) gets an exact
+                # per-asset record the first time it is read.  An asset that
+                # verifies IS at the catalog's current hash, by definition.
+                if self._published_sha(version, fname) is None:
+                    self._record_fetched(version, fname, want_sha)
                 return dest
-            # A file that verified before and does not now is either a moved
-            # generation (expected - romwbw_disks re-cut the release) or local
+            # A file that verified before and does not now is either a
+            # re-publish (expected - romwbw_disks re-cut this artifact) or local
             # corruption (not expected, and re-downloading over it would hide a
             # failing disk).  Only the first is repaired automatically.
-            if self._generation_moved(version):
-                warn("%s no longer matches the catalog and RomWBW %s's "
-                     "generation has moved - re-downloading" % (fname, version))
+            #
+            # The question is asked PER ASSET, against the sha256 the catalog
+            # published for this file when it was downloaded.  It used to be
+            # asked per RELEASE, against a single `generation` counter stamped
+            # after every download - which was wrong whenever one re-cut changed
+            # more than one artifact.  The first asset repaired stamped the new
+            # generation, and every other artifact of the same re-cut then found
+            # a generation that had "not moved" and was reported to the user as
+            # local damage.  romwbw_disks does exactly that kind of re-cut: its
+            # own "HB_BNKCALL works, which rebuilds every ROM" rebuilt both ROMs
+            # of both releases under one bump.
+            changed = self._catalog_changed(version, fname, want_sha)
+            if changed is None:
+                # No per-asset record: a cache from before this was written.
+                # Fall back to the release counter, which is what that cache
+                # has.
+                changed = self._generation_moved(version)
+            if changed:
+                warn("%s no longer matches the catalog and RomWBW %s has "
+                     "re-published it - re-downloading" % (fname, version))
                 self._supersede(dest)
             else:
                 raise Contradiction(
-                    "%s does not match the catalog (%s) and the generation has "
-                    "NOT moved, so this is local damage rather than a "
+                    "%s does not match the catalog (%s), and the catalog still "
+                    "publishes the same sha256 for it as when it was "
+                    "downloaded, so this is local damage rather than a "
                     "re-publish.\n"
                     "            Inspect it, then delete it and re-run, or run "
                     "`romwbw-get verify --repair`." % (dest, why))
@@ -682,6 +706,7 @@ class Catalog(object):
         http_download(url, dest, want_size, want_sha, self.timeout, self.retries,
                       progress=progress and sys.stderr.isatty())
         self._record_generation(version)
+        self._record_fetched(version, fname, want_sha)
         return dest
 
     def _verify_cached(self, path, want_size, want_sha, trust_cache):
@@ -697,6 +722,61 @@ class Catalog(object):
         if got != want_sha:
             return False, "sha256 %s, expected %s" % (got[:12], want_sha[:12])
         return True, ""
+
+    # -- what the catalog said about each asset when it was downloaded --------
+    #
+    # One JSON object per release, filename -> the sha256 the catalog published
+    # at the moment that file landed.  This is what makes "did the publisher
+    # change this, or did my disk?" an exact question about ONE asset, instead
+    # of a question about the release as a whole.  It is written beside the
+    # release's catalog, not inside assets/, so `verify` (which walks assets/)
+    # does not have to learn to skip it.
+    def _fetched_file(self, version):
+        return os.path.join(self.cache, INTERFACE, version, "fetched.json")
+
+    def _fetched_map(self, version):
+        try:
+            with open(self._fetched_file(version)) as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        return d if isinstance(d, dict) else {}
+
+    def _published_sha(self, version, fname):
+        v = self._fetched_map(version).get(fname)
+        return v.lower() if isinstance(v, str) else None
+
+    def _record_fetched(self, version, fname, want_sha):
+        if not want_sha:
+            return
+        d = self._fetched_map(version)
+        if d.get(fname) == want_sha:
+            return
+        d[fname] = want_sha
+        f = self._fetched_file(version)
+        try:
+            os.makedirs(os.path.dirname(f), exist_ok=True)
+            tmp = f + ".tmp"
+            with open(tmp, "w") as fh:
+                json.dump(d, fh, indent=2, sort_keys=True)
+                fh.write("\n")
+            os.replace(tmp, f)
+        except OSError:
+            # Losing the record costs precision on a later mismatch, not
+            # correctness now.  The asset itself was verified before it landed.
+            pass
+
+    def _catalog_changed(self, version, fname, want_sha):
+        """Has the catalog changed this asset since it was downloaded?
+
+        True/False when there is a record to compare, None when there is not -
+        the caller falls back to the release generation for caches written
+        before this file existed.
+        """
+        rec = self._published_sha(version, fname)
+        if rec is None:
+            return None
+        return rec != (want_sha or "").lower()
 
     def _gen_file(self, version):
         return os.path.join(self.cache, INTERFACE, version, "generation")
