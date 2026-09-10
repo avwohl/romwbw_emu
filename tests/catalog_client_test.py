@@ -337,6 +337,74 @@ def _tests(tmp, web, base):
     finally:
         badsrv.shutdown()
 
+    # 5b. a 404 behind a hash-pinned document is red, not amber ----------------
+    #
+    # The index names a catalog_url with a sha256 and a size; a catalog names
+    # every asset the same way.  A 404 on either is the release disagreeing
+    # with the document that describes it - a broken publish - and it used to
+    # be reported as "could not verify", which CI turns into a warning.  The
+    # index's OWN url is promised by nothing, so a 404 there stays amber and
+    # the cached-index fallback below still works.
+    miss = Fixture(os.path.join(tmp, "miss"))
+    os.makedirs(miss.root)
+    msrv, mbase = serve(miss.root)
+    miss.base = mbase
+    try:
+        cmiss = miss.catalog("3.6.0", [miss.rom("emu_avw", "3.6.0", default=True)],
+                             [miss.disk("hd1k_combo", "3.6.0", slot=0)])
+        miss.write(mbase, [("3.6.0", cmiss, True, 1)])
+        # The catalog lists it; the release does not have it.
+        os.unlink(os.path.join(miss.root, "v0-romwbw-3.6.0",
+                               "emu_avw-v0-3.6.0.rom"))
+        r = run(os.path.join(tmp, "miss-cache"), mbase, "fetch", "@rom")
+        check(r.returncode == EX_CONTRADICTION and "404" in r.stderr,
+              "an asset the catalog lists and the release does not have is a "
+              "contradiction (1), not an unreachable GitHub (2)")
+
+        # Same for the catalog document the index promises.
+        os.unlink(os.path.join(miss.root, "v0-romwbw-3.6.0",
+                               "catalog-v0-3.6.0.json"))
+        r = run(os.path.join(tmp, "miss-cache2"), mbase, "list")
+        check(r.returncode == EX_CONTRADICTION and "404" in r.stderr,
+              "and so is a catalog_url the index promises that 404s")
+    finally:
+        msrv.shutdown()
+
+    # 5c. an index that does not validate never replaces a good cached one -----
+    bend = Fixture(os.path.join(tmp, "bendy"))
+    os.makedirs(bend.root)
+    bsrv, bbase = serve(bend.root)
+    bend.base = bbase
+    try:
+        cb = bend.catalog("3.6.0", [bend.rom("emu_avw", "3.6.0", default=True)],
+                          [bend.disk("hd1k_combo", "3.6.0", slot=0)])
+        bend.write(bbase, [("3.6.0", cb, True, 1)])
+        bcache = os.path.join(tmp, "bendy-cache")
+        r = run(bcache, bbase, "list")
+        check(r.returncode == EX_OK, "a good index is cached")
+        idx = os.path.join(bcache, "index", "index-v0.json")
+        good = open(idx, "rb").read()
+
+        # The publisher edits interface in place instead of adding a v1 beside
+        # it - the exact mistake INTERFACE_V0.md's migration plan warns against.
+        served = os.path.join(bend.root, "index-v0.json")
+        doc = json.load(open(served))
+        doc["interface"] = "v1"
+        with open(served, "w") as f:
+            json.dump(doc, f, indent=2)
+        r = run(bcache, bbase, "--refresh", "list")
+        check(r.returncode == EX_CONTRADICTION and "interface" in r.stderr,
+              "an index published under an interface this build cannot speak "
+              "is refused")
+        check(open(idx, "rb").read() == good,
+              "and the good cached index is still there, byte for byte - a bad "
+              "publish does not take a working install down with it")
+        r = run(bcache, bbase, "--offline", "list")
+        check(r.returncode == EX_OK,
+              "so an offline run still answers from the last good index")
+    finally:
+        bsrv.shutdown()
+
     # 6. network failures are exit 2, not exit 1 --------------------------------
     dead = "http://127.0.0.1:9/"     # discard port: refuses immediately
     r = run(os.path.join(tmp, "cold"), dead, "versions")
@@ -352,6 +420,20 @@ def _tests(tmp, web, base):
     r = run(cache, base, "--offline", "path", "@rom")
     check(r.returncode == EX_OK and r.stdout.strip().endswith("emu_avw-v0-3.6.0.rom"),
           "--offline against a warm cache still answers")
+
+    # A 404 at the INDEX is different from a 404 below it: nothing promised
+    # that URL, so it stays amber and a warm cache can ride it out.  This is
+    # the shape of romwbw_disks cutting a release without --latest=false.
+    empty = os.path.join(tmp, "no-index")
+    os.makedirs(empty)
+    esrv, ebase = serve(empty)
+    try:
+        r = run(os.path.join(tmp, "cold3"), ebase, "versions")
+        check(r.returncode == EX_UNVERIFIED,
+              "a 404 at the index itself is CANNOT VERIFY (2) - the entry "
+              "point is promised by nothing, and a warm cache rides it out")
+    finally:
+        esrv.shutdown()
 
     # 7. cache damage vs. a moved generation ------------------------------------
     rom_path = os.path.join(cache, "v0", "3.6.0", "assets", "emu_avw-v0-3.6.0.rom")
@@ -522,10 +604,13 @@ def _tests(tmp, web, base):
           "and the bytes beside it are the ones that hash to it - a same-size "
           "re-cut is re-copied, not skipped")
 
-    # mirror keeps the 1/2 split.  A full mirror pulls every asset of every
-    # release - hundreds of megabytes.  One 5xx or reset in that is a GitHub
-    # hiccup, not a defect in this repository, and it used to come out as
-    # exit 1 alongside real contradictions.
+    # 10b. mirror keeps the 1/2 split --------------------------------------------
+    #
+    # A full mirror pulls every asset of every release - hundreds of megabytes.
+    # One 5xx or reset in that is a GitHub hiccup, not a defect in this
+    # repository, and it used to come out as exit 1 alongside real
+    # contradictions, so a deploy step went red for something nobody here
+    # could fix.
     dead_assets = "http://127.0.0.1:9/"      # discard port: refuses at once
     fx5 = Fixture(web)
     fx5.base = base
@@ -540,6 +625,19 @@ def _tests(tmp, web, base):
           "contradiction (1) - a transient GitHub failure is not a defect here")
     check(os.path.exists(os.path.join(site2, "catalog", "manifest.json")),
           "and it still writes the manifest for what it did get")
+
+    # A mirror that hits a real contradiction is still red.
+    fx6 = Fixture(web)
+    fx6.base = base
+    c_gone = fx6.catalog("3.6.0", [fx6.rom("emu_avw", "3.6.0", default=True)],
+                         [fx6.disk("hd1k_combo", "3.6.0", slot=0)],
+                         generation=7)
+    fx6.write(base, [("3.6.0", c_gone, True, 7)])
+    os.unlink(os.path.join(web, "v0-romwbw-3.6.0", "emu_avw-v0-3.6.0.rom"))
+    r = run(os.path.join(tmp, "mcache2"), base, "mirror",
+            os.path.join(tmp, "site3"), "--versions", "all")
+    check(r.returncode == EX_CONTRADICTION,
+          "but an asset the catalog lists and the release lacks is still red")
 
     # 11. `use` persists a choice, and refuses an unrunnable one ----------------
     conf = os.path.join(tmp, "conf")

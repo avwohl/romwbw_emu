@@ -151,13 +151,28 @@ artifact is kept without being read as a mismatch.
 | | |
 |---|---|
 | `0` | did the thing, and verified it |
-| `1` | a contradiction — a hash, a size, a schema, an id that does not exist |
-| `2` | could not verify — DNS, a timeout, a 5xx. Nothing is known to be wrong |
+| `1` | a contradiction — a hash, a size, a schema, an id that does not exist, **or a 404 on a URL some already-verified document promised** |
+| `2` | could not verify — DNS, a timeout, a 5xx, a rate limit, or a 404 at the index itself. Nothing is known to be wrong |
 | `64` | usage |
 
 The 1/2 split is the point. CI turns a `2` into a warning and a `1` into a red
 build, because a GitHub outage is not a defect in this repository, and a gate
 that cries wolf is a gate that stops being read.
+
+**A 404 lands on either side of that line depending on who promised the URL.**
+The index names each `catalog_url` beside its `catalog_sha256` and
+`catalog_size`; a catalog names every asset beside its `sha256` and `size`. A
+404 on one of those is not "GitHub could not be reached" — it is a document
+that has already been verified disagreeing with the release it points at, which
+is a broken publish, and it is red. It used to be amber, so a catalog listing a
+file the release did not have came out as `could not verify` and the job stayed
+green.
+
+The **index's own** URL is the exception, and stays amber: nothing promises it —
+HTTPS is the whole of its integrity — so a 404 there is indistinguishable from
+an outage, and it is what a `gh release create` without `--latest=false` looks
+like. Keeping it amber is also what lets `_index_bytes` fall back to the cached
+index and ride the mistake out; a warm-cache user never notices.
 
 `64` exists because of that split. argparse exits 2 on a usage error of its
 own, which here is the code that means "could not verify", so `romwbw-get`

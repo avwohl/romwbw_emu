@@ -185,8 +185,19 @@ def save_choice(d):
 
 # --- transport ----------------------------------------------------------------
 
-def http_get(url, max_bytes, timeout, retries=1, no_cache=False):
-    """Fetch a bounded document into memory.  Raises Unverified, never Contradiction."""
+def http_get(url, max_bytes, timeout, retries=1, no_cache=False,
+             promised=False):
+    """Fetch a bounded document into memory.
+
+    `promised` says this URL was named by a document that has already been
+    verified - the index naming a catalog_url beside its sha256 and size.  A
+    404 on such a URL is not "GitHub could not be reached", it is the index
+    contradicting the release it points at, and it has to be red rather than
+    amber or a broken publish stays green.  The INDEX's own URL is not promised
+    by anything - HTTPS is the whole of its integrity - so a 404 there stays
+    Unverified, which is what lets `_index_bytes` ride the outage out on a
+    cached copy.
+    """
     headers = {"User-Agent": "romwbw-get/1 (+https://github.com/avwohl/romwbw_emu)"}
     if no_cache:
         headers["Cache-Control"] = "no-cache"
@@ -204,6 +215,12 @@ def http_get(url, max_bytes, timeout, retries=1, no_cache=False):
             return data
         except urllib.error.HTTPError as e:
             last = "HTTP %s" % e.code
+            if promised and e.code in (404, 410):
+                raise Contradiction(
+                    "%s: HTTP %s.  The document that named this URL also "
+                    "carried its sha256 and size, so the file is missing "
+                    "rather than unreachable - the release and the catalog "
+                    "that describes it disagree." % (url, e.code))
             if e.code in (400, 401, 403, 404, 410):
                 break          # retrying a 404 just wastes a second
         except (urllib.error.URLError, OSError) as e:
@@ -214,7 +231,7 @@ def http_get(url, max_bytes, timeout, retries=1, no_cache=False):
 
 
 def http_download(url, dest, expect_size, expect_sha, timeout, retries=1,
-                  progress=True, no_cache=False):
+                  progress=True, no_cache=False, promised=True):
     """Stream to a temporary file, hashing as it goes; rename only once it verifies.
 
     Nothing is ever visible at the real path until it has passed both checks.  A
@@ -256,6 +273,24 @@ def http_download(url, dest, expect_size, expect_sha, timeout, retries=1,
             if progress and expect_size:
                 sys.stderr.write("\n")
             break
+        except urllib.error.HTTPError as e:
+            # Checked before the URLError branch below, which it is a subclass
+            # of.  Every asset URL is composed from a catalog entry that also
+            # carries the file's sha256 and size, so a 404 here is the catalog
+            # promising a file the release does not have - a contradiction, and
+            # not worth retrying.
+            if progress and expect_size:
+                sys.stderr.write("\n")
+            _unlink(tmp)
+            if promised and e.code in (404, 410):
+                raise Contradiction(
+                    "%s: HTTP %s.  The catalog lists this file, with a sha256 "
+                    "and a size, and the release does not have it."
+                    % (url, e.code))
+            last = "HTTP %s" % e.code
+            if e.code in (400, 401, 403, 404, 410) or attempt >= retries:
+                raise Unverified("could not download %s: %s" % (url, last))
+            time.sleep(1)
         except (urllib.error.URLError, OSError) as e:
             if progress and expect_size:
                 sys.stderr.write("\n")
@@ -388,16 +423,51 @@ class Catalog(object):
     def index(self):
         if self._index is not None:
             return self._index
-        raw = self._index_bytes()
+        raw, fresh = self._index_bytes()
         try:
             doc = json.loads(raw.decode("utf-8"))
         except (ValueError, UnicodeDecodeError) as e:
             raise Contradiction("the index is not valid JSON: %s" % e)
         self._check_index(doc)
+        # Cached only now that it has parsed and passed _check_index.  It used
+        # to be written the moment it arrived, so a single bad publish - a
+        # truncated `gh release upload --clobber`, an "interface": "v1" edited
+        # in place instead of an index-v1.json added beside it - overwrote a
+        # good cached index with an unusable one on every client that happened
+        # to refetch during the window.  The publisher's fix then could not
+        # reach a client that was offline, and the mtime bump meant it would
+        # not even retry for an hour.  A rejected index now leaves the last
+        # good one exactly where it was.
+        if fresh:
+            self._persist_index(raw)
         self._index = doc
         return doc
 
+    def _persist_index(self, raw):
+        f = self.index_file
+        try:
+            os.makedirs(os.path.dirname(f), exist_ok=True)
+            tmp = f + ".tmp"
+            with open(tmp, "wb") as fh:
+                fh.write(raw)
+            os.replace(tmp, f)
+            meta = {"fetched_at": int(time.time()),
+                    "source_url": self.index_url,
+                    "sha256": hashlib.sha256(raw).hexdigest()}
+            with open(f.replace(".json", ".meta.json"), "w") as fh:
+                json.dump(meta, fh, indent=2, sort_keys=True)
+                fh.write("\n")
+        except OSError:
+            # Not being able to cache it costs a re-fetch next time, nothing
+            # more; the document in hand has already been validated.
+            pass
+
     def _index_bytes(self):
+        """Returns (raw, came_from_the_network).
+
+        Caching is the caller's job, and only after the bytes have been
+        validated - see index().
+        """
         f = self.index_file
         age = None
         if os.path.exists(f):
@@ -409,20 +479,8 @@ class Catalog(object):
 
         if want_fetch:
             try:
-                raw = http_get(self.index_url, INDEX_MAX_BYTES, self.timeout,
-                               self.retries)
-                os.makedirs(os.path.dirname(f), exist_ok=True)
-                tmp = f + ".tmp"
-                with open(tmp, "wb") as fh:
-                    fh.write(raw)
-                os.replace(tmp, f)
-                meta = {"fetched_at": int(time.time()),
-                        "source_url": self.index_url,
-                        "sha256": hashlib.sha256(raw).hexdigest()}
-                with open(f.replace(".json", ".meta.json"), "w") as fh:
-                    json.dump(meta, fh, indent=2, sort_keys=True)
-                    fh.write("\n")
-                return raw
+                return http_get(self.index_url, INDEX_MAX_BYTES, self.timeout,
+                                self.retries), True
             except Unverified as e:
                 # A cached index that is merely old is far better than no
                 # answer: everything under it is hash-verified anyway, so the
@@ -441,7 +499,7 @@ class Catalog(object):
                 "no cached index and --offline was given; run without "
                 "--offline once to populate %s" % self.cache)
         with open(f, "rb") as fh:
-            return fh.read()
+            return fh.read(), False
 
     def _check_index(self, doc):
         if not isinstance(doc, dict):
@@ -534,7 +592,8 @@ class Catalog(object):
                 raise Contradiction("index entry for %s has no catalog_url" % version)
             # Absolute, and used verbatim.  Reconstructing it from a tag and a
             # filename is how a client ends up fetching last week's document.
-            raw = http_get(url, CATALOG_MAX_BYTES, self.timeout, self.retries)
+            raw = http_get(url, CATALOG_MAX_BYTES, self.timeout, self.retries,
+                           promised=True)
             # Size first - it is free and it catches truncation - then the hash,
             # and only then is a single byte of it parsed.
             if want_size is not None and len(raw) != want_size:
