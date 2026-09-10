@@ -162,15 +162,20 @@
 
     let romLoaded = false;
 
-    // Console output from emulator
+    // Console output from emulator.
+    //
+    // EVERY BYTE REACHES THE TERMINAL, with LF -> CR LF the only rewrite. This
+    // is the same handler web/romwbw.html-template uses, and it is here because
+    // this page had the filter that one was fixed to remove: CR was turned into
+    // CR LF, LF was DROPPED, and everything outside 32..126 was discarded - so
+    // ESC never arrived and no escape sequence this emulator emits could work.
+    // A terminal is the thing that interprets those bytes; a page that decides
+    // which ones deserve to arrive is a page that breaks the terminal it is
+    // hosting. xterm.js handles the C0 controls, including backspace, itself.
     Module.onConsoleOutput = function(ch) {
-      if (ch === 13) {  // CR
+      if (ch === 10) {
         term.write('\r\n');
-      } else if (ch === 10) {  // LF - ignore (CR already did newline)
-        // Do nothing
-      } else if (ch === 8) {  // Backspace
-        term.write('\b \b');
-      } else if (ch >= 32 && ch < 127) {
+      } else {
         term.write(String.fromCharCode(ch));
       }
     };

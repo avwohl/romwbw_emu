@@ -796,6 +796,6 @@ hp_end:
 dotptr:
 	dw	0		; the dot that separates name from type, or 0
 name_mangled:
-	db	0		; non-zero once fcb_char has substituted a '_'
+	db	0		; non-zero once fcb_char has substituted a '-'
 
 	end	start
