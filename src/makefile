@@ -103,9 +103,12 @@ endif
 LDFLAGS ?=
 LDLIBS = $(QKZ80_LIBS)
 
-# Use STATIC=1 for static builds (portable across glibc versions)
+# Use STATIC=1 for static builds (portable across glibc versions).  The
+# override is load-bearing: a plain `+=` is discarded when LDFLAGS arrives on
+# the command line, so `make STATIC=1 LDFLAGS=...` silently linked a dynamic
+# binary while still reporting success.
 ifeq ($(STATIC),1)
-LDFLAGS += -static
+override LDFLAGS += -static
 endif
 
 # Object files for romwbw_emu using emu_io abstraction
