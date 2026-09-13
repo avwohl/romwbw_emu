@@ -168,117 +168,6 @@ shipped artifact says the same: the v1.38 deb's emu_avw.rom is c7abc580 in both
 roms/ and web/, unpacked and hashed rather than assumed, which is the ROM from
 before e47c948.
 
-- [ANY] tools/check-shipped-disks.sh cannot see a built artifact on any machine
-that cannot build one, and that is structural rather than a bug.  artifacts_for()
-globs local paths only - dist/, bin/Release/, app/build/outputs, build/,
-DerivedData - so on this machine the loop runs zero times.  MSVC, the Android SDK
-and Xcode are three different machines and no one of them has all three packages.
-  TWO PARTS OF THIS ARE NOW DONE, 2026-09-06.  The summary distinguished nothing
-from everything: it ended on "every artifact found agrees with its own tree" after
-inspecting zero packages, which reads as a pass of the half that never ran.  It now
-counts what it opened and says "NO PACKAGE WAS INSPECTED, and this is NOT a pass of
-the artifact half", with a different wording again for --tree-only.  Verified four
-ways: no artifact, --tree-only, a planted artifact naming the v0 index (counted,
-passes) and one that does not (counted, exits 1).
-  And pin_of() no longer reports NO PIN FOUND at a correct tree.  All three ports
-deleted their vN.N.N literal when they moved to romwbw_disks' index-v0.json.
-cpmdroid's copy had grown an "index-v0" kind that asks the right question - does
-this source still name the v0 index, is the legacy pin really gone, does that index
-still publish the RomWBW release this build's bundled ROM declares - and its header
-said the other four needed the same edit.  That copy was propagated to all five
-repositories, with ioscpm and z80cpmw moved into the index-v0 row.
-  IT IS NOT CANONICAL ANY MORE, and this line said it was.  Re-measured
-2026-09-08: the five copies have five different md5s - ioscpm ba456daf, cpmemu
-2dd4a7f6, romwbw_emu 29fd68a7, cpmdroid 9a703420, z80cpmw 7e6a2c90 - so only
-cpmemu still hashes to the value this entry named for all five.  Two divergences
-matter, and both are ioscpm's copy being ahead:
-    * The *.app arms.  `grep -c 'bundle DIRECTORY'` is 1 in ioscpm and 0 in the
-      other four, and ioscpm has *.app handling in both scan_artifact() and
-      scan_artifact_for() that no sibling has.  Since every copy checks every
-      port, running a sibling copy on a Mac still skips the iOS .app - which is
-      the artifact half this item is about.
-    * The ROM arm, which is now the wrong question entirely.  This repository,
-      z80cpmw and cpmemu gate it on `if [ -n "$rom" ]` alone, so with every
-      port's bundled ROM deleted they call rom_release_of() on a path with no
-      file, get nothing back, print `CANNOT READ the RomWBW release out of
-      .../emu_avw.rom` and EXIT 1 against a family that is entirely correct.
-      Measured by running all five: cpmdroid and ioscpm exit 0; romwbw_emu,
-      z80cpmw and cpmemu exit 1.  Nothing is red - no repository runs this in
-      CI - but this script's own header says "a gate that cries wolf is a gate
-      that stops being read, which is the exact failure this script was written
-      after".
-        DO NOT repair it by adding `[ -f "$rom" ]`.  ioscpm's copy did that and
-      it only hid the arm: `bundled_rom_of()` was a table of three paths that
-      were deleted on purpose, kept because "a ROM that reappears at that path
-      gets checked again".  The rule is the other way round - no repository but
-      romwbw_disks may carry a ROM - so a ROM that reappears is the violation,
-      not a case to check.  ioscpm inverted the arm on 2026-09-08:
-      `bundled_rom_of()` and `rom_release_of()` are gone, and `roms_in_tree()`
-      asks `git ls-files --cached --others --exclude-standard` for any `*.rom`
-      anywhere in the checkout and fails the port if there is one.  Verified by
-      planting a 512 KB file: exit 1 naming the path, exit 0 once removed.
-  Take the whole of ioscpm's copy - it carries both this and the *.app arms.
-Raised from ioscpm on 2026-09-08, whose copy carries "THIS COPY HAS DIVERGED and
-the other four need the same edit".
-  NOTE for this repository: archive/cpm22/com/mbasic.com is a CP/M application
-in an archive tree, not a ROM, and the check looks only for *.rom.  It is
-untouched by any of this.
-  Note z80cpmw's file is CatalogV0.cpp, not DiskCatalog.cpp where the old pin
-lived.
-  WHAT IS STILL OPEN is the artifact half itself, and the shape it should take has
-changed since this item was written.  This item said the three authorities were the
-iTunes lookup, the Play listing, and "for Windows a human-maintained note".  That
-last is obsolete: z80cpmw queries DisplayCatalog now, and doing so found its own
-CHANGELOG wrong by two releases.  All four ports measure their store, all four run
-that check daily in CI.  So the honest remaining question is not "unzip a package"
-but "does the store's version correspond to a commit whose source names the v0
-index", which is a join between two checks that already exist and neither performs.
-  What it must NOT do is reach for the obvious fix.  Querying
-  avwohl/{z80cpmw,cpmdroid} release APIs would answer the wrong question on both:
-  cpmdroid's newest GitHub release is v1.14 from 2026-01-16 while Play serves
-  1.25, so the gate would scan a package nine versions older than anything a user
-  has, and z80cpmw's Store channel leaves no GitHub release behind at all.
-  romwbw_emu is the exception and already proves the shape works: its
-  tools/check-store-version.sh --assets downloads the published .deb and reads
-  emu_avw.rom out of it, which is how the shipped ROM was measured as c7abc580.
-  UPDATE 2026-09-07: the artifact half has an implementation now, and this
-  repository is in the table.  three things landed.  ports gained a romwbw_emu
-  row keyed on tools/romwbw-get's INDEX_URL - which is why that URL is kept on
-  one over-long line in the script, since a string split across two lines is
-  invisible to a line grep and reads as a port that has been repointed back off
-  the catalog.  the index-v0 branch gained a case for a port that bundles no ROM
-  at all, because bundled_rom_of deliberately has no romwbw_emu entry: since
-  v1.40 nothing is bundled, so there is no offline-first-launch hazard to check
-  and "no bundled ROM" must not read as "could not read one", which is a fault.
-  and scan_artifact_for learned to open a .deb with ar+tar and an .rpm with
-  rpm2cpio+cpio.  that last one is not tidiness: a .deb is an ar archive holding
-  data.tar.xz, so a raw byte grep of the file finds nothing that is inside it,
-  and a correct romwbw_emu package was being reported as "does not name
-  index-v0.json" - a red gate for a working port, which is the wolf-cry this
-  script was written after.  each unpacker returns "could not look" rather than a
-  verdict when its tool is missing, which is the honest answer on a stock macOS
-  or Ubuntu runner with no rpm2cpio.
-  WHAT IS STILL NOT COVERED is the structural gap this item opened with.
-  artifacts_for() globs local build outputs, this machine builds no .deb, .msix,
-  .apk or .app, and so the loop still runs zero times here and the run still ends
-  on NO PACKAGE WAS INSPECTED.  the join described above - does the version the
-  store serves correspond to a commit whose source names the v0 index - is still
-  unbuilt.
-  TWO FALSE ALARMS, BOTH SETTLED 2026-09-07, and both worth keeping written down
-  because the next person will hit the same shape.  the local ../ioscpm checkout
-  was at 669ce34, 24 commits behind and PREDATING ioscpm's 2026-09-05 move to
-  the v0 index, so the script printed `ioscpm     NO v0 INDEX URL` and exited 1
-  for a port that had migrated.  a `git -C ../ioscpm merge --ff-only origin/main`
-  fixed it; check the checkout before believing that line and do not "fix" the
-  table back.  the second was real and in this script: bundled_rom_of still
-  named z80cpmw's roms/emu_avw.rom, and z80cpmw's own migration deleted that
-  directory - it tracks no ROM at all now - so the gate printed CANNOT READ and
-  exited 1 for a second working port.  its case is removed, which drops it into
-  the no-bundled-ROM branch beside romwbw_emu.  the rule this leaves: a port
-  that stops bundling a ROM has to lose its bundled_rom_of case in the same
-  change, or this gate goes red for it.  all four ports are green as of
-  2026-09-07.
-
 - [ANY] a green pin does not mean a user has the fixed R8, and the gate implies
 it does.  All three ports decide "already downloaded" by filename alone -
 fileExists in ioscpm's refreshAvailableDisks, the same in cpmdroid's
@@ -323,8 +212,9 @@ is that file's version attribute whose bump fires the disk-wipe hazard.
   it never listed.  It was an inventory of nothing.  Nothing in the tree read it:
   verify_romwbw_pin.sh finds only *.rom/*.bin/*.img, both disk scripts hardcode
   the two-image list, and release.yml never stages disks/.  What the ports fetch
-  is a different file entirely - ioscpm's published catalog - and that is what
-  tools/check-shipped-disks.sh reads, over HTTP, so it is untouched by this.
+  is a different file entirely - ioscpm's published catalog - which is what
+  tools/check-shipped-disks.sh read, over HTTP, so it was untouched by this.
+  (That script was deleted on 2026-09-13; nothing reads it now.)
   (v1.40 moved two of those three readers without changing the conclusion:
   rebuild_disk_utils.sh is deleted, and verify_disk_utils.sh takes a directory to
   scan instead of a hardcoded pair.  neither reads a .xml, and neither ever did.)

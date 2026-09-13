@@ -80,10 +80,12 @@ import urllib.request
 # romwbw_disks' tools/check_latest.py fails that repository if it ever lands on
 # a release with no index on it.
 #
-# Kept on ONE line: tools/check-shipped-disks.sh looks
-# for the whole URL in a single line of source, the same way it does in the
-# three GUI clients, and a string split across two lines is invisible to it -
-# which reads as "this port has been repointed back off the catalog".
+# Kept on ONE line.  The reason was tools/check-shipped-disks.sh, which looked
+# for the whole URL in a single line of source, the same way it did in the three
+# GUI clients; a string split across two lines was invisible to it and read as
+# "this port has been repointed back off the catalog".  That script was deleted
+# on 2026-09-13, so nothing enforces this now - but one line is still the right
+# shape for a URL, and splitting it would gain nothing.
 INDEX_URL = "https://github.com/avwohl/romwbw_disks/releases/latest/download/index-v0.json"
 INTERFACE = "v0"
 
