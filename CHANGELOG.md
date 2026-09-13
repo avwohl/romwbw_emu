@@ -17,6 +17,46 @@ symlinks into `src/`, `z80cpmw`'s vcxproj compiles it in place, and `cpmdroid`'s
 CMakeLists pulls it from a sibling checkout — so a commit here reaches all three
 on their next build, tag or no tag.
 
+## [1.42] - 2026-09-13
+
+`VERSION` is `1.42`. The `[1.37]` rule applies: `src/makefile` and
+`web/romwbw-debug.html` both changed, so the binary and the shipped page differ
+from `1.41` and the number moves.
+
+Three things, one of which a user can see.
+
+**The debug page dropped most of what the emulator printed.**
+`web/romwbw-debug.html` filtered console output: CR became CR LF, **LF was
+discarded**, and every byte outside 32..126 was thrown away - so `ESC` never
+arrived and no escape sequence this emulator emits could work. It now uses the
+same handler `web/romwbw.html-template` uses, where every byte reaches the
+terminal and `LF -> CR LF` is the only rewrite. `romwbw.html-template` had been
+fixed for exactly this; the debug page still carried the filter it was fixed to
+remove. xterm.js handles the C0 controls, backspace included, itself.
+
+**`make STATIC=1 LDFLAGS=...` linked a dynamic binary and said it had
+succeeded.** `LDFLAGS += -static` is discarded when `LDFLAGS` arrives on the
+command line, which is how every packaging invocation supplies it. It is
+`override LDFLAGS += -static` now.
+
+**Line endings are normalised to LF and declared in `.gitattributes`**, after
+four files lost theirs to a text-mode write. That is why the diff against
+`v1.41` looks enormous - about 6,500 lines either side - while the substantive
+change is the twenty above. `src/r8.asm` moved by one character, in a comment:
+`fcb_char` substitutes a `-`, not a `_`.
+
+Nothing in `src/` changed behaviour otherwise, so the three ports that compile
+this tree in place need read nothing here.
+
+### Tooling, none of it shipped in the package
+
+`tools/check-shipped-disks.sh` is deleted, finishing what cpmemu started, and
+the store-version workflow with it - what a store or a release channel is
+serving is not something CI should be asked, and a job that stays red until a
+person re-reads a document is a job people learn to ignore. `tools/unreleased.sh`
+replaces them: a report, run by hand, that says what is finished here and not in
+anyone's hands. It has no exit 1 on purpose.
+
 ## [1.41] - 2026-09-10
 
 `VERSION` is `1.41`. The rule `[1.37]` was cut to establish is that a
