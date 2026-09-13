@@ -315,4 +315,3 @@ cross-compile", skips merely for want of x86_64-w64-mingw32-g++, which IS
 installed here, so it runs and is another compile rather than a run.  what is
 still only compiled and never run is this repository's own core.
 
-- [RELEASE] 8 commits since v1.41 and no CHANGELOG entry for any - write them, tag v1.42.

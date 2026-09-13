@@ -139,6 +139,9 @@ if [ "$want_code" = yes ]; then
         if [ "$newest_entry" != "$rel" ]; then
             echo "  CHANGELOG.md's newest entry is [$newest_entry] and the release is $rel."
             echo "  Read that entry: it describes work users do not have."
+        elif [ "${n:-0}" = "0" ]; then
+            echo "  CHANGELOG.md's newest entry is [$newest_entry], which IS the"
+            echo "  released version.  Nothing is owed."
         else
             echo "  CHANGELOG.md's newest entry is [$newest_entry], which IS the"
             echo "  released version - so the commits above are unwritten as well"
