@@ -95,6 +95,40 @@ When working on RomWBW integration:
    configure it to exclude hardware drivers while keeping the useful parts
    (boot loader, OS, ROM disk).
 
+## What is finished but not shipped
+
+`tools/unreleased.sh` answers the question four different words confuse here -
+written, built, published, installed:
+
+```
+sh tools/unreleased.sh              code and disks
+sh tools/unreleased.sh --code       skip the disks half
+sh tools/unreleased.sh --disks      skip the code half
+```
+
+It reports two things that travel on completely different channels, and the
+distinction is the reason it exists:
+
+- **This repository's own releases.** Commits since the tag the newest GitHub
+  release names. The `.deb` and `.rpm` are built by `release.yml` on
+  `release: published`, so a tag alone ships nothing to a Linux user.
+- **`src/`, which does not travel by release at all.** ioscpm symlinks into it,
+  z80cpmw's vcxproj compiles it in place, cpmdroid's CMakeLists reads a sibling
+  checkout. A commit under `src/` is already downstream's problem, tagged or
+  not, which is why the script counts those separately and points at
+  `DOWNSTREAM.md`.
+- **The disks, which are `romwbw_disks` and reach INSTALLED clients with no
+  release of anything.** It fetches the published `index-v0.json`, compares it
+  with that repository's committed `catalog/v0/index.json`, then follows each
+  `catalog_url` out of the published index - resolving the address the way a
+  client does rather than guessing it - and compares those too.
+
+**It is not a gate and must not become one.** There is no exit 1: it exits 0
+even when the answer is "eight commits unreleased", because that is the normal
+state of a working repository, and 2 only when it could not measure. Four jobs
+in this family went red daily for the normal state and all four were deleted on
+2026-09-13; do not rebuild one out of this.
+
 ## Build Tools
 
 The four Z80 sources - `src/r8.asm`, `src/w8.asm`, `src/emu_hbios.asm`,
