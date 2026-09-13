@@ -2,9 +2,10 @@
 # check-store-version.sh - what does the release channel actually serve, and
 # does anything in this tree claim otherwise?
 #
-# WHY THIS EXISTS.  VERSION, a CHANGELOG heading and the shipped: field in
-# z80cpmw/FEATURE_PARITY.md all describe the TREE.  None of them knows what a
-# user can install.  The three GUI ports each measure their store - ioscpm the
+# WHY THIS EXISTS.  VERSION and a CHANGELOG heading both describe the TREE.
+# Neither knows what a user can install.  (A shipped: field in
+# z80cpmw/FEATURE_PARITY.md used to be the third; it was removed on 2026-09-13 -
+# see the note where this script used to read it.)  The three GUI ports each measure their store - ioscpm the
 # iTunes lookup since 2026-09-03, z80cpmw DisplayCatalog and cpmdroid the Play
 # listing since 2026-09-06 - and z80cpmw's first measurement caught its own
 # changelog wrong by two releases, which had already sent a parity re-read to the
@@ -39,7 +40,6 @@ want_assets=no
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here" && git rev-parse --show-toplevel 2>/dev/null) || root=$(dirname "$here")
-PARITY="$root/../z80cpmw/FEATURE_PARITY.md"
 
 tmp=$(mktemp -d 2>/dev/null || mktemp -d -t rel)
 trap 'rm -rf "$tmp"' EXIT INT TERM
@@ -141,21 +141,13 @@ sys.exit(1 if bad else 0)
 PY
 [ $? -ne 0 ] && { echo "  A versioned package and its unversioned alias are different sizes."; status=1; }
 
-# --- what the family records ---------------------------------------------------
-if [ -f "$PARITY" ]; then
-    claim=$(awk '/^romwbw_emu[[:space:]]/ { for (i = 1; i <= NF; i++)
-                    if ($i ~ /^shipped:/) { print substr($i, 9); exit } }' "$PARITY")
-    echo
-    if [ -z "$claim" ]; then
-        echo "z80cpmw/FEATURE_PARITY.md  no shipped: field on the romwbw_emu line"
-    elif [ "$claim" = "$live" ]; then
-        echo "z80cpmw/FEATURE_PARITY.md  shipped:$claim agrees with the release channel"
-    else
-        echo "z80cpmw/FEATURE_PARITY.md  CLAIMS shipped:$claim, BUT the newest release is $live"
-        echo "  Re-read that column at the released tag, then set this field."
-        status=1
-    fi
-fi
+# FEATURE_PARITY.md is NOT consulted.  It used to carry a shipped:<build> field
+# per port in its sibling-readings block, and this script compared the store's
+# answer against it - which is how a stale column was caught twice.  The field
+# was removed on 2026-09-13 along with the CI jobs that checked it, because what
+# a store serves is not something a repository can be gated on.  So this script
+# now reports the measurement and stops: comparing it with what any document
+# claims is a job for the person reading the output.
 
 # --- the packages themselves ---------------------------------------------------
 if [ "$want_assets" = yes ]; then
