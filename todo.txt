@@ -148,18 +148,6 @@ published bytes and says so, which is what makes the GPL and attestation claim
 checkable rather than asserted.  that note is additive and stops at the
 signature line; everything above it is untouched.
 
-- [ANY] emu_host_path_cap_name()'s head-keeping branch backs a cut off
-continuation bytes with no floor: a component longer than EMU_HOST_NAME_MAX
-whose first 255 bytes are continuation bytes backs all the way to 0, and the
-function answers "" - where emu_io.h promises in as many words that it cannot
-("a result of "", ".", ".." or a bare drive letter is replaced by `fallback`").
-src/emu_io_common.cc, the `if (start >= base.size())` branch: the tail branch
-calls back_off_utf8 and the head branch does not.  Confirmed by cpmdroid on
-2026-09-13 by compiling and running this repository's own source with
-g++ -std=c++17, not reasoned about: the head branch returns 0 bytes where the
-tail branch returns 255.  Refiled from cpmdroid 2026-09-15 - the defect is
-here; cpmdroid keeps the conditional for its own copy in android_host_leaf().
-
 - [WINDOWS] nothing on Windows is RUN, only compiled.  the msvc job builds the
 three core .cc files z80cpmw pulls straight out of src/ and stops there: there
 is no MSVC build of the emulator to link and no test program that would run.

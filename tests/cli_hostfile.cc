@@ -381,6 +381,34 @@ int main() {
     check(cut.size() == EMU_HOST_NAME_MAX,
           "an all-continuation-byte tail is cut to 255 bytes, not to nothing");
   }
+  {
+    // The same hazard on the HEAD-keeping branch, which had no floor where the
+    // tail branch above has one. A name with no extension whose first 256 bytes
+    // are continuation bytes backed the cut all the way to 0 and returned the
+    // empty string - which emu_io.h says in as many words cannot happen, and
+    // which the caller's ""/"."/".." guard cannot catch because it runs BEFORE
+    // the cap. Found by cpmdroid, which keeps a hand-copy of this function.
+    std::string head;
+    for (int i = 0; i < 256; i++) head += (char)0x80;
+    head += "aaaa";
+    const std::string cut = emu_host_path_basename(head);
+    check(!cut.empty(),
+          "an all-continuation-byte head is never cut to the empty string");
+    check(cut.size() == EMU_HOST_NAME_MAX,
+          "it keeps 255 bytes, the same choice the tail branch makes");
+  }
+  {
+    // And with an extension, where the stem was thrown away entirely rather
+    // than cut: the result was ".txt", four bytes out of a 260-byte name.
+    std::string head;
+    for (int i = 0; i < 256; i++) head += (char)0x80;
+    head += ".txt";
+    const std::string cut = emu_host_path_basename(head);
+    check(cut.size() == EMU_HOST_NAME_MAX,
+          "an all-continuation-byte stem keeps its bytes beside the extension");
+    check(cut.compare(cut.size() - 4, 4, ".txt") == 0,
+          "and the extension still survives the cut");
+  }
 
   printf("%s\n", std::string(64, '-').c_str());
   printf("%d passed, %d failed\n", checks - failures, failures);

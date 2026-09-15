@@ -17,6 +17,29 @@ symlinks into `src/`, `z80cpmw`'s vcxproj compiles it in place, and `cpmdroid`'s
 CMakeLists pulls it from a sibling checkout — so a commit here reaches all three
 on their next build, tag or no tag.
 
+## [Unreleased]
+
+**`emu_host_path_cap_name()` could return the empty string.** Its head-keeping
+branch backed a cut off UTF-8 continuation bytes with no floor, so a component
+longer than 255 bytes whose first 256 bytes are continuation bytes backed all
+the way to 0 and the function answered `""` when there was no extension to fall
+back on. `emu_io.h` says in as many words that it cannot: "a result of `""`,
+`"."`, `".."` or a bare drive letter is replaced by `fallback`". The caller's
+guard cannot catch it, because that guard runs *before* the cap.
+
+The tail-keeping branch already had the floor and the comment explaining why -
+"Take the last EMU_HOST_NAME_MAX bytes rather than the empty string, which is
+what skipping to the end would produce" - and the head branch is now symmetric
+with it. A name with an extension also stops throwing its whole stem away: 256
+continuation bytes plus `.txt` returned four bytes and now returns 255.
+
+Found by cpmdroid, which keeps a hand-copy of this function for
+`android_host_leaf()` and confirmed it by compiling and running this
+repository's source. Its copy needs the same fix; the item is filed there.
+
+An 8-bit guest command line need not be UTF-8 at all, which is why this is
+reachable rather than theoretical: the CCP passes bytes through untouched.
+
 ## [1.42] - 2026-09-13
 
 `VERSION` is `1.42`. The `[1.37]` rule applies: `src/makefile` and

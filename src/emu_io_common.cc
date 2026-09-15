@@ -337,6 +337,12 @@ static std::string emu_host_path_cap_name(const std::string& base) {
   }
 
   size_t keep = back_off_utf8(base, EMU_HOST_NAME_MAX - ext.size());
+  // The whole window was continuation bytes, so there is no character boundary
+  // to cut on and backing up ran to 0 - which returned "" when there is no
+  // extension either, the one answer emu_io.h promises this cannot give. Keep
+  // the bytes instead: the tail branch above makes the same choice for the same
+  // reason, and an 8-bit guest command line need not be UTF-8 at all.
+  if (keep == 0) keep = EMU_HOST_NAME_MAX - ext.size();
   return base.substr(0, keep) + ext;
 }
 
