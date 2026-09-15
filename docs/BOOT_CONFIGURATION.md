@@ -51,6 +51,26 @@ was checked against.
 | `2` | Boot disk unit 2 (first hard disk), slice 0 |
 | `2.3` | Boot disk unit 2, slice 3 |
 
+### The rest of the boot menu
+
+Every one of these is a line, terminated by Enter.
+
+| Key | What it does |
+|-----|--------------|
+| `D` | Device inventory - list the disk units |
+| `S` | Slice inventory |
+| `O` | Hardware monitor |
+| `R` | Reboot |
+| `W` | SYSCONF (below) |
+| `I <u> [<c>]` | Set the console interface, and optionally the baud rate |
+| `V [<n>]` | HBIOS diagnostic verbosity |
+| `L` | **3.5.1 only** - list the ROM applications. 3.6.0 answers `*** Invalid command` and folds them into `H` |
+
+The ROM applications are `M` Monitor, `C` CP/M 2.2, `Z` Z-System, `B` BASIC,
+`T` Tasty BASIC, `F` Forth, `P` Play a Game, `N` Network Boot, `X` XModem Flash
+Updater and `U` User App - any of those letters works as a `--boot` target, not
+just `C` and `Z`.
+
 Boot unit numbering: unit 0 is the RAM disk and unit 1 is the ROM disk - neither contains a bootable OS, so booting `0` reports "*** No boot record" on RomWBW 3.6.0 and "*** No system image on disk" on 3.5.1. Hard disks are units 2 and up in `--disk0`..`--disk15` order (`--disk0` = unit 2). Press `D` at the boot menu to list the disk units.
 
 ## Using SYSCONF (Interactive)

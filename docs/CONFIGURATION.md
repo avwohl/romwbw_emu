@@ -13,7 +13,8 @@ CLI flags always override file values: defaults < file < command line.
    config could boot the wrong disks.
 2. `./romwbw_emu.json` in the current directory.
 3. `$XDG_CONFIG_HOME/romwbw_emu/config.json`, defaulting to
-   `~/.config/romwbw_emu/config.json`.
+   `~/.config/romwbw_emu/config.json`. `XDG_CONFIG_HOME` is honoured only when
+   it is an absolute path; a relative value falls back to `~/.config` silently.
 4. No file — the emulator behaves exactly as before this feature existed.
 
 `--no-config` skips steps 2 and 3. The emulator never creates a config file

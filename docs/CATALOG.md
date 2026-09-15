@@ -73,6 +73,13 @@ catalog flags `default: true`; `@disk0` and `@disk1` are the disks it gives
 `emu_avw` or `hd1k_combo` — a client that hardcodes an id is a client that
 breaks when the catalog is rearranged.
 
+`run` attaches the slot-0 disk as `--disk0` unless you pass `--no-disks`, so
+`--boot=2` has something to boot from. It also takes `--rom ID`, `--disk0 ID`
+and `--disk1 ID` to name artifacts other than the defaults:
+
+    tools/romwbw-get run --disk0 hd1k_games
+    tools/romwbw-get run --no-disks
+
 Anything after a bare `--` goes to the emulator:
 
     tools/romwbw-get run -- --boot=2.1 --escape=none
