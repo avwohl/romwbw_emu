@@ -165,3 +165,27 @@ cross-compile", skips merely for want of x86_64-w64-mingw32-g++, which IS
 installed here, so it runs and is another compile rather than a run.  what is
 still only compiled and never run is this repository's own core.
 
+- [SOUND] the SND handler stores four channels and plays one beep.  handleSND
+in src/hbios_dispatch.cc keeps snd_period[4] and snd_volume[4], and
+BF_SNDQUERY/SNDQ_CHCNT answers "4 tone channels, 0 noise" - but nothing reads
+those arrays back out.  BF_SNDPLAY looks at channel 0 only and calls
+emu_dsky_beep(duration), which is a fixed beep of that length: the period is
+not a pitch and the other three channels are inaudible.  a guest playing a
+four-voice tune hears four identical beeps in sequence.  SNDQ_DEV already
+declines to name a chip for exactly this reason - "there is no sound chip here
+- nothing reads snd_period or snd_volume back out".
+  WHAT WOULD CLOSE IT is rendering the channels the handler already records:
+period -> frequency, volume -> amplitude, mixed across the four.  that is one
+AY-3-8910/YM2149 worth of square-wave generation and it belongs here, in the
+shared core, not in any one front end - all four ports would get it from the
+same change, and only the output side (AudioTrack, AVAudioEngine, WASAPI, Web
+Audio) is per-client.
+  IT NEEDS A NEW emu_io ENTRY POINT.  src/emu_io.h declares exactly one audio
+hook, `void emu_dsky_beep(int duration_ms)`, and a duration is the whole of its
+vocabulary - there is no way to hand a front end samples or a pitch through it.
+so this is a DOWNSTREAM.md-sized change, not a local one: adding the hook is
+the easy half and four ports implementing it is the rest.  a front end that
+does not want it must keep working, so the new hook needs a default the way the
+optional ones already here do.
+  requested by a user on a physical tablet against cpmdroid, where it sat in
+docs/bug1.txt until 2026-09-15.  cpmdroid cannot close it alone.
