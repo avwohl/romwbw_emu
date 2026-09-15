@@ -15,7 +15,10 @@ a keyboard; a decision needs someone making a ruling. Both were the same kind of
 exception and only one of them had been split out. The cost of leaving them in
 was measured: the 2026-09-01 audit re-verified all six, confirmed the facts
 still held, and moved none - which is what every future audit will do, because
-the blocker is judgment and no amount of evidence supplies it.
+the blocker is judgment and no amount of evidence supplies it. Six was the
+count then; section 4 was answered on 2026-09-07 and left, so five remain under
+numbers running 1, 2, 3, 5, 6. The next paragraph but one says why the gap
+stays.
 
 **Delete a decision once it has been answered.** If the answer needs work done,
 that work becomes a `todo.txt` item with a real capability tag. If the answer is
