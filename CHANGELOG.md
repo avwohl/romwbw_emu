@@ -19,6 +19,28 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+### Verified
+
+**Four of the web manual checks were settled in a real browser, with no wasm.**
+`MANUAL_CHECKS.md` claimed "Every check below turns on a browser *default
+action*, on a real `fetch`, or on something being drawn, and none of those is
+reachable" without one, and that you could not start until you had a wasm. False
+for the manifest half: the page's `fetch` of `catalog/manifest.json`, the three
+selects it builds and the vendored terminal never touch `Module`. Served the
+rendered template plus `vendor/` and a `romwbw-get mirror` catalog from a
+scratch directory with `romwbw.js` returning 404, drove it with headless Chrome,
+and got `romwbwVersionSelect` = RomWBW 3.5.1 / 3.6.0, `romSelect` = EMU AVW
+(512.0 KB), `disk0Select` = Combo (Recommended) (49.0 MB) + `(23 more not
+mirrored)`, and the xterm viewport drawn. Those boxes are deleted; ten remain,
+and each of them turns on a browser default action or on `src/emu_io_wasm.cc`,
+which only `web/makefile` compiles.
+
+Its prerequisite paragraph also dead-ended a reader at "take the wasm from a CI
+build" - no artifact, no workflow, no command - while `todo.txt` carried the
+concrete recipe and the warning that a stale gitignored `web/romwbw.wasm` can
+answer every check against an old build. The recipe is in the file now.
+
+
 **`emu_host_path_cap_name()` could return the empty string.** Its head-keeping
 branch backed a cut off UTF-8 continuation bytes with no floor, so a component
 longer than 255 bytes whose first 256 bytes are continuation bytes backed all

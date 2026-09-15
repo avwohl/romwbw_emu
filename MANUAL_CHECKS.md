@@ -18,12 +18,40 @@ record `todo.txt` was.
 `tests/web_console_output.js` and `tests/web_manifest.js` do run - `make -C src
 test` executes all three - but they lift a function out of
 `web/romwbw.html-template` and drive it against a stub `Module` and `document`.
-Every check below turns on a browser *default action*, on a real `fetch`, or on
-something being drawn, and none of those is reachable that way.
+(On a machine with no `node` they do not run at all - `make -C src test` prints
+`SKIP  web JS tests (node not on PATH)`. CI fails the Ubuntu job if they skip,
+so they always run *there*.)
+
+**Half of the page needs no wasm, and those checks are gone from this file.**
+The manifest `fetch`, the three selects it builds, and the vendored terminal all
+run with `romwbw.js` returning 404, because none of them touches `Module`.
+Verified 2026-09-15 by serving the rendered template plus `vendor/` and a
+`romwbw-get mirror` catalog out of a scratch directory with no wasm in it, and
+driving it with headless Chrome: `romwbwVersionSelect` came up with RomWBW
+3.5.1 and 3.6.0, `romSelect` with EMU AVW, `disk0Select` with the combo and
+`(23 more not mirrored)`, and the xterm viewport was drawn. Anything that can be
+settled that way does not belong here - it belongs in a script.
+
+What is left below needs a person because it turns on a browser *default
+action* - reload, paste, copy, zoom, a download - which a synthetic
+`KeyboardEvent` cannot produce, or on `src/emu_io_wasm.cc`, which only
+`web/makefile` compiles and no test links.
 
 **What you need first.** A built `web/romwbw.js` and `web/romwbw.wasm`. `emcc`
-is not on the machine these were written on, so take the wasm from a CI build or
-install emsdk. Then serve `web/` over http - `file://` will not do:
+is not on the machine these were written on. The concrete way to get one:
+
+```
+gh release download v1.42 -p 'romwbw-emu_*_amd64.deb' && dpkg-deb -x romwbw-emu_*.deb pkg
+# then serve pkg/usr/share/romwbw_emu/web - NOT web/ out of this tree, where a
+# stale gitignored romwbw.wasm can answer every check against an old build
+```
+
+That page is byte-identical to `sed s/@VERSION@/1.42/ web/romwbw.html-template`
+with a freshly built wasm beside it, and carries no ROM - so run
+`tools/romwbw-get mirror` beside it before it will boot anything. Only
+`release.yml` builds a wasm; `test.yml` does not.
+
+Or install emsdk and serve `web/` over http - `file://` will not do:
 
 ```
 make -C web serve
@@ -59,16 +87,16 @@ drives that logic against a fixture - but with a stubbed `document` and no
 network, so nothing in this repository proves a browser draws the result or
 fetches a byte of it.
 
-- [ ] With a mirror beside the page, all three selects are populated. The ROM
-      the manifest flags `default: true` and the disk it gives `defaultSlot: 0`
-      come up selected, and Disk 1 shows the same list.
-- [ ] Change the **RomWBW** select. Both the ROM and the disk lists must
-      rebuild. A ROM left selected from the release you switched away from is
-      the mixed pair the next check is about.
-- [ ] Reload the page. The previous RomWBW, ROM and disk selection comes back.
-      It is matched by the manifest's `id`, never by filename or list position,
-      so a mirror that gained an entry since the selection was stored must
-      still restore it.
+> **Settled 2026-09-15, headless, with no wasm present.** The three selects
+> build from a real `fetch` of `catalog/manifest.json`:
+> `romwbwVersionSelect` came up with RomWBW 3.5.1 and 3.6.0, `romSelect` with
+> EMU AVW (512.0 KB), and `disk0Select` with Combo (Recommended) (49.0 MB) plus
+> `(23 more not mirrored)`. Anything reachable that way is a script's job, not a
+> person's, so the select-population, release-switch and reload-restore boxes
+> are gone from here; `tests/web_manifest.js` already drives the same three
+> against a fixture. What is NOT settled is the no-mirror fallback and the
+> secure-context check below, which need a differently-served directory.
+
 - [ ] Serve a directory with **no** `catalog/manifest.json` - copy `web/`
       somewhere, delete `catalog/`, and `python3 -m http.server` in it. The
       page must say so in the status line and in the terminal, name
@@ -115,12 +143,15 @@ The greppable anchors are `attachCustomKeyEventHandler` and
 ### The vendored terminal
 
 `web/vendor/` holds `xterm.js`, `xterm.css` and `xterm-addon-fit.js` in place of
-three jsdelivr `<script>` tags. The paths were checked by serving the staging
+two jsdelivr `<script>` tags and a stylesheet `<link>` - a missing stylesheet
+fails differently from a missing script. The paths were checked by serving the staging
 layout and fetching every `href` and `src`, but no browser has drawn the page
 since.
 
-- [ ] A terminal comes up at all, and it fits the box. That is the whole of this
-      check — a blank page or an unsized terminal is the vendoring.
+> **Settled 2026-09-15, headless.** The xterm viewport was drawn with
+> `romwbw.js` returning 404, so the vendored terminal loads independently of
+> the wasm. What is left for a person is only whether it looks right at a real
+> window size.
 
 ### The two W8 behaviours only a browser shows
 
