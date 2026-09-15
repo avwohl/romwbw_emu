@@ -1,7 +1,7 @@
 # RomWBW Emulator
 
 [![GitHub Release](https://img.shields.io/github/v/release/avwohl/romwbw_emu)](https://github.com/avwohl/romwbw_emu/releases/latest)
-[![Build Status](https://img.shields.io/github/actions/workflow/status/avwohl/romwbw_emu/release.yml)](https://github.com/avwohl/romwbw_emu/actions/workflows/release.yml)
+[![Tests](https://img.shields.io/github/actions/workflow/status/avwohl/romwbw_emu/test.yml?label=tests)](https://github.com/avwohl/romwbw_emu/actions/workflows/test.yml)
 
 A hardware-level Z80 emulator that boots RomWBW and CP/M from ROM and disk
 images, on Linux, macOS and in the browser. It emulates the machine - 512 KB
@@ -30,14 +30,15 @@ What changed in each version: [CHANGELOG.md](CHANGELOG.md).
 - **File transfer:** `R8`/`W8` copy files between CP/M and the host
 - **Settings file:** a JSON machine description in place of a long command line
 - **Debugger:** a `sim>` prompt with breakpoints, single-step, register and
-  memory dumps, and a symbol table - but no disassembler; `dm` prints bytes
+  memory dumps, and a symbol table - CLI only, and with no disassembler; `dm`
+  prints bytes
 - **WebAssembly:** runs in any modern browser
 
 ## Quick Start
 
 ```bash
 git clone https://github.com/avwohl/cpmemu ../cpmemu   # the Z80 core
-make -C ../cpmemu libqkz80.a
+make -C ../cpmemu/src libqkz80.a
 make -C src                                            # build the emulator
 tools/romwbw-get run                                   # fetch a ROM and a disk, verify them, and boot
 ```
@@ -56,7 +57,10 @@ src/romwbw_emu --romwbw="$(tools/romwbw-get path @rom)" \
 `@rom` and `@disk0` are the catalog's defaults for the selected release; any
 id from `romwbw-get list` works in their place. `path` prints the hash-verified
 download, which is read-only, and `path --work` prints a writable copy - which
-is what a disk needs, because the guest writes to it.
+is what a disk needs, because the guest writes to it. `romwbw-get verify`
+re-hashes the cache against the catalog and `--repair` re-fetches what does not
+match; `--offline` before a subcommand never opens a socket, and `cache-dir`
+prints the cache root.
 
 ### Boot menu keys
 
@@ -66,9 +70,16 @@ Every command is read as a line, so nothing happens until you press Enter.
 - `C` - boot CP/M 2.2 from ROM; `Z` for Z-System
 - `D` - list the boot units
 - `W` - SYSCONF, RomWBW's configuration utility
-- `H` - the whole command set
-- Units 0 and 1 are the on-board RAM and ROM memory disks and carry no
-  operating system. `--disk0` is unit 2, `--disk1` unit 3, and so on.
+- `H` - the command set
+
+Units 0 and 1 are the on-board RAM and ROM memory disks and carry no operating
+system. `--disk0` is unit 2, `--disk1` unit 3, and so on.
+
+**`H` shows a different menu on each release.** On 3.6.0 it lists the ten ROM
+applications alongside the commands. On 3.5.1 it lists seven commands and no
+application letters - `C` and `Z` work, but you need `L` (List ROM
+Applications) to see them, and `L` is a 3.5.1 command that 3.6.0 answers with
+`*** Invalid command`.
 
 ## Installation
 
@@ -118,8 +129,8 @@ build run it out of `tools/`.
 
 ## ROMs and Disk Images
 
-`romwbw-get list` prints the ROMs and disks a release publishes - 24 disks in
-3.6.0, 20 in 3.5.1: system disks, language toolchains and games. Fetch one by
+`romwbw-get list` prints the ROMs and disks a release publishes - a couple of
+dozen per release: system disks, language toolchains and games. Fetch one by
 its id:
 
 ```bash
@@ -127,6 +138,11 @@ tools/romwbw-get fetch hd1k_games
 src/romwbw_emu --romwbw="$(tools/romwbw-get path @rom)" \
                --disk0="$(tools/romwbw-get path --work hd1k_games)"
 ```
+
+`--romwbw=` wants an `emu_*` ROM, not a stock RomWBW one. Bank 0 of an `emu_*`
+ROM is this project's HBIOS proxy; a ROM built for real hardware drives
+peripherals that are not here, and the emulator warns and carries on rather
+than refusing.
 
 `hd1k_combo` is the catalog's slot-0 disk, so it is what `@disk0` and a bare
 `romwbw-get run` resolve to: 49 MB, six slices, CP/M 2.2 and the utilities. It
@@ -144,6 +160,9 @@ release this core has not been checked against is refused, because bank 0 of an
 does not implement would load and then hang; `--allow-untested-romwbw`
 overrides that with a warning.
 
+`romwbw-get use 3.5.1` picks a release and remembers it; `--romwbw VER` before
+a subcommand does it for one run.
+
 **A ROM and the disk you boot have to be the same release**, or the guest
 prints `*** WARNING: HBIOS/CBIOS Version Mismatch ***`. `romwbw-get` only ever
 hands out a matched pair. Using another release's disks for data files, without
@@ -157,11 +176,12 @@ Format is auto-detected:
 
 | | |
 |---|---|
-| **hd1k** | partition type 0x2E in the MBR, or a file of exactly 8,388,608 bytes. 1 MB prefix, 8 MB slices, 16 KB system area, 1024 directory entries |
+| **hd1k, single slice** | exactly 8,388,608 bytes, no prefix. 16 KB system area, 1024 directory entries |
+| **hd1k combo** | partition type 0x2E in the MBR. A 1 MB prefix, then 8 MB slices laid out as plain hd1k images |
 | **hd512** | the fallback. No prefix, 8.32 MB slices (8,519,680 bytes), 128 KB system area, 512 directory entries |
 
-SIMH AltairZ80 hard disk images of either size work directly, as does the
-51,380,224-byte RomWBW combo. See
+SIMH AltairZ80 hard disk images work directly at either of the two single-disk
+sizes above - 8,388,608 and 8,519,680 bytes. See
 [docs/DISK_FORMATS.md](docs/DISK_FORMATS.md).
 
 ### Reading an image
@@ -266,8 +286,9 @@ autoboot default. Its command set and worked examples are in
 
 ## Command Line Options
 
-`romwbw_emu --help` prints the built-in usage, which covers most of these but
-not `--romapp`, `--romldr` or the debugging switches below. The ones in daily
+`romwbw_emu --help` prints the built-in usage. It covers most of these, but not
+`--romapp`, `--romldr`, or `--sense`, `--load`, `--start`, `--mask-interrupt`
+and `--nmi` below; `--trace` and `--symbols` it does list. The ones in daily
 use:
 
 ```
@@ -317,16 +338,17 @@ file should turn on behind you. `--symbols` is the exception, and has a
 Every control character goes to the guest, because CP/M software uses them:
 `^R` retypes the line at the CCP prompt, `^E`/`^S`/`^D`/`^X` are the WordStar
 cursor diamond, `^Q` and `^O` prefix its command sets, and `^C` warm-boots. The
-terminal is put in raw mode with XON/XOFF and the line discipline's
-literal-next and discard keys disabled, so `^S`, `^Q`, `^V` and `^O` reach the
-guest rather than the tty driver - which also means there is no terminal-level
-scroll-pause on `^S`.
+terminal is put in raw mode with IXON and the line discipline's literal-next
+and discard keys cleared, so `^S`, `^Q`, `^V` and `^O` reach the guest rather
+than the tty driver - which also means there is no terminal-level scroll-pause
+on `^S`. IXOFF is deliberately left alone: it only governs the kernel throttling
+a fast sender and never consumes a typed `^S`.
 
 **On an interactive terminal the escape character is reserved and never reaches
 CP/M.** It suspends the guest and drops you at the `sim>` prompt, where `help`
 lists the debugger commands and `quit` exits. The default `^E` is WordStar
 cursor-up, so under WordStar or VDE move it (`--escape=^]`) or turn it off
-(`--escape=none`); `CHAR` is `^A` through `^_`, a literal character, or `none`.
+(`--escape=none`); `CHAR` is `^A` through `^_`, a literal character, or `none` (`off` means the same).
 With piped stdin nothing is reserved at all, and the startup banner says which
 case you are in.
 
@@ -380,9 +402,10 @@ make serve     # builds the wasm, renders the page, http://localhost:8080/romwbw
 This needs emscripten and a sibling `cpmemu` checkout - `web/makefile`
 hardcodes `QKZ80_SRC = ../../cpmemu/src` for the Z80 core. `romwbw.html` is
 rendered from `romwbw.html-template`, not tracked; `make serve` stamps it
-`<VERSION>-local`; `make deploy-dev` stamps `<VERSION>-dev` with a timestamp,
-and the release workflow and `deploy-romwbw-PRODUCTION-ASK-HUMAN-FIRST`
-substitute the bare `VERSION`. `make serve` also mirrors `emu_avw` and `hd1k_combo` into
+`<VERSION>-local`, and the release workflow renders it with the bare `VERSION`.
+The two deploy targets write `~/www/.../index.html` rather than `romwbw.html`:
+`make deploy-dev` stamps `<VERSION>-dev` with a timestamp, and
+`deploy-romwbw-PRODUCTION-ASK-HUMAN-FIRST` uses the bare `VERSION`. `make serve` also mirrors `emu_avw` and `hd1k_combo` into
 `web/` first, so a local serve comes up with a ROM and a bootable disk in its
 selects - which needs the network the first time and nothing after that.
 
@@ -404,13 +427,19 @@ make test      # build and run the test suites
 ### Requirements
 
 - a C++11 compiler and a POSIX system for the CLI front end
+- **um80** and **ul80** (`pip install um80`) for `make test`, which assembles
+  `src/r8.asm` and `src/w8.asm`. Without them `disks/verify_disk_utils.sh`
+  skips its source gate and still exits 0, so the suite goes green having
+  checked less than it looks like
 - **qkz80**, the Z80 core from [cpmemu](https://github.com/avwohl/cpmemu),
-  normally a sibling checkout at `../cpmemu` with `make libqkz80.a` run in it
+  normally a sibling checkout at `../cpmemu` with `make -C ../cpmemu/src
+  libqkz80.a` run once
 - emscripten, for the WebAssembly build only
 
 qkz80 is the dependency a fresh clone is missing. `src/makefile` resolves it
 four ways, in order: `QKZ80_CFLAGS`/`QKZ80_LIBS` set by you (put them in
-`src/local.mk`), a `pkg-config qkz80` entry, the sibling checkout, and finally
+`src/local.mk`), a `pkg-config qkz80` entry, the sibling checkout at
+`../cpmemu/src` (which is where its makefile and `libqkz80.a` live), and finally
 `/usr/local` - a last resort that links whatever core happens to be installed
 there, and the build prints warnings saying so.
 

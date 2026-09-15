@@ -38,12 +38,16 @@ python3 "$CPM" verify "$COMBO"               # check the image is consistent
 mkdir -p out
 python3 "$CPM" extract "$COMBO" W8.COM R8.COM -o out    # names, not wildcards
 python3 "$CPM" extract --slice 3 "$COMBO" BBCBASIC.COM -o out
+                                             # writes out/w8.com - lowercased
 
 python3 "$CPM" add    "$WORK" myfile.com     # into slice 0, user 0
 python3 "$CPM" add    --slice 2 --user 1 "$WORK" myfile.com
 python3 "$CPM" add    --sys "$WORK" tool.com # SYS attribute: visible from any user area
-python3 "$CPM" delete "$WORK" OLDFILE.COM
+python3 "$CPM" delete "$WORK" OLDFILE.COM     # no --user; deletes by name
 ```
+
+`extract` writes the host file under the **lowercased** CP/M name, so `W8.COM`
+lands as `w8.com`. `add` and `extract` take `--user N`; `delete` does not.
 
 Write only to a `--work` copy. The cache is mode 0444 - see
 [Two directories](#two-directories-and-they-are-not-interchangeable) below.
@@ -53,11 +57,15 @@ Write only to a `--work` copy. The cache is mode 0444 - see
 ```bash
 python3 "$CPM" create mydisk.img            # 8 MB hd1k
 python3 "$CPM" create --combo mydisk.img    # 51 MB combo, six slices
-python3 "$CPM" create --sssd floppy.img     # 250 KB 8" SSSD
 ```
 
 `create` makes the image and its empty directory in one step; there is no
 separate blank-file-then-format sequence.
+
+`cpm_disk.py` also offers `create --sssd` for a 250 KB 8" floppy. Do not reach
+for it here: it fails its own post-create verify and writes no file, and the
+emulator would refuse the result anyway - `--diskN=` accepts only 8,388,608
+bytes, a 1 MB + N x 8 MB combo, or a multiple of 8,519,680.
 
 ### The one format it does not read: hd512
 
@@ -116,7 +124,7 @@ addressing at the BIOS level and does not care about the physical geometry.
 | Size (bytes) | Size (readable) | Format | Compatible? |
 |--------------|-----------------|--------|-------------|
 | 8,388,608 | 8.0 MB exactly | HDSK/hd1k | Yes |
-| 8,519,680 | 8.1 MB (~8.32 MB) | HDCPM/hd512 | Yes |
+| 8,519,680 | 8.125 MiB, called 8.32 MB here (8320 KiB) | HDCPM/hd512 | Yes |
 | 51,380,224 | 49 MB (1MB + 6×8MB) | RomWBW combo | Yes (native) |
 | 337,568 | 330 KB | 88-DISK floppy | No |
 | 76,720 | 75 KB | Mini-disk floppy | No |

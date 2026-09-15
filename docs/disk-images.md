@@ -34,7 +34,8 @@ python3 "$CPM" extract disk.img FILE1.COM FILE2.COM -o out
 ```
 
 Files are named one by one - there is no wildcard, and the output directory has
-to exist already. `list` is how you find out what is there.
+to exist already. `list` is how you find out what is there. The host file is
+written under the lowercased name, so `FILE.COM` lands as `file.com`.
 
 ### Listing and deleting
 
@@ -60,8 +61,11 @@ python3 "$CPM" add  --slice 3 combo.img file.com
 ```bash
 python3 "$CPM" create newdisk.img            # 8 MB hd1k
 python3 "$CPM" create --combo newdisk.img    # 51 MB combo, six slices
-python3 "$CPM" create --sssd floppy.img      # 250 KB 8" SSSD
 ```
+
+There is a `create --sssd` for a 250 KB 8" floppy, but it fails its own
+post-create verify and writes no file, and the emulator accepts no image that
+size in any case.
 
 `create` writes the image and its empty directory in one step - there is no
 separate blank-file-then-format sequence, and `--force` overwrites an existing
