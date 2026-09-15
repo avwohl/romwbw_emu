@@ -51,10 +51,14 @@ Makefile targets:
 
 - `make` or `make romwbw.js` - main build; produces `romwbw.js` and
   `romwbw.wasm`.
+- `make romwbw.html` - renders the page from `romwbw.html-template`, stamping
+  `<VERSION>-local`. `make serve` depends on it, so the page no longer has to
+  be rendered by hand.
 - `make romwbw-debug.js` - same sources built with `-g -gsource-map`
   (DWARF symbols plus source map) for Chrome DevTools debugging; pairs with
   `romwbw-debug.html` and the `debug_wasm.js` Puppeteer harness.
-- `make clean` - remove `romwbw.js` and `romwbw.wasm`, plus the debug build's
+- `make clean` - remove `romwbw.js`, `romwbw.wasm` and the generated
+  `romwbw.html`, plus the debug build's
   `.js`, `.wasm` and `.wasm.map`. No `.data` is removed because none is
   produced: `romwbw-bundled.js` was the only `--preload-file` target and it is
   gone (see below).

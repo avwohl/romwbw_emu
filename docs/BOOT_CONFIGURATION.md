@@ -1,8 +1,5 @@
 # Boot Configuration Guide
 
-**Date:** 2026-01-15
-**Status:** Complete - Full NVRAM implementation with persistence
-
 ## Overview
 
 The emulator supports RomWBW's boot configuration system via emulated RTC NVRAM. Boot settings can be configured through:

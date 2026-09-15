@@ -200,11 +200,12 @@ hbios.setNvramSaveCallback([](const uint8_t* data, int size) {
 
 ## NVRAM Implementation
 
-NVRAM provides 64 bytes of persistent storage for system configuration:
+NVRAM is five bytes (`NVRAM_SIZE` in `hbios_dispatch.h`), holding the switch
+block RomWBW's SYSCONF reads and writes:
 
 ```cpp
 // In HBIOSDispatch class
-uint8_t nvram[64];
+uint8_t nvram_switches[NVRAM_SIZE];   // NVRAM_SIZE == 5
 NvramCallback nvram_save_callback;
 
 // RTC functions access NVRAM
@@ -381,12 +382,19 @@ HBIOS calls are made via RST 08 which jumps to 0xFFF0:
 
 ```
 Address  Function
-0xFFF0   Main HBIOS entry
-0xFFF3   Interrupt vector
-0xFFF6   NMI vector
+0xFFF0   HBIOS API entry
+0xFFF3   Bank select (handled inside the proxy)
+0xFFF6   Bank copy (triggers the emulator through port 0xEC)
 ```
 
-The emulator traps execution at 0xFFF0 and dispatches to the appropriate handler based on the B register (function code).
+The entries at 0xFFF3 and 0xFFF6 are bank select and bank copy, not interrupt
+vectors (`src/emu_hbios.asm`, the `HBX_LOC` block).
+
+The emulator does not match on PC. `0FFF0h` runs `OUT (0EFh),A`, and the port
+write is the hook (`src/hbios_cpu.cc`, case `0xEF`); the dispatcher then reads
+the B register for the function code. A port trap works whatever the bank
+configuration is, and leaves the RST vectors as an ordinary `C3` jump that
+guest code can inspect.
 
 ## Thread Safety
 
@@ -411,7 +419,7 @@ Standard RomWBW ROMs (`*_std.rom`) contain real HBIOS code that attempts to acce
 
 When a standard ROM runs:
 1. It immediately tries to access hardware ports (e.g., port 0xC0 for RTC latch)
-2. The emulator returns 0x00 for unknown port reads
+2. An unknown port read is delegated to the front end (`handleUnknownPortIn`), whose default returns 0xFF
 3. HBIOS trapping is never enabled (no signal to port 0xEE)
 4. The Z80 HBIOS code runs and hangs waiting for hardware responses
 

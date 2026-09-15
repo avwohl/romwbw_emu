@@ -2,7 +2,7 @@
 
 This document describes the data structures and tables that HBIOS exports to the rest of the RomWBW system (ROM loader, CBIOS, applications).
 
-Source: `~/esrc/RomWBW/Source/HBIOS/hbios.inc`
+Source: upstream `Source/HBIOS/hbios.inc` (fetch it with `romwbw-get path @upstream`)
 
 ## Overview
 
@@ -142,7 +142,7 @@ SYSGET allows querying system information at runtime. Call with B=0xF8, C=subfun
 
 | Subfunction | Name | Returns |
 |-------------|------|---------|
-| 0xE0 | BOOTINFO | HL = boot volume, L = boot bank ID |
+| 0xE0 | BOOTINFO | D = boot unit, E = boot slice (this emulator sets DE; see `SYSGET_BOOTINFO` in `hbios_dispatch.cc`) |
 | 0xF0 | CPUINFO | CPU type, speed info |
 | 0xF1 | MEMINFO | D = ROM banks, E = RAM banks |
 | 0xF2 | BNKINFO | D = BIOS bank, E = user bank |
@@ -284,7 +284,7 @@ not in the table above; `src/emu_init.h` and `src/hbios_dispatch.cc` set it.
 
 ## Sources
 
-- Local: `~/esrc/RomWBW/Source/HBIOS/hbios.inc`
+- Local: upstream `Source/HBIOS/hbios.inc` (fetch it with `romwbw-get path @upstream`)
 - [RomWBW hbios.inc](https://github.com/wwarthen/RomWBW/blob/master/Source/HBIOS/hbios.inc)
 - [RomWBW API.txt](https://github.com/wwarthen/RomWBW/blob/master/Source/HBIOS/API.txt)
 - [RomWBW cbios.asm](https://github.com/wwarthen/RomWBW/blob/master/Source/CBIOS/cbios.asm)
