@@ -142,41 +142,24 @@ reference implementation in 1300 lines of standard-library Python.
 
 ### Adding Files to Disk Images
 
-Use cpmtools with this repository's `disks/diskdefs`, which carries `wbw_hd1k`
-and the per-slice `wbw_hd1k_0` through `wbw_hd1k_5`. Run cpmtools from `disks/`:
-cpmtools reads `./diskdefs` if there is one and the system copy otherwise, one
-or the other and never both, so the working directory is the whole of the setup.
-
-**Do not set `DISKDEFS`.** A path that does not exist is silently ignored, and
-no distribution's system copy can be assumed to have the slice definitions -
-Debian's and Ubuntu's cpmtools 2.23 has `wbw_hd1k` and no `wbw_hd1k_0` at all.
-[DISK_FORMATS.md](DISK_FORMATS.md) has the detail.
+Use `cpm_disk.py`, this family's CP/M image tool - one stdlib-only Python file
+owned by [cpmemu](https://github.com/avwohl/cpmemu) at `util/cpm_disk.py`. The
+format is auto-detected from the file size, so there is nothing to configure.
 
 ```bash
-cd disks
+CPM=~/src/cpmemu/util/cpm_disk.py
 
 # a plain 8 MB image
-cpmcp -T logical -f wbw_hd1k "$(../tools/romwbw-get path --work hd1k_cpm22)" file1.com file2.com 0:
+python3 "$CPM" add "$(tools/romwbw-get path --work hd1k_cpm22)" file1.com file2.com
 
-# a combo image: wbw_hd1k_0 is slice 0, past the 1 MB MBR prefix
-cpmcp -T logical -f wbw_hd1k_0 "$(../tools/romwbw-get path --work @disk0)" file1.com 0:
+# a combo image: --slice picks the slice, and 1-5 are as reachable as 0
+python3 "$CPM" add --slice 0 "$(tools/romwbw-get path --work @disk0)" file1.com
+python3 "$CPM" list --slice 3 "$(tools/romwbw-get path @disk0)"
 ```
 
-Do not drop the `-T logical`. cpmtools 2.23 cannot be configured without libdsk,
-and its default libdsk path double-counts `boottrk` on a diskdef that carries no
-`offset` - which `wbw_hd1k` is - so the bare form writes one boot area too far
-into the file, exits 0, and puts the file's data over a block that was already
-in use. `-T logical` bypasses the auto-probe and it lands where the geometry
-says. The cause and the measured byte offsets are in
-[DISK_FORMATS.md](DISK_FORMATS.md#always-pass--t-logical).
-
-The dd extract-patch-write-back this section used to prescribe is not needed
-for slice 0. `wbw_hd1k_0` accounts for the 1 MB prefix itself, and the case it
-was written for - a diskdefs file without the slice variants - is answered by
-running from `disks/` rather than by cutting the image apart. Slices 1 to 5 are
-the exception: they sit past libdsk's 8 MB addressing ceiling, `-T logical` does
-not lift it, and cutting the slice out is still the way in
-([DISK_FORMATS.md](DISK_FORMATS.md#reaching-slices-1-to-5)).
+Write only to a `--work` copy: the cached download is mode 0444 on purpose.
+[DISK_FORMATS.md](DISK_FORMATS.md) has the format reference and the rest of the
+subcommands.
 
 ## GitHub Release (avwohl/ioscpm) - history, superseded 2026-09-05
 

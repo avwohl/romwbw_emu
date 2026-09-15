@@ -33,14 +33,9 @@
 #        1 the source gate failed, or an image holds something else
 #
 # Requires um80 + ul80 (the MACRO-80 toolchain this project's .asm files are
-# written for - pip install um80).  cpmtools is needed only for the image half.
-# None are build dependencies of the emulator, so a machine without them skips.
-#
-# The diskdef is per image and getting it wrong does NOT fail loudly: cpmls with
-# the wrong one prints a garbage directory, which reads as "no such file".  That
-# is exactly how hd1k_infocom.img was once recorded as carrying no w8.com when
-# it carries both.  Hence the explicit size-to-diskdef mapping below rather than
-# one default.
+# written for - pip install um80) for the source half, and cpm_disk.py for the
+# image half.  Neither is a build dependency of the emulator, so a machine
+# without them skips.
 #
 # On the interlock, and why it is on bytes: nothing in w8.com's text
 # discriminates.  The armed 1408-byte build prints the same
