@@ -189,3 +189,8 @@ does not want it must keep working, so the new hook needs a default the way the
 optional ones already here do.
   requested by a user on a physical tablet against cpmdroid, where it sat in
 docs/bug1.txt until 2026-09-15.  cpmdroid cannot close it alone.
+  THE SAME REPORT ASKED ABOUT MIDI and cpmdroid/docs/midi.md is the research
+that came of it: RomWBW has no native MIDI in HBIOS, and MIDI on RC2014/Z80
+hardware is an external module.  Read it before treating MIDI as a second
+feature - it is a different question from rendering the SND channels, and only
+this one has a driver interface already sitting in handleSND.
