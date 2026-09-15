@@ -15,12 +15,15 @@ romwbw_disks version's generation, and a generation bump is what makes a client
 invalidate its cached images - every user re-downloads their disks.  that is not
 theoretical: HB_BNKCALL (e47c948, d4f4a2a, 2026-09-06) cost exactly that, a
 generation-2 republish of both 3.5.1 and 3.6.0.  budget it before the next
-emu_hbios.asm change.  the finished HB_BNKCALL work is CHANGELOG.md:586.
-  UPDATE 2026-09-07: the ROM comparison that would have caught the two copies
-diverging no longer runs.  check_source_drift.sh reads
-romwbw_emu/roms/emu_avw.rom, which v1.40 deleted, so its artifact half prints an
-info line and the script still exits 0; its comparison of the four .asm sources
-is untouched and still works, and is why those four sources stay in this tree.
+emu_hbios.asm change.  the finished HB_BNKCALL work is CHANGELOG.md's `### HB_BNKCALL performs a real
+bank call` section (grep it; CHANGELOG grows at the top, so a line number will
+not stay right).
+  UPDATE 2026-09-15: the comparison runs again, and is stronger than the one it
+replaced.  romwbw_disks fe08145 (2026-09-07) dropped the read of
+romwbw_emu/roms/emu_avw.rom - which v1.40 deleted - and now assembles BOTH
+trees' emu_hbios.asm and compares the 32 KB bank 0, plus builds this tree's
+src/{r8,w8}.asm and compares against build/utils/.  No ROM, no image, no
+network.  Its comparison of the four .asm sources is why those four stay here.
 what replaces the ROM half here is roms/build_emu_rom.sh, which assembles bank 0
 and compares the result against the sha256 the catalog publishes - a stronger
 question, because it is asked against what users download rather than against a
@@ -47,15 +50,15 @@ clean), as are the December 2025 romwbw_node.* and romwbw_test.* pairs that
 and both deploy targets now fail on absent emcc instead of shipping a stale one.
 what is left is a person at a browser: emcc, node and every browser are absent
 from this machine.
-  UPDATE 2026-09-07: that deb is still the only built page on this machine and
-it no longer answers for HEAD.  romwbw.html-template was rewritten for v1.40 -
-the hardcoded <option> lists are gone, and the ROM, disk and RomWBW selects are
-built at load time from catalog/manifest.json beside the page - so the packaged
-1.38 page and the template here are two different programs, and serving the deb
-now answers the three checks above for the OLD one only.  VERSION says 1.40
-where that deb says 1.38.  the deb's emu_avw.rom is still c7abc580 and still
-pre-e47c948; a v1.40 package carries no ROM at all, so the next deb cannot be
-served this way until `romwbw-get mirror` has been run beside its page.
+  UPDATE 2026-09-15: the packaged page answers for HEAD again.  v1.41
+(2026-09-10) and v1.42 (2026-09-13) both ran release.yml's emcc build, and the
+v1.42 amd64 deb's usr/share/romwbw_emu/web/romwbw.html is byte-identical to
+`sed s/@VERSION@/1.42/ web/romwbw.html-template`, with a freshly built
+romwbw.wasm and romwbw.js beside it and vendor/ staged.  Nothing under src/ or
+web/ has changed since the v1.42 tag, so that wasm is HEAD's core.  It carries
+no ROM, as designed, so `romwbw-get mirror` has to be run beside the page
+before it will boot anything.  Download the v1.42 deb and serve that, rather
+than the stale v1.38 one this entry used to name.
 
 - [BROWSER] the wasm's video, DSKY, sound and printer callbacks are wired to
 names nothing implements.  emu_io_wasm.cc emits Module.onVideo*, Module.onDsky*
@@ -66,7 +69,7 @@ counterpart, and onVdaWriteChar takes an attribute byte the emitter never
 sends.  about 200 lines on each side that have never executed - wire it
 properly behind a browser, or delete one side.
 
-- [BROWSER] nobody has opened the v1.40 page in a browser, and four things in it
+- [BROWSER] nobody has opened the page in a browser, and four things in it
 are new.  the ROM, disk and RomWBW-release selects are built from
 catalog/manifest.json at load time rather than from hardcoded <option> lists;
 each download is checked against the manifest's size and sha256 through
@@ -74,9 +77,11 @@ crypto.subtle, which needs a secure context and says so rather than claiming a
 pass it did not perform; a directory with no mirror in it gets an explanatory
 status line and working file pickers instead of a 404; and the RomWBW select
 disables a release this build cannot boot.  all four are covered by
-tests/web_manifest.js under node, which `make -C src test` runs, and none has
-been DRAWN: no browser is installed here and neither is emcc, so the wasm beside
-the page has not been rebuilt since the rewrite either.  what this needs is one
+tests/web_manifest.js under node - though `make -C src test` SKIPs it on this
+machine, because node is not on PATH - and none has been DRAWN.  Chrome and
+Safari are both installed here; what is missing is emcc, so the page cannot be
+built locally.  The wasm HAS been rebuilt since the rewrite: release.yml builds
+it with emcc at every release, and v1.41 and v1.42 both shipped one.  what this needs is one
 person on a machine with emcc and the checklist in MANUAL_CHECKS.md.  `make -C
 web serve` mirrors emu_avw and hd1k_combo into web/ before starting the server,
 so a local serve has a bootable ROM and disk for the first time - that half is
@@ -117,124 +122,10 @@ rebuild.  the moment somebody re-mirrors without rebuilding - which is the
 intended workflow, not an accident - emu_supported is a fact about a binary that
 is no longer the one in the page.  do it the next time emcc is on the machine.
 
-- [RELEASE] the pin those three ports carried is GONE, and what is left is
-shipping.  Step 4 published the refreshed images as ioscpm v1.4.12 (2026-09-01,
-29 assets, and NOT a prerelease - it is the latest release; v1.4.5 is the
-prerelease): hd1k_combo.img refreshed to sha256 89b8ae1a..., the
-other 19 re-uploaded byte-identical, and disks.xml's version attribute
-deliberately left at 13 so the invalidation wipe never fired.  v1.4.5 is
-untouched - still be19984e..., still 30 assets.
-then on 2026-09-05 all three ports moved off that catalog entirely.  releaseTag
-in ioscpm's EmulatorViewModel.swift, RELEASE_TAG in cpmdroid's
-DiskCatalogRepository.kt and in z80cpmw's DiskCatalog.cpp are DELETED, not
-repointed: each now fetches romwbw_disks' index-v0.json and reads base_url out
-of the catalog document.  so "which pin does this tree carry" has no answer in
-any of them any more, and any check that greps for a vN.N.N literal reports a
-correct tree as broken.
-what has NOT changed is the shipping half, and it is still the whole of what is
-left, though not in the shape this paragraph used to claim.  the 2026-09-05
-migration has shipped in none of the three - but "has not shipped the migration"
-is not "still on v1.4.5", and conflating the two was the error here.  ioscpm
-shipped an INTERMEDIATE repin: the App Store has served 1.5.1 since 2026-09-05,
-which is build 61 (af0b9b2, submitted at e48fb80), and af0b9b2 pins releaseTag
-"v1.4.12".  that pin is the FIXED R8, measured rather than inferred -
-v1.4.12/hd1k_combo.img is 89b8ae1a... and carries R8's "Note: characters CP/M
-cannot name became -" where v1.4.5's be19984e... does not.  so a fresh ioscpm
-install already gets the fixed R8, and it is TWO of three that do not: cpmdroid
-1.25 / versionCode 27 (35873d0, RELEASE_TAG "v1.4.5") and z80cpmw 1.0.23
-(dbd53b1, L"v1.4.5") still fetch the erasing R8.  derive that from the commit
-each store's build was cut from - not from a release tag, which none of these
-three shipped builds has.  nothing here needs a release for any of it, though
-no longer for the reason this used to give.  it said "this repository publishes
-no disk image and fetches no catalog"; since v1.40 it fetches one -
-tools/romwbw-get reads romwbw_disks' index-v0.json, the same document all three
-ports now read.  the
-conclusion survives the correction, and for a better reason than the old one:
-the catalog is read at RUN time, so a disk published there reaches an installed
-romwbw_emu with no tag cut here at all.  what a tag here is still needed for is
-a new RomWBW RELEASE, because ROMWBW_SUPPORTED_RELEASES is compile-time - and
-that is not what is stuck.  so no romwbw_emu tag stands between the fix and a
-user.
-what is behind that wall grew on 2026-09-06: e47c948 and d4f4a2a made HB_BNKCALL
-work, so every ROM's bytes moved.  romwbw_disks republished all four as
-generation 2 - emu_avw 3.5.1 is 4b11402a where it was c7abc580, emu_rcz80
-03e64691 where it was ee3adea5 - and all three ports refreshed the ROM they
-bundle to match: ioscpm 5834d92, cpmdroid 19b3563, z80cpmw cd1fb2b, which
-carries two.  every one of those is 2026-09-06, later than every shipped build -
-the App Store released 1.5.1 on 2026-09-05, cpmdroid 35873d0 and z80cpmw dbd53b1
-are 2026-09-03 - so what a user runs is the old bank call on all three, ioscpm
-included, and on cpmdroid and z80cpmw the old R8 with it.  this repository's own
-shipped artifact says the same: the v1.38 deb's emu_avw.rom is c7abc580 in both
-roms/ and web/, unpacked and hashed rather than assumed, which is the ROM from
-before e47c948.
-
-- [ANY] a green pin does not mean a user has the fixed R8, and the gate implies
-it does.  All three ports decide "already downloaded" by filename alone -
-fileExists in ioscpm's refreshAvailableDisks, the same in cpmdroid's
-DiskDownloadManager, and z80cpmw hashes nothing on download at all - and the
-catalog's version attribute is 13 at v1.4.5 and at v1.4.12 alike, so nothing
-re-fetches an image already on disk.  A port can be pinned correctly, shipped
-correctly, and still leave every existing user on the old combo.  Whatever the
-gate grows into should say which of those two questions it is answering.
-what was measured while doing step 4, and is worth not re-deriving: only
-hd1k_combo.img carries r8.com/w8.com at all - the other 19 published images
-contain neither, so the whole job was one image and a one-line catalog diff.
-the old combo's w8.com was 1280 bytes, rebuilding byte for byte from w8.asm at
-3101b6d with `cp 1Ah` still in the copy loop and no `06 e9 cf` probe; its r8.com
-was 1079 bytes, older than any build in this repo's history.
-what would make this catchable rather than periodic: two different disks.xml
-files are in play and only one of them has checksums.  this tree's
-disks/disks.xml is `<disks version="6">`, 21 entries, no per-disk version or
-checksum, so nothing here can look at a release asset and tell whether its
-w8.com is current.  the catalog the three ports actually fetch is ioscpm's,
-`<disks version="13">`, 20 entries, and it DOES carry a per-disk sha256 - and it
-is that file's version attribute whose bump fires the disk-wipe hazard.
-
-  UPDATE 2026-09-05: v0 changes the shape of this but does not close it.  Asset
-  names now carry the release - hd1k_combo-v0-3.5.1.img - and every v0 catalog
-  entry has a sha256, so a client CAN tell a stale image from a current one
-  without a version attribute.  Whether it does is per client and still
-  unsettled: ioscpm keeps a ledger and will refresh unattended, z80cpmw computes
-  the verdict and calls nothing that acts on it, cpmdroid still compares
-  filenames.  And the migration renames rather than re-downloads, so a migrated
-  device keeps the bytes it had under the new name - which for hd1k_combo means
-  a hash that disagrees with the catalog naming it.  romwbw_disks DECIDED that
-  one: the pre-v0 combo is equivalent and is deliberately NOT refreshed - its
-  2,342 differing bytes are CP/M slack between the same 94 identical files, and
-  docs/FINDINGS.md section 10 there has the measurements.  ioscpm and z80cpmw
-  implement the exemption keyed on provenance, so a downloaded image can never
-  be blessed by it; cpmdroid needed no change.
-
-  UPDATE 2026-09-05: disks/disks.xml is DELETED.  The observation above stands as
-  the reason it was worthless - version="6", 21 entries, no per-disk version or
-  checksum - and to it: 19 of the 21 filenames it listed name images this
-  repository does not track, and one of the two it does track (hd1k_infocom.img)
-  it never listed.  It was an inventory of nothing.  Nothing in the tree read it:
-  verify_romwbw_pin.sh finds only *.rom/*.bin/*.img, both disk scripts hardcode
-  the two-image list, and release.yml never stages disks/.  What the ports fetch
-  is a different file entirely - ioscpm's published catalog - which is what
-  tools/check-shipped-disks.sh read, over HTTP, so it was untouched by this.
-  (That script was deleted on 2026-09-13; nothing reads it now.)
-  (v1.40 moved two of those three readers without changing the conclusion:
-  rebuild_disk_utils.sh is deleted, and verify_disk_utils.sh takes a directory to
-  scan instead of a hardcoded pair.  neither reads a .xml, and neither ever did.)
-
-- [ANY] CROSS-REPO, DONE IN THE WORKING TREE, NOT COMMITTED: romwbw_disks'
-tools/check_source_drift.sh lost both of its artifact comparisons to the v1.40
-migration - each read a file this repository no longer tracks, printed an info
-line and exited 0 - and both are now replaced by something stronger.
-  what it does now: assemble BOTH trees' emu_hbios.asm for 3.5.1 and compare the
-32 KB bank 0 (generating romwbw_ver.inc for whichever copy includes it), and
-build romwbw_emu's src/{r8,w8}.asm with um80 and compare against that repo's own
-build/utils/{r8,w8}.com.  no ROM, no disk image, no cpmtools, no network.  it
-isolates bank 0 from the 480 KB of upstream banks that were identical by
-construction, which the old whole-ROM compare could not.  measured 2026-09-07:
-"emu_hbios.asm assembles to identical bank 0 in both trees (3.5.1)" and both
-.com files byte-identical, PASS.
-  .github/workflows/verify.yml there now sparse-checks out `src` alone in both
-jobs, where it took `src roms` and `src roms disks`.
-  WHAT IS LEFT: both edits are uncommitted in /Users/wohl/src/romwbw_disks.
-They need reviewing and committing there.
+- [RELEASE] a new RomWBW release needs a tag here, not just a catalog entry:
+the releases a client will offer are filtered by ROMWBW_SUPPORTED_RELEASES,
+which is compiled into this core, so a release nobody has added here is one no
+client can boot however the catalog is cut.
 
 - [ANY] docs/ROM_ATTESTATION.md is stale in three places and none of them is
 safe to fix unasked.  it lives here rather than in DECISIONS.md because the work
@@ -257,46 +148,17 @@ published bytes and says so, which is what makes the GPL and attestation claim
 checkable rather than asserted.  that note is additive and stops at the
 signature line; everything above it is untouched.
 
-- [ANY] DONE 2026-09-07: archive/cpm22/ is down to one tracked binary.  Six of
-the seven went, each because it was rebuildable from a source beside it or a
-copy of something published elsewhere; all six are in git history.
-Binary/SBC_std.rom was byte-identical to the stock SBC_std.rom in the upstream
-RomWBW v3.5.1 Package.zip - verified with cmp against what
-`tools/romwbw-get path @upstream` fetches - so it was a RomWBW artifact after
-all, which is what this migration removes.  Binary/HD0.img was zero bytes.
-cpm_bios was an x86-64 ELF built from cpm_bios.cc beside it.  cpm22.sys,
-cpm22asm/cpm22.sys and cpm22asm/cpm22.bin are what cpm22asm/build_cpm.sh
-assembles from cpm22asm/cpm22.asm, two lines of um80/ul80, still present.
-  com/mbasic.com stays and is now the whole of CI's archive/ exception: it is
-third-party CP/M software with no source in this tree and no upstream this
-project controls, so deleting it would lose it outright.
-archive/cpm22/README.md carries the table, and test.yml's guard comment names
-the one file rather than five.
-
-- [MAC/LINUX] the last integer-narrowing warnings in a clean build are not this
-repository's to fix.  qkz80_MK_INT16 in cpmemu's qkz80_types.h builds an int
-and hands it to a qkz80_uint16 parameter, so qkz80_reg_pair.h is reported twice
-by every object file that calls set_low()/set_high() - 8 warnings from
-`make -C src all`, 12 with the test programs, none of them actionable from
-here.  the fix is a qkz80_uint16() around that macro body, in cpmemu; CI clones
-cpmemu's default branch, so this goes quiet on the first build after that lands,
-with nothing to bump here.  until then a clean build is not silent, which is the
-state that teaches people to stop reading warnings.  measured again 2026-09-01
-against cpmemu v4.7.2 (91151f1), which is what v1.37 shipped against: same 8 and
-12, all of them qkz80_reg_pair.h:32 and :35.  nothing about v1.37 touched this -
-`git diff 9a94e8d 91151f1 -- 'src/qkz80*.h' 'src/qkz80*.cc'` is empty, so the
-macro is byte for byte what it was.  measured again 2026-09-06 with clang++
-against cpmemu ed778f7, which is v4.8.0 - a cpmemu release has landed since and
-did not touch it: same 8 from `make -C src all`, both lines again, and
-`git diff 91151f1 ed778f7 -- 'src/qkz80*.h' 'src/qkz80*.cc'` is empty.
-z80cpmw's C4267 suppression on hbios_dispatch.cc is removable either way: 8eeb227 cast all six sites here, so
-the file is clean at
-/W3 from v1.37 on.  it has NOT been removed there - checked 2026-09-06 at
-z80cpmw cd1fb2b, still present at z80cpmw/z80cpmw.vcxproj:297 (it was :260 at
-148be4f; the line moved, the suppression did not).  grep for the
-MSBuild spelling `<DisableSpecificWarnings>4267`, not for `/wd4267`; searching
-for the compiler flag reports it gone when it is not, which is how this entry
-nearly got deleted as stale.
+- [ANY] emu_host_path_cap_name()'s head-keeping branch backs a cut off
+continuation bytes with no floor: a component longer than EMU_HOST_NAME_MAX
+whose first 255 bytes are continuation bytes backs all the way to 0, and the
+function answers "" - where emu_io.h promises in as many words that it cannot
+("a result of "", ".", ".." or a bare drive letter is replaced by `fallback`").
+src/emu_io_common.cc, the `if (start >= base.size())` branch: the tail branch
+calls back_off_utf8 and the head branch does not.  Confirmed by cpmdroid on
+2026-09-13 by compiling and running this repository's own source with
+g++ -std=c++17, not reasoned about: the head branch returns 0 bytes where the
+tail branch returns 255.  Refiled from cpmdroid 2026-09-15 - the defect is
+here; cpmdroid keeps the conditional for its own copy in android_host_leaf().
 
 - [WINDOWS] nothing on Windows is RUN, only compiled.  the msvc job builds the
 three core .cc files z80cpmw pulls straight out of src/ and stops there: there
