@@ -1,4 +1,4 @@
-# CPMEMU Project Rules
+# romwbw_emu Project Rules
 
 ## No ROM and no disk image is tracked here
 
@@ -54,8 +54,10 @@ When working on RomWBW integration:
    into the emulator". Both said the opposite of what the tree does, and had
    for as long as they had been written down.
 
-2. **THE PRIVATE PORT INTERFACE, AND DO NOT ADD TO IT** - seven ports and one
-   RST vector, all in `src/hbios_cpu.cc`'s two switches:
+2. **THE PRIVATE PORT INTERFACE, AND DO NOT ADD TO IT** - seven rows below - nine
+   distinct port addresses, two of the rows pairing two - in
+   `src/hbios_cpu.cc`'s two switches, plus one RST vector in
+   `src/emu_hbios.asm`:
 
    | Port | |
    |---|---|
@@ -207,8 +209,17 @@ check red in another repository.
 
 - `qkz80` - Z80/8080 CPU emulator
 - `banked_mem` / `romwbw_mem.h` - Bank-switched memory (512KB ROM + 512KB RAM)
-- `romwbw_emu.cc` - Main emulator with HBIOS service handlers
-- HBIOS calls are handled by intercepting execution at specific addresses and reading/writing CPU registers directly from C++
+- `romwbw_emu.cc` - CLI main: argument parsing, NVRAM, the run loop and the
+  `sim>` console. **No HBIOS service handlers live here** - they are in
+  `hbios_dispatch.cc`, as rule 3 says.
+- `hbios_dispatch.cc` - the HBIOS service handlers
+- `hbios_cpu.cc` - the port I/O that reaches them
+- HBIOS calls are handled by **the port trap in rule 2**, not by matching on PC:
+  `RST 08` -> `JP 0FFF0h` -> `OUT (0EFh),A`, and the handler reads and writes
+  the CPU registers directly from C++. There is no address-based interception
+  anywhere in `src/`. `emu_hbios.asm` gives the reason: a port trap works
+  whatever the bank configuration is, where "PC-based trapping ... can break
+  during bank switches".
 
 ## Disk Formats (IMPORTANT)
 
@@ -245,7 +256,8 @@ There is no copy in this tree and there should not be one. Find it the way
 that; copy its probe rather than hardcoding a path.
 
 ```bash
-CPM=~/src/cpmemu/util/cpm_disk.py
+CPM=~/src/cpmemu/util/cpm_disk.py                # a shortcut, not the rule: the
+                                                 # probe above is what a script uses
 COMBO=$(tools/romwbw-get path @disk0)            # 49 MB combo, mode 0444
 
 python3 "$CPM" list "$COMBO"                     # slice 0, auto-detected
