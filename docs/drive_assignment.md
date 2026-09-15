@@ -24,7 +24,7 @@ RomWBW has three layers involved in drive assignment:
 
 ### Key Insight: CBIOS Builds Drive Map
 
-The CBIOS does NOT use a pre-populated drive map from HBIOS. Instead:
+CBIOS builds the map it uses rather than reading the pre-populated one:
 1. It reads CB_BOOTVOL from HCB to know which slice was booted
 2. It enumerates all disk units via HBIOS calls
 3. It builds drive map on heap at runtime (DRVMAPADR)
@@ -71,25 +71,37 @@ sets via SYSSET_BOOTINFO before loading the OS.
 These are implemented in `hbios_dispatch.cc` and read from internal
 C++ structures (`md_disks[]` for memory disks, `disks[]` for hard disks).
 
-### What the Emulator Does NOT Do
+### What the Emulator Pre-populates
 
-- Pre-populate disk unit table at 0x160 - no real HBIOS has this
-- Pre-populate drive map at 0x120 - CBIOS ignores it, builds its own
+Both of these, on every run, before the guest starts:
 
-CBIOS builds all tables dynamically using HBIOS API calls at boot time.
+- The disk unit table at `0x160` (`DISKUT_BASE`), written by
+  `populateDiskUnitTable()` in `hbios_dispatch.cc` - sixteen four-byte entries
+  into ROM and into RAM bank 0x80.
+- The drive map at `0x120` (`DRVMAP_BASE`), written by
+  `emu_populate_drive_map()` in `emu_init.cc`.
+
+CBIOS then builds its own map at cold boot out of HBIOS calls, which is the map
+a running guest uses - so the pre-populated tables are what a guest sees before
+`DRV_INIT` runs, not a substitute for it. `--debug` prints the `[DISKUT]` lines
+as they are written.
 
 ### D Command
 
-The 'D' command in the boot loader calls PRTSUM (at ROM vector $0406),
-which uses the same HBIOS API calls above. Since our emu_hbios.bin
-doesn't include PRTSUM, the D command doesn't work. To use D, boot
-with `--romldr` option which preserves the full RomWBW boot menu.
+`D` at the boot menu works, on both releases, with no extra flags. It calls
+PRTSUM at ROM vector `$0406`, and `emu_hbios.asm` routes that bank call to the
+emulator deliberately (the `cp 006h` test), where `HBIOSDispatch::handlePRTSUM`
+prints the device summary from the same C++ structures. Measured on 3.6.0 it
+lists `Disk 0 MD0:`, `Disk 1 MD1:` and one line per attached image.
 
 ## ASSIGN Command
 
 Users can reassign drive letters at runtime using the `ASSIGN` command:
 - `ASSIGN` - show current assignments
-- `ASSIGN D:=HDSK0:2` - assign specific drive
+- `ASSIGN D:=HDSK0:2` - point a letter at a unit and slice. It refuses if that
+  filesystem already has a letter (`Multiple drive letters reference one
+  filesystem, aborting!`), which with one hard disk it usually does, since the
+  automatic map already spreads eight slices over `C:`..`J:`
 - Assignments take effect immediately without reboot
 
 ## Options for Downstream Clients

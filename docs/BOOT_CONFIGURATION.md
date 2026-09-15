@@ -19,16 +19,16 @@ Settings persist across sessions in `$XDG_CONFIG_HOME/romwbw_emu/nvram` (default
 
 ```bash
 # Auto-boot CP/M from ROM
-./romwbw_emu --romwbw="$(romwbw-get path @rom)" --boot=C
+src/romwbw_emu --romwbw="$(romwbw-get path @rom)" --boot=C
 
 # Auto-boot from the first hard disk (unit 2), slice 0
-./romwbw_emu --romwbw="$(romwbw-get path @rom)" --disk0=disk.img --boot=2
+src/romwbw_emu --romwbw="$(romwbw-get path @rom)" --disk0="$(romwbw-get path --work @disk0)" --boot=2
 
 # Auto-boot from the first hard disk (unit 2), slice 3
-./romwbw_emu --romwbw="$(romwbw-get path @rom)" --disk0=disk.img --boot=2.3
+src/romwbw_emu --romwbw="$(romwbw-get path @rom)" --disk0="$(romwbw-get path --work @disk0)" --boot=2.3
 
 # Show boot menu (no auto-boot)
-./romwbw_emu --romwbw="$(romwbw-get path @rom)" --boot=H
+src/romwbw_emu --romwbw="$(romwbw-get path @rom)" --boot=H
 ```
 
 This repository ships no ROM. `romwbw-get path @rom` downloads the default one
@@ -58,13 +58,17 @@ Every one of these is a line, terminated by Enter.
 | Key | What it does |
 |-----|--------------|
 | `D` | Device inventory - list the disk units |
-| `S` | Slice inventory |
-| `O` | Hardware monitor |
 | `R` | Reboot |
 | `W` | SYSCONF (below) |
 | `I <u> [<c>]` | Set the console interface, and optionally the baud rate |
 | `V [<n>]` | HBIOS diagnostic verbosity |
 | `L` | **3.5.1 only** - list the ROM applications. 3.6.0 answers `*** Invalid command` and folds them into `H` |
+| `S` | **3.6.0 only** - slice inventory. 3.5.1 answers `*** Invalid command` |
+| `O` | **3.6.0 only**, and it does nothing: it prints `*** Not Implemented ***` and returns to the boot loader. 3.5.1 answers `*** Invalid command` |
+
+Measured on both cached ROMs. The two menus differ more than the table
+suggests: 3.5.1's `H` lists seven commands and no ROM-application letters,
+while 3.6.0's lists the ten applications inline.
 
 The ROM applications are `M` Monitor, `C` CP/M 2.2, `Z` Z-System, `B` BASIC,
 `T` Tasty BASIC, `F` Forth, `P` Play a Game, `N` Network Boot, `X` XModem Flash
@@ -297,7 +301,7 @@ thing and is still saved.
 ### Getting Back to the Menu
 
 ```bash
-./romwbw_emu --romwbw="$(romwbw-get path @rom)" --boot=none
+src/romwbw_emu --romwbw="$(romwbw-get path @rom)" --boot=none
 ```
 
 `--boot=none` (or `off`) removes the persisted setting and comes up at the boot

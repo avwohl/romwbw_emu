@@ -2,7 +2,7 @@
 
 ## Summary
 
-I, the developer of this application, hereby affirm that I have the appropriate rights and licenses to use the ROM files included with this application and the ROM files it downloads, and I authorize Apple to use these ROMs for testing purposes during App Store review.
+I, the developer of this application, hereby affirm that I have the appropriate rights and licenses to use the ROM files this application downloads, and I authorize Apple to use these ROMs for testing purposes during App Store review. **No ROM is included in the application bundle**; every ROM is downloaded at run time from the repository named below and verified against a published SHA-256.
 
 ## ROM files
 
@@ -98,7 +98,7 @@ asserts the two trees' copies have not diverged.
 
 ## Authorization for Apple
 
-I hereby grant Apple Inc. permission to use the ROM file included with this application (`emu_avw.rom`), and any ROM the application downloads from https://github.com/avwohl/romwbw_disks/releases/, for the purpose of testing and reviewing this application for the App Store.
+I hereby grant Apple Inc. permission to use any ROM this application downloads from https://github.com/avwohl/romwbw_disks/releases/ - today `emu_avw-v0-3.5.1.rom` and `emu_avw-v0-3.6.0.rom`, listed above with their sizes and hashes - for the purpose of testing and reviewing this application for the App Store.
 
 ## Contact
 

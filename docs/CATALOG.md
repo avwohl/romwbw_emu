@@ -162,8 +162,10 @@ serving the document will do. What it serves has to satisfy the client:
   non-empty `romwbw_versions[]`;
 - each entry: `romwbw_version`, an **absolute** `catalog_url`, and
   `catalog_sha256` / `catalog_size` / `generation`;
-- the catalog it names: `"schema": "romwbw-disks-catalog"`, a `base_url`, and
-  `roms[]` / `disks[]` entries carrying `filename`, `size` and `sha256`;
+- the catalog it names: `"schema": "romwbw-disks-catalog"`, `"interface": "v0"`
+  here too, a `base_url`, and `roms[]` / `disks[]` entries carrying `filename`,
+  `size` and `sha256`. A catalog without the `interface` key is refused before
+  any asset is reached: `catalog interface is None, expected 'v0'`;
 - the assets themselves, at `base_url + filename`.
 
 Every hash is checked, and the catalog document is verified against the index's

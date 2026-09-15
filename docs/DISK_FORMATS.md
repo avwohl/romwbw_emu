@@ -56,7 +56,7 @@ Write only to a `--work` copy. The cache is mode 0444 - see
 
 ```bash
 python3 "$CPM" create mydisk.img            # 8 MB hd1k
-python3 "$CPM" create --combo mydisk.img    # 51 MB combo, six slices
+python3 "$CPM" create --combo mydisk.img    # 49 MB combo, six slices
 ```
 
 `create` makes the image and its empty directory in one step; there is no
@@ -129,7 +129,7 @@ addressing at the BIOS level and does not care about the physical geometry.
 | 337,568 | 330 KB | 88-DISK floppy | No |
 | 76,720 | 75 KB | Mini-disk floppy | No |
 
-The 51 MB combo format is RomWBW-native, not a SIMH format: a 1 MB MBR prefix
+The 49 MB combo format is RomWBW-native, not a SIMH format: a 1 MB MBR prefix
 followed by six 8 MB slices, each with the same sector layout as SIMH HDSK.
 
 ### Obtaining SIMH Disk Images

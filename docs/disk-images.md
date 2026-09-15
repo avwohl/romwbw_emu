@@ -60,7 +60,7 @@ python3 "$CPM" add  --slice 3 combo.img file.com
 
 ```bash
 python3 "$CPM" create newdisk.img            # 8 MB hd1k
-python3 "$CPM" create --combo newdisk.img    # 51 MB combo, six slices
+python3 "$CPM" create --combo newdisk.img    # 49 MB combo, six slices
 ```
 
 There is a `create --sssd` for a 250 KB 8" floppy, but it fails its own

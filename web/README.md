@@ -41,8 +41,11 @@ emulator as a whole, start with [../README.md](../README.md).
 
 ## Building
 
-Prerequisites: `emcc` (Emscripten), GNU make, and the sibling cpmemu
-checkout at `../../cpmemu` described above.
+Prerequisites: Emscripten, GNU make, and the sibling cpmemu
+checkout at `../../cpmemu` described above. The makefile links with **`em++`,
+not `emcc`**: every source here is C++, and emcc no longer implies the C++
+driver at link time, which leaves `operator new` and the rest of libc++
+undefined.
 
 Makefile targets:
 
@@ -103,8 +106,11 @@ These are the `EXPORTED_FUNCTIONS` from the makefile. Most are defined in
 
 - `_main` - Emscripten entry point; initializes the I/O layer and registers
   the main loop.
-- `_romwbw_key_input(ch)` - queue one input byte (LF is converted to CR)
-  and clear the waiting-for-input state.
+- `_romwbw_key_input(ch)` - queue one input byte and clear the
+  waiting-for-input state. **No LF-to-CR rewrite happens here**, deliberately:
+  xterm.js maps Enter to CR and normalises pasted text before `term.onData`
+  sees it, so the only 0x0A that arrives is a deliberate Ctrl+J, which belongs
+  to the guest.
 - `_romwbw_set_boot_string(str)` - set the NVRAM autoboot string ("2" for
   disk unit 2, "2.3" for unit 2 slice 3, "C" for a ROM app; empty clears
   autoboot so the boot menu shows).
@@ -152,6 +158,10 @@ invokes them via `EM_JS` shims in `../src/emu_io_wasm.cc`:
 - `Module.onLog(msg)` - debug log text (the template defines this before
   `romwbw.js` loads so early output is captured/suppressed).
 - `Module.onError(msg)`, `Module.onPrinterOutput(ch)` - optional.
+- `Module.onVideoClear()`, `Module.onVideoSetCursor(row, col)` and the other
+  VDA callbacks are emitted by the engine but **defined by nothing in
+  `romwbw.html-template`**, so VDA output reaches no handler in the shipped
+  page. A page that wants it has to supply them.
 - `Module.onHostFileRequestRead(suggestedName)` - R8 asked to read a host
   file; the page opens a file picker and answers with
   `_emu_host_file_load` or `_emu_host_file_cancel`.

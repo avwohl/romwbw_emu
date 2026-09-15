@@ -107,7 +107,11 @@ The HBIOS proxy lives in common RAM and provides the interface for calling HBIOS
 6. On return, proxy restores caller's bank
 7. Return to caller with results
 
-**For our emulator:** We intercept at 0xFFF0 and handle HBIOS functions directly in C++, so we don't need the bank switching logic.
+**For our emulator:** HBIOS functions are handled in C++, but this emulator does not match on PC. The guest reaches HBIOS by
+`RST 08` -> `JP 0FFF0h` -> `OUT (0EFh),A`, and the hook is that port write
+(`hbios_cpu.cc`, case `0xEF`). `emu_hbios.asm` records why: a port trap works
+whatever the bank configuration is, and it leaves the RST vectors as an ordinary
+`C3` jump that guest code can inspect. Bank handling is not skipped either: ports 0x78/0x7C select banks and port 0xEC does the inter-bank copy.
 
 ## HBIOS Function Reference
 
@@ -455,11 +459,16 @@ The emulator should:
 
 ### ROM Disk Implementation
 
-ROM disk (unit 0, MD0) reads from ROM banks starting at BID_ROMD0:
+The units are the other way round from what the bank names suggest: **MD0 is
+the RAM disk (unit 0) and MD1 is the ROM disk (unit 1)**, which is what the
+boot menu's `D` command prints - `Disk 0 MD0: RAM Disk`, `Disk 1 MD1: ROM
+Disk`.
+
+The ROM disk (MD1) reads from ROM banks starting at BID_ROMD0:
 - Each 32K bank = 64 sectors (512 bytes each)
 - LBA 0-63 = Bank 0x04, LBA 64-127 = Bank 0x05, etc.
 
-RAM disk (unit 1, MD1) reads from RAM banks starting at BID_RAMD0 (0x81):
+The RAM disk (MD0) reads from RAM banks starting at BID_RAMD0 (0x81):
 - Same layout as ROM disk
 
 ### Typical Boot Sequence

@@ -38,7 +38,7 @@ The HCB is a static data block that the CBIOS copies to its own memory during in
 | 0x12 | HCB_CONDEV | 1 | Active console device/unit (0xFF until after init) |
 | 0x13 | HCB_DIAGLVL | 1 | Diagnostic output level |
 | 0x14 | HCB_BOOTMODE | 1 | Boot mode (ROM/APP/IMG) |
-| 0x20 | HCB_HEAP | 2 | Heap start address |
+| 0x20 | HCB_HEAP | 2 | Heap start address in stock RomWBW. **This emulator overlays its drive map here** - `HCB_DRVMAP = 0x20`, so `DRVMAP_BASE = 0x120` (`src/emu_init.h`) |
 | 0x22 | HCB_HEAPTOP | 2 | Heap top address |
 | 0x30 | CB_SWITCHES | 1 | NVR status: 0=none, 1=exists but not configured |
 | 0x31 | CB_SW_AB_OPT | 2 | Auto boot options (used by ROMLDR) |
@@ -80,6 +80,7 @@ The HCB is a static data block that the CBIOS copies to its own memory during in
 The proxy block is installed in the upper 32 bytes of memory and provides:
 - State variables for bank switching (data area: 0xFFE0-0xFFEF)
 - Fixed entry points for HBIOS calls (jump table: 0xFFF0-0xFFFF)
+- This emulator also overlays a disk unit table at `HCB_DISKUT = 0x60`, i.e. `DISKUT_BASE = 0x160`, sixteen four-byte entries written before the guest starts
 
 ### HBX Data Area (HBX_XFCDAT = 0xFFE0)
 
@@ -195,7 +196,11 @@ For the emulator, these data exports need to be provided:
 
 ### Function Queries (trap handlers)
 
-When PC reaches 0xFFF0 (HB_INVOKE), handle based on B register:
+When the guest triggers a dispatch, handle based on the B register (this emulator does not match on PC. The guest reaches HBIOS by
+`RST 08` -> `JP 0FFF0h` -> `OUT (0EFh),A`, and the hook is that port write
+(`hbios_cpu.cc`, case `0xEF`). `emu_hbios.asm` records why: a port trap works
+whatever the bank configuration is, and it leaves the RST vectors as an ordinary
+`C3` jump that guest code can inspect.):
 
 | B | Function | What to Return |
 |---|----------|----------------|
@@ -242,6 +247,9 @@ ROM Loader / CBIOS
 | 0x01 | DIODEV_FD | Floppy disk |
 | 0x03 | DIODEV_IDE | IDE hard disk |
 | 0x06 | DIODEV_SD | SD card |
+
+**This emulator reports `0x09` (DIODEV_HDSK) for every attached image**, which is
+not in the table above; `src/emu_init.h` and `src/hbios_dispatch.cc` set it.
 
 ### Media IDs (MID_*)
 

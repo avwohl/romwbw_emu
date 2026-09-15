@@ -195,7 +195,7 @@ hbios.setNvramSaveCallback([](const uint8_t* data, int size) {
 | DIO (0x10-0x1B) | DIOREAD, DIOWRITE, DIOSEEK, etc. | Disk I/O |
 | RTC (0x20-0x28) | RTCGETTIM, RTCGETBYT, RTCSETBLK | Time and NVRAM |
 | VDA (0x40-0x4F) | VDAINI, VDACLS, VDASCP, etc. | Video display |
-| SND (0x50-0x56) | SNDRESET, SNDBEEP, SNDNOTE | Sound |
+| SND (0x50-0x58) | SNDRESET, SNDNOTE, SNDDEVICE (0x57), SNDBEEP (0x58) | Sound |
 | SYS (0xF0-0xFF) | SYSRESET, SYSGET, SYSSET, etc. | System control |
 
 ## NVRAM Implementation
