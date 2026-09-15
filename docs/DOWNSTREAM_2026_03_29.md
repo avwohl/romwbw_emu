@@ -1,3 +1,12 @@
+**Historical, and one instruction here is actively wrong now.** This is the
+v1.33-era refactor notice. Its "New file: `src/emu_io_common.cc` - your build
+must compile and link this file" is **not** true of every port and must not be
+followed blind: `z80cpmw` deliberately excludes it, because its
+`emu_io_windows.cpp` already defines `emu_file_load`, `emu_file_save` and the
+rest, and linking both collides; `cpmdroid` does not take it either, compiling
+only `hbios_dispatch.cc`, `hbios_cpu.cc` and `emu_init.cc` out of this tree.
+[../DOWNSTREAM.md](../DOWNSTREAM.md) is the current contract.
+
 # Downstream Porting Notes - 2026-03-29
 
 Code review refactoring. Most changes are in shared code and just need a

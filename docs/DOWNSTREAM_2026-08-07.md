@@ -1,3 +1,23 @@
+**Historical, and nothing here is current as of 2026-09-07.** Three of its
+items no longer describe this tree at all:
+
+- Sections 5 and 6 tell a port to re-ship `emu_avw.rom`, `emu_romwbw.rom` and
+  `emu_rcz80.rom`. Every one of those files was deleted by `ed289ee`; no ROM is
+  tracked here and none ships in any client.
+- Section 3 says to display `ROMWBW_PIN_STR`. There is no such macro.
+  `src/romwbw_pin.h` defines `ROMWBW_SUPPORTED_RELEASES` and
+  `ROMWBW_DEFAULT_*`; a port following this gets a preprocessor error.
+- Sections 2 and 3 describe a single pinned RomWBW release. The pin was
+  replaced in v1.39 by a runtime read of the loaded ROM, and
+  `emu_validate_rom_hcb` now refuses only a release absent from
+  `ROMWBW_SUPPORTED_RELEASES`.
+- Its "keep pinning disk-catalog downloads to a specific release tag, as the
+  Windows and iOS ports already do" is false of both and now against the
+  design: the compiled-in URL goes through `releases/latest/download/` and
+  names no tag.
+
+[../DOWNSTREAM.md](../DOWNSTREAM.md) is the current contract.
+
 # Downstream Update Notice - 2026-08-07 (core v1.34 -> v1.35)
 
 Addressed to every port that compiles this core: the Windows port

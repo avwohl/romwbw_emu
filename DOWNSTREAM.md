@@ -48,6 +48,12 @@ picker/download, same-origin server disk selection, and (new in v1.34)
 localStorage persistence of UI selections plus a dirty-disk warning before tab
 close.
 
+> **Which of the dated notices are live: none of them.** All seven under
+> `docs/DOWNSTREAM_*.md` and `docs/RELEASE_ORDER_*.md` now open with a banner
+> saying so, and `docs/DOWNSTREAM_2026_03_29.md` carries an instruction that is
+> actively wrong for two of the three ports. They are kept as the record of what
+> each sync asked for. **This file is the contract.**
+
 ## Overview
 
 The RomWBW emulator is structured with a shared core that all platforms use:
@@ -79,6 +85,22 @@ Plus these headers:
 - `hbios_dispatch.h`
 - `hbios_cpu.h`
 - `romwbw_mem.h`
+- `romwbw_pin.h` - **required**: `emu_init.cc` and `hbios_dispatch.cc` both
+  `#include` it. A port that takes exactly the five headers above does not
+  compile.
+
+**And qkz80, which is not in this tree.** `hbios_cpu.h` includes `qkz80.h` and
+`romwbw_mem.h` includes `qkz80_mem.h`, so the core cannot be compiled or linked
+without the Z80 core from [cpmemu](https://github.com/avwohl/cpmemu) -
+`qkz80.cc`, `qkz80_reg_set.cc`, `qkz80_mem.cc`, `qkz80_errors.cc` and their
+headers. ioscpm, cpmdroid and z80cpmw all compile those sources out of a
+sibling `../cpmemu`; this repo links `libqkz80.a` instead.
+
+`emu_io_common.cc` is the fourth source in this tree, and whether you take it
+is a **per-port decision, not a requirement**: it supplies nine of the symbols
+the core leaves undefined, and ioscpm symlinks it. z80cpmw must NOT take it -
+its `emu_io_windows.cpp` already defines `emu_file_load`, `emu_file_save` and
+the rest, so linking both collides - and cpmdroid does not take it either.
 
 ## Critical: Shadow RAM Fix (December 2024)
 
@@ -149,7 +171,11 @@ hbios.loadDiskFromFile(0, "/path/to/disk.img");
 ### 3. Complete Initialization
 
 ```cpp
-// disk_slices is optional: array of per-disk slice counts, or nullptr for defaults
+// disk_slices is optional: array of per-disk slice counts. **`nullptr` skips the
+step, it does not take a default** - `emu_complete_init` gates the drive-map
+write and the device-count update on `if (disk_slices)`, so with `nullptr`
+neither happens. (ioscpm and z80cpmw both pass `nullptr` today and build their
+maps another way.)
 int disk_slices[16] = {4, 4, 4, ...};  // Optional
 emu_complete_init(&memory, &hbios, disk_slices);
 ```
@@ -195,7 +221,13 @@ Each platform needs an `emu_io_*.cc` implementation. See these references:
 - **WebAssembly**: `src/emu_io_wasm.cc` - Uses Emscripten, JavaScript callbacks
 - **iOS/macOS**: `iOSCPM/Core/emu_io_ios.mm` - Uses Foundation, SwiftUI callbacks
 
-Key functions to implement:
+Key functions to implement. **This is a sample, not the contract** - linking
+the three core objects leaves 34 `emu_*` symbols undefined, including
+`emu_fatal` and the eight `emu_host_file_*` entry points that `R8`/`W8` need.
+`src/emu_io.h` is the authoritative list; `emu_io_common.cc` supplies nine of
+them if you take it.
+
+
 ```cpp
 // Console I/O
 void emu_console_write_char(uint8_t ch);
@@ -215,6 +247,7 @@ void emu_status(const char* fmt, ...);
 
 ```cpp
 #include "emu_init.h"
+#include "emu_io.h"          // emu_console_write_char and the rest of the contract
 #include "hbios_cpu.h"
 #include "hbios_dispatch.h"
 
@@ -322,7 +355,7 @@ public:
 
 **Fix**: Pull latest romwbw_mem.h with the `current_bank == 0x00` check.
 
-### Boot Countdown Very Slow (Fixed January 2025)
+### Boot Countdown Very Slow (Fixed January 2026)
 
 **Symptom**: Autoboot countdown (3, 2, 1...) takes 10+ seconds per number instead
 of 1 second. The 'R' reboot command also takes 30+ seconds.
@@ -374,7 +407,12 @@ compares the result against the published hash, so the ROM stays reproducible
 from the source in this tree. See [docs/CATALOG.md](docs/CATALOG.md), and the
 v1.40 section immediately below.
 
-## Where the ROM and the disks come from (September 2026, v1.40)
+## Where the ROM and the disks come from (September 2026, VERSION 1.40)
+
+> `1.39` and `1.40` are `VERSION` values, not tags. Neither was ever released:
+> `git tag` goes v1.38 straight to v1.41, and v1.41 is the release that carries
+> both. Look for the work in v1.41 or later.
+
 
 **This repository ships no ROM and no disk image, and nothing in the C++ API
 changed to make that true.** A port that compiles this core owes v1.40 no code:
@@ -453,7 +491,7 @@ against the hash the index carries, before a byte of either is parsed.
   targets run it. A port with a browser front end that reached for the catalog
   from JavaScript will find the same wall.
 
-## RomWBW Version: runtime, not a pin (September 2026, v1.39)
+## RomWBW Version: runtime, not a pin (September 2026, VERSION 1.39 - shipped in v1.41)
 
 **The compile-time pin is gone.** This core used to emulate exactly one
 RomWBW release, and refused to load a ROM from any other. It now reads the
@@ -608,7 +646,7 @@ For CLI (blocking mode), CIOIN automatically flushes output before blocking.
 
 For web/WASM (non-blocking mode), output goes directly to the display.
 
-## Unified RAM Bank Initialization (January 2025)
+## Unified RAM Bank Initialization (January 2026)
 
 ### The Problem
 
@@ -616,7 +654,7 @@ Previously, there were two independent RAM bank initialization systems:
 
 1. **Port I/O path** - Called via `initializeRamBankIfNeeded()` delegate method when
    hbios_cpu detected a bank switch via port I/O
-2. **SYSSETBNK path** - Called via HBIOS function 0xF1 in hbios_dispatch.cc
+2. **SYSSETBNK path** - Called via HBIOS function 0xF2 (`HBF_SYSSETBNK`; 0xF1 is `HBF_SYSVER`) in hbios_dispatch.cc
 
 Each had its own `initialized_ram_banks` bitmap. If a bank was initialized via one
 path, the other path didn't know and would re-initialize it. While harmless (same
@@ -665,7 +703,7 @@ This ensures:
 2. No redundant re-initialization
 3. CBIOS page zero stamp (0x40-0x55) is always installed correctly
 
-## NVRAM Boot Configuration (January 2025)
+## NVRAM Boot Configuration (January 2026)
 
 RomWBW stores boot configuration in RTC NVRAM. The emulator supports both
 programmatic configuration via the C++ API and interactive configuration via
@@ -679,14 +717,22 @@ The NVRAM interface uses printable strings for all get/set operations:
 // Set boot option - accepts these formats:
 hbios.setNvramSetting("C");     // Boot ROM app C (CP/M 2.2)
 hbios.setNvramSetting("Z");     // Boot ROM app Z (ZSDOS)
-hbios.setNvramSetting("0");     // Boot from disk unit 0, slice 0
-hbios.setNvramSetting("2.3");   // Boot from disk unit 2, slice 3
+hbios.setNvramSetting("2");     // Boot the FIRST hard disk, slice 0
+hbios.setNvramSetting("2.3");   // ...unit 2, slice 3
 hbios.setNvramSetting("H");     // Show boot menu (help)
 hbios.setNvramSetting("");      // Clear - uninitialized, shows menu
+```
 
+**Boot unit numbers are not your `loadDisk()` slot index.** Unit 0 is the
+on-board RAM disk (MD0) and unit 1 the ROM disk (MD1); neither carries an
+operating system, so `"0"` boots nothing. The image you attach with
+`loadDisk(0, ...)` is boot **unit 2**, `loadDisk(1, ...)` is unit 3, and so on.
+A picker that emits its own slot index is off by two.
+
+```cpp
 // Get current boot option - returns same format
 std::string setting = hbios.getNvramSetting();
-// Returns: "C", "Z", "0", "2.3", etc. or "" if uninitialized
+// Returns: "C", "Z", "2", "2.3", etc. or "" if uninitialized
 
 // Check if NVRAM needs to be persisted (modified since last read)
 if (hbios.hasNvramChange()) {
@@ -756,7 +802,7 @@ hbios.setNvramSetting("");  // Clears NVRAM, boot menu will display
 This is especially important for GUI apps where users can't easily restart
 the emulator with different command-line options.
 
-## Manifest Disk Write Warning (January 2025)
+## Manifest Disk Write Warning (January 2026)
 
 Apps that download disk images from a manifest (auto-updates) face a UX challenge:
 users may write data (save games, files) to these disks, but their changes can be
@@ -823,16 +869,26 @@ bool pollManifestWriteWarning();
 3. **Copy disk feature**: Provide a way for users to copy a manifest disk to
    local storage, creating a user-owned version that won't be overwritten
 
-## Disk Commit System (January 2025)
+## Disk Commit System (January 2026)
 
 The emulator ensures disk writes are reliably committed to storage through multiple
 mechanisms:
 
 ### Automatic Flush Points
 
-1. **Warm boot flush**: When a CP/M program ends (warm boot / SYSRESET type 0x01),
-   all disk data is flushed via `emu_disk_flush_all()`. This happens automatically
-   in `emu_init.cc` - no action needed from downstream clients.
+1. **Warm boot flush**: when a CP/M program ends (warm boot / SYSRESET type
+   0x01), disks are flushed via `emu_disk_flush_all()`. **This is not automatic
+   for a port that installs its own reset callback.** The call lives inside the
+   lambda `emu_setup_reset_callback()` installs, and
+   `HBIOSDispatch::setResetCallback` *assigns* - it replaces the callback rather
+   than chaining - so a port that sets its own and never calls
+   `emu_setup_reset_callback()` loses the flush silently. Of the three ports
+   only cpmdroid calls it; a port in that position should call
+   `HBIOSDispatch::flushAllDisks()` from its own callback instead.
+
+   `emu_disk_flush_all()` itself is implemented once, in
+   `src/emu_io_common.cc` - not in `emu_io_cli.cc` or `emu_io_wasm.cc` - so a
+   port that does not take that file supplies it itself.
 
 2. **Per-write flush**: Each individual disk write calls `emu_disk_flush()` on the
    file handle immediately. This ensures data safety even if the app crashes.
@@ -1047,7 +1103,7 @@ against, and it is not being moved or retracted.
 - [ ] Test ASSIGN command (verifies CBIOS stamp at 0x40)
 - [ ] Test SYSCONF utility ('W' command at boot menu)
 - [ ] Update NVRAM code to use new string-based API:
-  - [ ] Replace `setBootOption()` with `setNvramSetting()`
+  - [ ] (Nothing to do: `setBootOption()` has not existed for the life of the string API. Only ioscpm's deprecated Obj-C shim still carries the name.)
   - [ ] Replace raw byte access with `getNvramSetting()` / `hasNvramChange()`
 - [ ] Implement manifest disk write warning UI (optional but recommended)
   - [ ] Call `setDiskIsManifest()` when loading manifest-managed disks

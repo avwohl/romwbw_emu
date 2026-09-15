@@ -1,3 +1,8 @@
+**Historical, and nothing here is current as of 2026-09-07.** Its per-port
+status and line cites have moved on - ioscpm's Ctrl handling is no longer where
+this file points, and the open item it records there is closed.
+[../DOWNSTREAM.md](../DOWNSTREAM.md) is the current contract.
+
 # Downstream Update Notice - 2026-08-23 (core v1.35 -> v1.36)
 
 Addressed to every port that compiles this core: the Windows port (`z80cpmw`),

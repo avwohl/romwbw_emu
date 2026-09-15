@@ -1,3 +1,12 @@
+**Historical, and its work is done.** This was the to-do list for the core
+after v1.36; the core is v1.42. Every obligation in it has been satisfied by
+all three ports - `emu_host_path_caps()` and `emu_host_file_get_read_name()`
+are defined in `ioscpm/iOSCPM/Core/emu_io_ios.mm`,
+`cpmdroid/app/src/main/cpp/emu_io_android.cpp` and
+`z80cpmw/z80cpmw/emu_io_windows.cpp`. Note also that the two notices it says
+"still apply" both declare themselves non-current.
+[../DOWNSTREAM.md](../DOWNSTREAM.md) is the current contract.
+
 # Downstream Update Notice - 2026-08-26 (core after v1.36, unreleased)
 
 Addressed to every port that compiles this core: the Windows port (`z80cpmw`),
