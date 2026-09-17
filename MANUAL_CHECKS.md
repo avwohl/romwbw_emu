@@ -38,7 +38,10 @@ action* - reload, paste, copy, zoom, a download - which a synthetic
 `web/makefile` compiles and no test links.
 
 **What you need first.** A built `web/romwbw.js` and `web/romwbw.wasm`. `emcc`
-is not on the machine these were written on. The concrete way to get one:
+was not on the machine these were written on; it is now (brew `emscripten`
+6.0.9, installed 2026-09-17), so on this machine the first answer is simply
+`make -C web`, and the v1.42 deb below is the answer for a machine without it.
+The concrete way to get one:
 
 ```
 gh release download v1.42 -p 'romwbw-emu_*_amd64.deb' && dpkg-deb -x romwbw-emu_*.deb pkg

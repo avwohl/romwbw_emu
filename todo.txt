@@ -8,6 +8,13 @@ makes about every tag in this file.
 Every item carries a tag saying what a machine has to be able to do to take it,
 so a session on another OS can see at a glance what it can pick up.
 
+[EMSCRIPTEN] USED TO MEAN "not here".  emcc was installed on this machine on
+2026-09-17 - brew emscripten 6.0.9 - to build and check the wasm export that
+closed the release-list item, so `make -C web` and `make -C web check` run here
+now.  Anything still tagged [EMSCRIPTEN] is worth re-reading before it is
+assumed blocked; what those items are really waiting for is a person at a
+browser, which is [BROWSER].
+
 - [ANY] DELETE THE RELEASE GATE.  ROMWBW_SUPPORTED_RELEASES gates ROM loading on
 the RomWBW release number, which is the HBIOS-to-disk-image axis and none of this
 core's business.  What this core actually depends on is three things and the
@@ -39,10 +46,14 @@ is printed as the second line of print_version_banner (src/romwbw_emu.cc:806-811
 and tools/romwbw-get:389-393 calls that line a protocol with three consumers: its
 own RE_RUNS (:395), roms/verify_romwbw_pin.sh, and romwbw_disks'
 tools/boot_test.sh.  `romwbw-get mirror` then copies the answer into
-catalog/manifest.json as emu_supported, which web/romwbw.html-template:948-952
-reads - so the page's release select goes with it, and the [EMSCRIPTEN] item
-below about exporting that same function to the wasm is not separate work, it is
-a fourth consumer this would delete.  Whoever takes either one should read both.
+catalog/manifest.json as emu_supported.  And since 2026-09-17 there is a FOURTH
+consumer, built and checked rather than proposed: web/romwbw_web.cc exports
+romwbw_supported_releases, web/makefile lists it in EXPORTED_FUNCTIONS, and the
+page asks the running core instead of the mirror
+(web/romwbw.html-template's applyCoreSupported).  That was a [EMSCRIPTEN] item
+here and is now done, so deleting the gate costs the page's release select as
+well - it does not fall back to the mirror, it stops greying anything out at
+all.  tests/web_supported_releases.js and `make -C web check` go with it.
   THE BLOCKER IS NOT THE ONE THIS ITEM NAMED.  boot_test.sh is already a required
 publish step: romwbw_disks docs/RELEASING.md:825 makes it a checklist item and
 closes the obvious hole itself - "A SKIP line means no emulator was found, which
@@ -105,7 +116,8 @@ all three checks against a five-month-old wasm.  they are deleted (make -C web
 clean), as are the December 2025 romwbw_node.* and romwbw_test.* pairs that
 `clean` does not name - there is no .wasm left in web/ at all, so `make serve`
 and both deploy targets now fail on absent emcc instead of shipping a stale one.
-what is left is a person at a browser: emcc is absent from this machine.
+what is left is a person at a browser.  (emcc was absent when this was
+written; it is installed now - see the note under the header.)
   UPDATE 2026-09-15: the packaged page answers for HEAD again.  v1.41
 (2026-09-10) and v1.42 (2026-09-13) both ran release.yml's emcc build, and the
 v1.42 amd64 deb's usr/share/romwbw_emu/web/romwbw.html is byte-identical to
@@ -126,8 +138,8 @@ longer answers for.  The other two are unaffected.  Serve the v1.42 deb anyway
 if that is all there is, it is still far closer than v1.38; a release after
 6d059ec is what closes the download-name check.  The sentence above about what
 this machine lacks has been corrected in place at the same time: it said "emcc,
-node and every browser are absent", and node v26.3.0 is on PATH and Chrome and
-Safari are installed.  emcc is the whole of what is missing.
+node and every browser are absent", and none of the three is - see the note
+under the header.
 
 - [BROWSER] the wasm's video, DSKY, sound and printer callbacks are wired to
 names nothing implements.  emu_io_wasm.cc emits Module.onVideo*, Module.onDsky*
@@ -146,14 +158,14 @@ crypto.subtle, which needs a secure context and says so rather than claiming a
 pass it did not perform; a directory with no mirror in it gets an explanatory
 status line and working file pickers instead of a 404; and the RomWBW select
 disables a release this build cannot boot.  all four are covered by
-tests/web_manifest.js under node, which RUNS on this machine now - node v26.3.0
+tests/web_manifest.js under node, which RUNS on this machine now - node
 is on PATH, `make -C src test` ran all three JS tests and the whole suite passed
 on 2026-09-17, where this entry used to record a SKIP - and none has been
 DRAWN.  Chrome and
-Safari are both installed here; what is missing is emcc, so the page cannot be
-built locally.  The wasm HAS been rebuilt since the rewrite: release.yml builds
-it with emcc at every release, and v1.41 and v1.42 both shipped one.  what this needs is one
-person on a machine with emcc and the checklist in MANUAL_CHECKS.md.  `make -C
+Safari are both installed here, and so is emcc since 2026-09-17: `make -C web`
+built romwbw.js and romwbw.wasm on this machine, so the page CAN be built
+locally now and the last missing piece is a person at a browser with the
+checklist in MANUAL_CHECKS.md.  `make -C
 web serve` mirrors emu_avw and hd1k_combo into web/ before starting the server,
 so a local serve has a bootable ROM and disk for the first time - that half is
 worth checking too, because nothing has ever exercised it.
@@ -173,31 +185,6 @@ user is free to ignore - and the comment there carries the whole argument.
 changing it needs a name parameter on emu_host_file_provide_data() and a change
 to the page's picker callback.  until then the browser answers 0xFF and R8
 prints what was typed, which is what it always did.
-
-- [EMSCRIPTEN] the page decides which RomWBW releases it can boot from a value
-recorded at mirror time, not by asking the core it is running.  `romwbw-get
-mirror` runs the CLI binary's --version and writes the answer into
-catalog/manifest.json as emu_supported; the page disables anything outside that
-list.  so the two can disagree - a mirror written by one build, served next to a
-wasm compiled from another - and the page would then offer a release the wasm
-refuses, or grey out one it would run.  the honest source is
-emu_romwbw_supported_list(), which already exists in src/emu_init.h and
-src/emu_init.cc, and emu_init.cc is already in web/makefile's ROMWBW_SRCS, so
-this is one name added to EXPORTED_FUNCTIONS plus a few lines in the page.  it
-was not done because it cannot be built or checked without emcc, which is absent
-here, and shipping an untested export is worse than the mismatch it fixes.
-tagged [EMSCRIPTEN] rather than [ANY] for that reason.
-what makes it worth doing rather than merely correct: the whole point of the
-mirror is that re-running it publishes a newly released disk with no wasm
-rebuild.  the moment somebody re-mirrors without rebuilding - which is the
-intended workflow, not an accident - emu_supported is a fact about a binary that
-is no longer the one in the page.  do it the next time emcc is on the machine.
-  BUT READ THE DELETE-THE-RELEASE-GATE ITEM FIRST.  it proposes deleting
-emu_romwbw_supported_list() outright, along with the banner line this mirror
-value is parsed off and the filtering the page does with it.  the two items are
-not independent: if the gate goes, this one does not move to a better source,
-it evaporates - there is no list to export and nothing for the select to grey
-out.  whichever is taken first decides whether the other exists at all.
 
 - [RELEASE] a new RomWBW release needs a tag here, not just a catalog entry:
 the releases a client will offer are filtered by ROMWBW_SUPPORTED_RELEASES,

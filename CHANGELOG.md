@@ -19,6 +19,44 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+### The web page asks the core which RomWBW releases it can boot
+
+It used to ask `catalog/manifest.json`. `romwbw-get mirror` writes
+`emu_supported` there by running the CLI binary beside it — a **different**
+build from the wasm being served — and the page disabled anything outside that
+list. The two can disagree in both directions: offer a release the wasm will
+refuse, or grey out one it would have booted. And this is not an exotic state.
+The whole point of the mirror is that re-running it publishes a newly released
+disk with no wasm rebuild, so the moment anyone uses it as designed,
+`emu_supported` is a fact about a binary that is not in the page.
+
+`web/romwbw_web.cc` now exports `romwbw_supported_releases()`, which returns
+`emu_romwbw_supported_list()` — the same list `emu_validate_rom_hcb` enforces
+when the ROM is actually loaded, so what the select disables and what a load
+would refuse come from one place. Once the runtime is up the page asks it,
+through `manifestReady` because the fetch and the runtime race, and rebuilds
+its lists only if the answer differs from the mirror's. When they agree nothing
+happens at all: no rebuild, no flicker, no lost selection. A page served beside
+a wasm built before the export existed gets no answer and keeps using the
+manifest, which is what it did before.
+
+`loadManifest`'s fill-then-restore sequence is now `applyManifest()`, because
+the rebuild needs the same order and that order is load-bearing — restoring a
+stored selection against an empty select throws it away silently.
+
+**This was a `[EMSCRIPTEN]` item deferred because "shipping an untested export
+is worse than the mismatch it fixes", and it is not untested.** emcc was
+installed to close it; `make -C web` builds, and the export was called under
+node and answered `"3.5.1, 3.6.0"`. That check is kept:
+`tests/web_supported_releases.js` compares the built wasm's answer against
+`src/romwbw_pin.h`, `make -C web check` runs it without allowing a skip,
+`release.yml` runs that after every web build — the only place a wasm is ever
+built — and `make -C src test` runs it too, skipping when no wasm is present.
+Ten more checks in `tests/web_manifest.js` cover the page half: both
+directions of disagreement, the agreement case changing nothing, a mirror with
+no `emu_supported` taking the core's answer, and `applyManifest` still
+populating before it restores.
+
 ### A remembered RomWBW release could stop being used without saying so
 
 `romwbw-get use 3.5.1` writes `romwbw_version` into

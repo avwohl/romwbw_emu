@@ -347,6 +347,20 @@ checked the size only rather than reporting a pass it did not perform).
 mirror as part of the deploy, so **a newly published disk reaches the page by
 re-running a deploy** — no source edit, no wasm rebuild, no release.
 
+That sentence is also why the page does **not** take the manifest's word for
+which RomWBW releases it can boot. `romwbw-get mirror` writes `emu_supported`
+into the manifest by asking the CLI binary beside it — a different build from
+the wasm being served, and re-mirroring without rebuilding is the workflow
+above rather than a mistake. So once the runtime is up the page asks the core
+it is running, through the `romwbw_supported_releases` export, and rebuilds its
+lists if the two disagree; the manifest's value is the fallback for a page
+served beside a wasm built before that export existed. It is the same list
+`emu_validate_rom_hcb` enforces when the ROM is loaded, so what the select
+disables and what a load would refuse now come from one place. `make -C web
+check` asserts the export against `src/romwbw_pin.h` right after a build, and
+`release.yml` runs it — that is the only place a wasm is built, so it is the
+only place a rename could be caught.
+
 An installed `.deb` has no mirror. The page says so, in its status line and in
 the terminal, and the file pickers still work. `romwbw-get mirror
 /usr/share/romwbw_emu/web` populates it.

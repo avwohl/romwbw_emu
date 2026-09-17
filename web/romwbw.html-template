@@ -945,13 +945,27 @@
     }
 
     function versionRunnable(manifest, version) {
-      // emu_supported is what the CLI binary beside the wasm reported at
-      // mirror time; both are compiled from the same src/romwbw_pin.h. A
-      // manifest that does not say (an older mirror) is trusted rather than
-      // second-guessed - the ROM's own load-time check is the real gate.
+      // emu_supported starts as what the CLI binary beside the wasm reported
+      // at mirror time, and applyCoreSupported replaces it with what THIS
+      // core says as soon as the runtime can be asked. A manifest that does
+      // not say (an older mirror) is trusted rather than second-guessed - the
+      // ROM's own load-time check is the real gate either way.
       const sup = manifest && manifest.emu_supported;
       if (!sup || !sup.length) return true;
       return sup.indexOf(version) !== -1;
+    }
+
+    function applyCoreSupported(manifest, core) {
+      // Put the running core's own answer where versionRunnable reads from,
+      // and say whether that changed anything.  `core` is null when the wasm
+      // cannot be asked - not yet initialised, or built before the export
+      // existed - and then the mirror's value stands, which is exactly what
+      // the page did before this existed.
+      if (!manifest || !core || !core.length) return false;
+      const was = (manifest.emu_supported || []).join(',');
+      if (was === core.join(',')) return false;
+      manifest.emu_supported = core.slice();
+      return true;
     }
 
     function fillVersionSelect(manifest) {
@@ -1056,6 +1070,42 @@
       return n;
     }
 
+    function coreSupportedReleases() {
+      // Ask the wasm itself which RomWBW releases it can load.  Only callable
+      // once the runtime is initialised, which is the only place it is called
+      // from.  Returns null when there is no answer - a page served beside a
+      // wasm built before this export existed - and null means "leave the
+      // mirror's value alone", which is what the page did before.
+      try {
+        const s = Module.ccall('romwbw_supported_releases', 'string', [], []);
+        if (!s) return null;
+        return s.split(',').map(function (x) { return x.trim(); })
+                .filter(function (x) { return x; });
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function applyManifest(manifest) {
+      // Every select the manifest governs, in the one order that works.  Also
+      // the rebuild path: when the core turns out to disagree with the mirror
+      // about which releases it runs, the lists have already been built from
+      // the wrong answer and have to be built again from the right one.
+      fillVersionSelect(manifest);
+      fillCatalogSelects(manifest,
+                         document.getElementById('romwbwVersionSelect').value);
+      // Only now are there options for a stored selection to match against.
+      restoreSettings();
+      // A stored RomWBW version has to be applied before the lists it governs.
+      const s = storedSettings();
+      if (s && s.romwbwVersion && manifestVersion(manifest, s.romwbwVersion)
+          && versionRunnable(manifest, s.romwbwVersion)) {
+        document.getElementById('romwbwVersionSelect').value = s.romwbwVersion;
+        fillCatalogSelects(manifest, s.romwbwVersion);
+        restoreSettings();
+      }
+    }
+
     async function loadManifest() {
       try {
         const buf = await fetchChecked(MANIFEST_URL);
@@ -1069,9 +1119,7 @@
         // file pickers, and now says so instead of 404ing on names nobody
         // chose.
         catalogManifest = null;
-        fillVersionSelect(null);
-        fillCatalogSelects(null, null);
-        restoreSettings();
+        applyManifest(null);
         statusDiv.textContent = 'No catalog mirror beside this page';
         noMirrorNotice = 'No catalog/manifest.json was found beside this page, '
           + 'so no ROM or disk is offered for download. Populate it with:\n'
@@ -1079,19 +1127,7 @@
           + 'or load a ROM and an image with the Choose File buttons.';
         return false;
       }
-      fillVersionSelect(catalogManifest);
-      fillCatalogSelects(catalogManifest,
-                         document.getElementById('romwbwVersionSelect').value);
-      // Only now are there options for a stored selection to match against.
-      restoreSettings();
-      // A stored RomWBW version has to be applied before the lists it governs.
-      const s = storedSettings();
-      if (s && s.romwbwVersion && manifestVersion(catalogManifest, s.romwbwVersion)
-          && versionRunnable(catalogManifest, s.romwbwVersion)) {
-        document.getElementById('romwbwVersionSelect').value = s.romwbwVersion;
-        fillCatalogSelects(catalogManifest, s.romwbwVersion);
-        restoreSettings();
-      }
+      applyManifest(catalogManifest);
       return true;
     }
 
@@ -1702,6 +1738,21 @@
       term.writeln('RomWBW Emulator v' + EMU_VERSION + ' ready.');
       term.writeln('Load a ROM image or click Start to boot.');
       term.writeln('');
+      // Now that there is a core to ask, ask it.  catalog/manifest.json's
+      // emu_supported was written by whatever binary ran `romwbw-get mirror`;
+      // this core is the one that will refuse the ROM, and re-mirroring
+      // without rebuilding the wasm is the intended workflow.  Through
+      // manifestReady because the fetch and the runtime race, and the lists
+      // have to exist before they can be rebuilt.
+      manifestReady.then(function () {
+        const core = coreSupportedReleases();
+        if (!applyCoreSupported(catalogManifest, core)) return;
+        applyManifest(catalogManifest);
+        term.writeln('This build runs RomWBW ' + core.join(', ')
+                     + ' - the catalog mirror beside this page says otherwise,'
+                     + ' and this build is what will load the ROM.');
+        term.writeln('');
+      });
     };
   </script>
 </body>

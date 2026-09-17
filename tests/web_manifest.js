@@ -25,6 +25,14 @@
  *     `default` at all - measured - so a rule written against it selects
  *     nothing, on every page load, forever.
  *
+ *  4. Which releases the page greys out must come from the CORE, not from the
+ *     mirror. `emu_supported` in the manifest is what the CLI binary beside
+ *     the wasm answered when `romwbw-get mirror` ran - a different build, and
+ *     re-mirroring to publish a new disk without rebuilding the wasm is the
+ *     intended workflow. applyCoreSupported replaces it with what the running
+ *     core says, once there is a core to ask; the manifest is the fallback
+ *     for a page served beside a wasm too old to have the export.
+ *
  * The functions are lifted out of the template by text extraction, the same
  * way tests/web_reload_disks.js does it: there is no bundler and no module
  * boundary. A rename or a reindent fails loudly here and wants updating.
@@ -55,6 +63,8 @@ const SOURCES = [
   lift('manifestVersion', /( {4}function manifestVersion\(manifest, version\) \{[\s\S]*?\n {4}\}\n)/),
   lift('versionRunnable', /( {4}function versionRunnable\(manifest, version\) \{[\s\S]*?\n {4}\}\n)/),
   lift('fillVersionSelect', /( {4}function fillVersionSelect\(manifest\) \{[\s\S]*?\n {4}\}\n)/),
+  lift('applyCoreSupported', /( {4}function applyCoreSupported\(manifest, core\) \{[\s\S]*?\n {4}\}\n)/),
+  lift('applyManifest', /( {4}function applyManifest\(manifest\) \{[\s\S]*?\n {4}\}\n)/),
   lift('fillCatalogSelects', /( {4}function fillCatalogSelects\(manifest, version\) \{[\s\S]*?\n {4}\}\n)/),
   lift('selId', /( {4}function selId\(id\) \{[\s\S]*?\n {4}\}\n)/),
   lift('saveSettings', /( {4}function saveSettings\(\) \{[\s\S]*?\n {4}\}\n)/),
@@ -181,12 +191,14 @@ const lifted = new Function(
   'document', 'localStorage', 'Option', 'formatSize', 'SETTINGS_KEY',
   'MANIFEST_URL',
   SOURCES + '\nreturn { manifestVersion, versionRunnable, fillVersionSelect,'
+          + ' applyCoreSupported, applyManifest,'
           + ' fillCatalogSelects, selId, saveSettings, storedSettings,'
           + ' restoreSettings, expectOf };'
 )(document, localStorage, Option, formatSize, SETTINGS_KEY, MANIFEST_URL);
 
-const { manifestVersion, versionRunnable, fillVersionSelect, fillCatalogSelects,
-        selId, saveSettings, storedSettings, restoreSettings, expectOf } = lifted;
+const { manifestVersion, versionRunnable, fillVersionSelect, applyCoreSupported,
+        applyManifest, fillCatalogSelects, selId, saveSettings, storedSettings,
+        restoreSettings, expectOf } = lifted;
 
 // ------------------------------------------------------------- the fixtures
 
@@ -389,6 +401,80 @@ freshDom();
         'the size and sha256 handed to verifyAsset come from the manifest');
   check(e.name === 'hd1k_combo-v0-3.6.0.img',
         'and the name shown to the user is the catalog filename');
+}
+
+// 9. The core's own answer beats the mirror's, in both directions.
+//
+// `romwbw_supported_releases` is exported from the wasm (web/romwbw_web.cc,
+// web/makefile's EXPORTED_FUNCTIONS) and answered "3.5.1, 3.6.0" when this
+// was written - built with emcc and called under node, not assumed.  What is
+// checked here is the page half: what the page does with that answer, and
+// what it does when there is not one.
+freshDom();
+store = {};
+{
+  // The ordinary case: they agree, and NOTHING is rebuilt.  This matters as
+  // much as the disagreement - a page that tears down and repopulates its
+  // selects on every load would lose a selection and flicker for no reason.
+  const m = manifest(['3.5.1', '3.6.0']);
+  check(applyCoreSupported(m, ['3.5.1', '3.6.0']) === false,
+        'a core that agrees with the mirror changes nothing');
+  check(applyCoreSupported(m, null) === false,
+        'and a wasm too old to have the export leaves the mirror alone');
+  check(applyCoreSupported(m, []) === false,
+        'as does one that answers nothing');
+  check(m.emu_supported.join(',') === '3.5.1,3.6.0',
+        'the manifest is untouched in all three cases');
+
+  // Disagreement, the direction that greys a release OUT: the mirror was
+  // written beside a newer binary than the wasm being served.
+  const out = manifest(['3.5.1', '3.6.0']);
+  check(applyCoreSupported(out, ['3.6.0']) === true,
+        'a core that runs fewer releases than the mirror claims says so');
+  applyManifest(out);
+  const only360 = els.romwbwVersionSelect.options.find(o => o.value === '3.5.1');
+  check(only360 && only360.disabled === true,
+        'and the release it cannot run is disabled after the rebuild');
+  check(els.romwbwVersionSelect.value === '3.6.0',
+        'with the selection moved to one it can');
+
+  // The other direction, which is the one no amount of care with the mirror
+  // could fix: the wasm runs MORE than the mirror said, and the page used to
+  // grey out a release it would have booted.
+  freshDom();
+  const inn = manifest(['3.5.1']);
+  check(applyCoreSupported(inn, ['3.5.1', '3.6.0']) === true,
+        'a core that runs MORE than the mirror claims says so too');
+  applyManifest(inn);
+  check(els.romwbwVersionSelect.options.every(o => !o.disabled),
+        'and nothing is greyed out that this core would actually boot');
+
+  // An older mirror that says nothing gets the core's real list rather than
+  // the blanket trust it used to get.
+  freshDom();
+  const old = manifest(undefined);
+  check(applyCoreSupported(old, ['3.6.0']) === true,
+        'a mirror with no emu_supported takes the core\'s answer');
+  applyManifest(old);
+  const older351 = els.romwbwVersionSelect.options.find(o => o.value === '3.5.1');
+  check(older351 && older351.disabled === true,
+        'so an old mirror stops offering what this core cannot run');
+}
+
+// 10. applyManifest is the one ordering, used by both callers.
+freshDom();
+store = {};
+{
+  const m = manifest(['3.5.1', '3.6.0']);
+  fillVersionSelect(m);
+  fillCatalogSelects(m, '3.6.0');
+  els.disk1Select.value = 'catalog/v0/3.6.0/hd1k_games-v0-3.6.0.img';
+  saveSettings();
+  freshDom();
+  applyManifest(m);
+  check(els.disk1Select.value === 'catalog/v0/3.6.0/hd1k_games-v0-3.6.0.img',
+        'applyManifest populates before it restores, so a stored disk comes '
+        + 'back - the rebuild path gets that for free');
 }
 
 console.log('-'.repeat(64));

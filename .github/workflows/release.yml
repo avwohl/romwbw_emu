@@ -149,6 +149,13 @@ jobs:
           cd web
           make clean || true
           make QKZ80_SRC=../cpmemu/src
+          # The page asks the core which RomWBW releases it can load, rather
+          # than trusting the mirror-time value in catalog/manifest.json. This
+          # is the only place that export is ever built, so it is the only
+          # place a rename or a dropped EXPORTED_FUNCTIONS entry can be
+          # caught - and the symptom without it is not a crash, it is a page
+          # that quietly goes back to believing the mirror.
+          make check QKZ80_SRC=../cpmemu/src
           # Render the page from its template. Only romwbw.html-template is
           # checked in; nothing else creates romwbw.html, so the packaging
           # step below used to copy a file that never existed and - because

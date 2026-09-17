@@ -174,6 +174,26 @@ void romwbw_clear_nvram() {
   emu_log("[WASM] NVRAM cleared\n");
 }
 
+// Which RomWBW releases THIS core can load, as "3.5.1, 3.6.0".
+//
+// The page used to take that list from catalog/manifest.json, where
+// `romwbw-get mirror` had written what the CLI binary beside it answered.
+// That is a different binary, possibly from a different tree, and
+// re-mirroring to publish a newly released disk WITHOUT rebuilding the wasm
+// is the intended workflow rather than an accident - so the moment anyone
+// uses the mirror the way it was designed, the page is greying releases in
+// or out on a fact about a build it is not running.
+//
+// This is the same answer romwbw_load_rom would give: emu_load_rom_from_buffer
+// runs emu_validate_rom_hcb, which refuses a release that is not in this list
+// - so what the select disables and what a load would refuse now come from
+// one place. A page served beside an older wasm gets no such export and falls
+// back to the manifest, which is what it did before.
+EMSCRIPTEN_KEEPALIVE
+const char* romwbw_supported_releases() {
+  return emu_romwbw_supported_list();
+}
+
 // Load ROM image - creates fresh emulator state
 EMSCRIPTEN_KEEPALIVE
 int romwbw_load_rom(const uint8_t* data, int size) {
