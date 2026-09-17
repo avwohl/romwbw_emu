@@ -137,17 +137,29 @@ all three checks against a five-month-old wasm.  they are deleted (make -C web
 clean), as are the December 2025 romwbw_node.* and romwbw_test.* pairs that
 `clean` does not name - there is no .wasm left in web/ at all, so `make serve`
 and both deploy targets now fail on absent emcc instead of shipping a stale one.
-what is left is a person at a browser: emcc, node and every browser are absent
-from this machine.
+what is left is a person at a browser: emcc is absent from this machine.
   UPDATE 2026-09-15: the packaged page answers for HEAD again.  v1.41
 (2026-09-10) and v1.42 (2026-09-13) both ran release.yml's emcc build, and the
 v1.42 amd64 deb's usr/share/romwbw_emu/web/romwbw.html is byte-identical to
 `sed s/@VERSION@/1.42/ web/romwbw.html-template`, with a freshly built
-romwbw.wasm and romwbw.js beside it and vendor/ staged.  Nothing under src/ or
-web/ has changed since the v1.42 tag, so that wasm is HEAD's core.  It carries
+romwbw.wasm and romwbw.js beside it and vendor/ staged.  It carries
 no ROM, as designed, so `romwbw-get mirror` has to be run beside the page
 before it will boot anything.  Download the v1.42 deb and serve that, rather
 than the stale v1.38 one this entry used to name.
+  UPDATE 2026-09-17: it is one commit behind again, in the one place that
+matters to this entry.  The line above used to end "nothing under src/ or web/
+has changed since the v1.42 tag, so that wasm is HEAD's core".  6d059ec
+(2026-09-15) changed src/emu_io_common.cc, which IS in web/makefile's
+ROMWBW_SRCS, and what it fixed is emu_host_path_cap_name returning "" - reached
+through emu_host_path_basename(), the function that produces the download name.
+So of the three checks this entry lists, the third - "the download name became
+the lowercased last component of the typed path" - is the one the v1.42 wasm no
+longer answers for.  The other two are unaffected.  Serve the v1.42 deb anyway
+if that is all there is, it is still far closer than v1.38; a release after
+6d059ec is what closes the download-name check.  The sentence above about what
+this machine lacks has been corrected in place at the same time: it said "emcc,
+node and every browser are absent", and node v26.3.0 is on PATH and Chrome and
+Safari are installed.  emcc is the whole of what is missing.
 
 - [BROWSER] the wasm's video, DSKY, sound and printer callbacks are wired to
 names nothing implements.  emu_io_wasm.cc emits Module.onVideo*, Module.onDsky*
@@ -166,8 +178,10 @@ crypto.subtle, which needs a secure context and says so rather than claiming a
 pass it did not perform; a directory with no mirror in it gets an explanatory
 status line and working file pickers instead of a 404; and the RomWBW select
 disables a release this build cannot boot.  all four are covered by
-tests/web_manifest.js under node - though `make -C src test` SKIPs it on this
-machine, because node is not on PATH - and none has been DRAWN.  Chrome and
+tests/web_manifest.js under node, which RUNS on this machine now - node v26.3.0
+is on PATH, `make -C src test` ran all three JS tests and the whole suite passed
+on 2026-09-17, where this entry used to record a SKIP - and none has been
+DRAWN.  Chrome and
 Safari are both installed here; what is missing is emcc, so the page cannot be
 built locally.  The wasm HAS been rebuilt since the rewrite: release.yml builds
 it with emcc at every release, and v1.41 and v1.42 both shipped one.  what this needs is one
