@@ -1,23 +1,28 @@
 #!/bin/sh
 #
-# Verify that every RomWBW artifact in a tree names a release the emulator
-# core can actually run, and that the ROMs and disks in it are pairable - so a
-# downstream client can confirm in one command that what it is about to ship
-# will boot.
+# Verify that the RomWBW artifacts in a tree are internally consistent and
+# pairable - so a downstream client can confirm in one command that what it is
+# about to ship will boot.
 #
-# THE SINGLE PIN IS GONE. The core no longer compiles in one RomWBW version:
-# the version a guest sees is read out of the loaded ROM's HCB at run time,
-# and one binary boots any release in ROMWBW_SUPPORTED_RELEASES
-# (src/romwbw_pin.h). So the question this script answers changed from
+# THERE IS NO PIN LEFT, AND NO ALLOWLIST EITHER. The core compiles in no
+# RomWBW version at all: the release a guest sees is read out of the loaded
+# ROM's HCB at run time, and one binary boots any release. So the question
+# this script answers has narrowed twice:
 #
 #   "does everything here match the one pinned release?"          (before)
-#   "is everything here a release this core supports, and do the   (now)
-#    disks have a ROM to pair with?"
+#   "is everything a release this core was compiled to allow?"    (v1.39)
+#   "is every artifact a readable RomWBW artifact, and does every  (now)
+#    disk have a ROM of its own release to pair with?"
 #
-# A tree shipping BOTH 3.5.1 and 3.6.0 artifacts is now correct, and used to
-# be a failure. What is still a failure is an artifact from a release nobody
-# has checked this core against, because that is the one that loads and then
-# misbehaves.
+# What went with the allowlist is the only question here that a new RomWBW
+# release could ever have failed. What is left cannot go stale: it is about
+# the bytes in the tree, not about a list somebody has to remember to edit.
+#
+# THE PAIRING IS THE POINT and it is real. A ROM and the boot slice of a disk
+# image must come from the same release, or the guest prints
+# "*** WARNING: HBIOS/CBIOS Version Mismatch ***". That is the HBIOS-to-CBIOS
+# axis, it is enforced by the guest rather than by us, and this script is the
+# only thing in this repository that checks it.
 #
 # What is read:
 #
@@ -28,9 +33,6 @@
 #                      "CBIOS v<ver> [WBW]".  A disk whose release has no ROM
 #                      beside it is the mixed pair that makes a guest print
 #                      "*** WARNING: HBIOS/CBIOS Version Mismatch ***"
-#   src/romwbw_emu     the built binary lists the releases it can run in
-#                      --version; that list has to match this header, or the
-#                      binary is stale
 #
 # Usage: roms/verify_romwbw_pin.sh [tree_root]
 # Exit:  0 all checks passed, 1 at least one mismatch
@@ -40,12 +42,9 @@
 #
 #   romwbw_emu/roms/verify_romwbw_pin.sh ../z80cpmw
 #
-# The supported list always comes from this script's own checkout, because it
-# is a property of the core, not of the tree being checked - a client tree has
-# no src/romwbw_pin.h of its own. Override with ROMWBW_PIN_H=/path/to/header.
-#
 # The name is kept for the callers that already run it (DOWNSTREAM.md, three
-# client CHANGELOGs, README.md); there is no pin left for it to verify.
+# client CHANGELOGs, README.md); there is no pin left for it to verify, and
+# since 2026-09-17 no header for it to read either.
 
 set -u
 
@@ -57,8 +56,6 @@ ROOT="${1:-$SELF_ROOT}"
 if [ -d "$ROOT" ]; then
     ROOT="$(cd "$ROOT" && pwd)"
 fi
-PIN_H="${ROMWBW_PIN_H:-$SELF_ROOT/src/romwbw_pin.h}"
-
 fail=0
 warn=0
 
@@ -67,85 +64,11 @@ ok()    { printf 'ok    %-28s %s\n' "$1" "$2"; }
 bad()   { printf 'FAIL  %-28s %s\n' "$1" "$2"; fail=$((fail + 1)); }
 warned(){ printf 'warn  %-28s %s\n' "$1" "$2"; warn=$((warn + 1)); }
 
-if [ ! -f "$PIN_H" ]; then
-    echo "Error: cannot find the pin at $PIN_H" >&2
-    exit 1
-fi
-
-# Pull the tree's default release out of the header rather than duplicating
-# it here.  That is the release roms/ and disks/ in THIS tree are cut from -
-# it is not a constraint on what the binary can load.
-pin_field() {
-    sed -n "s/^#define $1 \([0-9]*\).*/\1/p" "$PIN_H" | head -1
-}
-MAJOR=$(pin_field ROMWBW_DEFAULT_MAJOR)
-MINOR=$(pin_field ROMWBW_DEFAULT_MINOR)
-UPDATE=$(pin_field ROMWBW_DEFAULT_UPDATE)
-PATCH=$(pin_field ROMWBW_DEFAULT_PATCH)
-DEFAULT_STR=$(sed -n 's/^#define ROMWBW_DEFAULT_STR "\(.*\)".*/\1/p' "$PIN_H" | head -1)
-
-if [ -z "$MAJOR" ] || [ -z "$MINOR" ] || [ -z "$UPDATE" ] || [ -z "$PATCH" ] ||
-   [ -z "$DEFAULT_STR" ]; then
-    echo "Error: could not parse ROMWBW_DEFAULT_* out of $PIN_H" >&2
-    exit 1
-fi
-
-# The header's own string has to agree with its own numbers, or every message
-# printed from it lies about which release it means.
-DERIVED="$MAJOR.$MINOR.$UPDATE"
-if [ "$PATCH" -ne 0 ]; then
-    DERIVED="$DERIVED.$PATCH"
-fi
-if [ "$DERIVED" != "$DEFAULT_STR" ]; then
-    bad "src/romwbw_pin.h" "ROMWBW_DEFAULT_STR is \"$DEFAULT_STR\" but the numbers say $DERIVED"
-fi
-
-# The supported releases, from the one X-macro list the C++ also expands.  Two
-# parallel forms, because the ROM check has HCB bytes in hand and the disk
-# check has a dotted version string:
-#
-#   SUPPORTED_HEX   "3510 3600"    ver||upd, as they appear in the HCB
-#   SUPPORTED_STR   "3.5.1 3.6.0"  as CBIOS prints them in a boot slice
-#
-# A header whose list cannot be parsed is a hard error rather than an empty
-# list: an empty list would fail every artifact, which reads like a broken
-# tree instead of a broken script.
-SUPPORTED_HEX=$(sed -n 's/^  *X(\([0-9]*\), *\([0-9]*\), *\([0-9]*\), *\([0-9]*\).*/\1 \2 \3 \4/p' "$PIN_H" |
-                while read -r a b c d; do printf '%x%x%x%x ' "$a" "$b" "$c" "$d"; done)
-SUPPORTED_STR=$(sed -n 's/^  *X(\([0-9]*\), *\([0-9]*\), *\([0-9]*\), *\([0-9]*\).*/\1 \2 \3 \4/p' "$PIN_H" |
-                while read -r a b c d; do
-                    if [ "$d" -eq 0 ]; then printf '%d.%d.%d ' "$a" "$b" "$c"
-                    else printf '%d.%d.%d.%d ' "$a" "$b" "$c" "$d"; fi
-                done)
-if [ -z "$SUPPORTED_HEX" ] || [ -z "$SUPPORTED_STR" ]; then
-    echo "Error: could not parse ROMWBW_SUPPORTED_RELEASES out of $PIN_H" >&2
-    exit 1
-fi
-
-# Is "$1" (four hex nibbles, or a dotted version) in the corresponding list?
-supported_hex() {
-    for _s in $SUPPORTED_HEX; do [ "$_s" = "$1" ] && return 0; done
-    return 1
-}
-supported_str() {
-    for _s in $SUPPORTED_STR; do [ "$_s" = "$1" ] && return 0; done
-    return 1
-}
-
-# The tree's own default has to be one this core can run, or the tree cannot
-# boot what it ships.
-DEFAULT_HEX=$(printf '%x%x%x%x' "$MAJOR" "$MINOR" "$UPDATE" "$PATCH")
-if ! supported_hex "$DEFAULT_HEX"; then
-    bad "src/romwbw_pin.h" "ROMWBW_DEFAULT_STR v$DEFAULT_STR is not in ROMWBW_SUPPORTED_RELEASES"
-fi
-
 # Which releases the tree actually contains, filled in as ROMs and disks are
 # read, so the pairing check at the end has something to compare.
 ROM_RELEASES=""
 DISK_RELEASES=""
 
-echo "RomWBW releases this core can run:$(printf ' v%s' $SUPPORTED_STR)"
-echo "This tree's artifacts default to:  v$DEFAULT_STR"
 echo
 
 # --- ROM images -------------------------------------------------------------
@@ -204,11 +127,8 @@ find "$ROOT" \( "$@" \) -prune -o \
 # on every machine - a check that passes because it looked at nothing, which is
 # the exact failure this file was added to `make test` to stop.
 #
-# The cache is a SECOND find root, not a new $ROOT: $ROOT is also where the
-# built binary is looked for at the end (src/romwbw_emu), and that check - the
-# binary's own --version list against ROMWBW_SUPPORTED_RELEASES in this header
-# - is the one thing here that nothing in romwbw_disks can do.  Re-rooting
-# would silently turn it into "info  not built".
+# The cache is a SECOND find root, not a new $ROOT, so that a tree pointed at
+# with an argument is still reported by paths relative to that tree.
 CACHE="${ROMWBW_GET_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/romwbw_emu}"
 cached_artifacts=0
 if [ -d "$CACHE" ]; then
@@ -279,10 +199,6 @@ while IFS= read -r f; do
     else
         got_str="$got_major.$got_minor.$got_upd.$got_pat"
     fi
-    if ! supported_hex "$ver$upd"; then
-        bad "$name" "built for RomWBW v$got_str, which this core has not been checked against (it can run$(printf ' v%s' $SUPPORTED_STR))"
-        continue
-    fi
     # A stock ROM is not runnable here, but it is the build input that
     # build_emu_rom.sh overlays our bank 0 onto. Warn so nobody points
     # --romwbw at one by mistake.
@@ -323,16 +239,12 @@ while IFS= read -r f; do
     # Every slice in one image has to come from ONE release: a combo whose
     # slices disagree cannot be paired with any single ROM, so it is broken no
     # matter which one it is booted against.
-    unsupported=""
     count=0
     for v in $versions; do
         count=$((count + 1))
-        supported_str "$v" || unsupported="$unsupported $v"
         case " $DISK_RELEASES " in *" $v "*) ;; *) DISK_RELEASES="$DISK_RELEASES $v" ;; esac
     done
-    if [ -n "$unsupported" ]; then
-        bad "$name" "boot slice CBIOS v$(echo "$unsupported" | sed 's/^ //'), which this core has not been checked against"
-    elif [ "$count" -gt 1 ]; then
+    if [ "$count" -gt 1 ]; then
         bad "$name" "slices carry more than one CBIOS version ($(echo "$versions" | tr '\n' ' ' | sed 's/ $//')) - no single ROM pairs with this image"
     else
         ok "$name" "boot slice CBIOS v$versions"
@@ -369,29 +281,6 @@ else
 fi
 echo
 
-# --- Built binary -----------------------------------------------------------
-echo "Built emulator:"
-EMU="$ROOT/src/romwbw_emu"
-if [ -x "$EMU" ]; then
-    # The binary prints its supported list; it must be the same list this
-    # header declares, or the binary was built before the header changed.
-    # This is the check that catches a stale build - and it used to be able
-    # to miss one entirely, because src/makefile had no header dependencies
-    # at all until -MMD was added, so editing this header rebuilt nothing.
-    reported=$("$EMU" --version 2>&1 |
-               sed -n 's/^RomWBW releases this build can run: \(.*\)/\1/p' | head -1)
-    expected=$(echo "$SUPPORTED_STR" | sed 's/ $//; s/ /, /g')
-    if [ -z "$reported" ]; then
-        bad "src/romwbw_emu" "--version does not list any RomWBW releases (built from an older source tree?)"
-    elif [ "$reported" != "$expected" ]; then
-        bad "src/romwbw_emu" "binary runs [$reported], header says [$expected] - rebuild (make -C src)"
-    else
-        ok "src/romwbw_emu" "runs $reported"
-    fi
-else
-    note "info  not built (run 'make -C src') - skipping"
-fi
-
 echo
 if [ "$fail" -eq 0 ]; then
     # Say which of the two things passed.  With no artifact anywhere the first
@@ -400,9 +289,9 @@ if [ "$fail" -eq 0 ]; then
     # images - that is how a silently-scoped-to-nothing check goes on reading
     # as a pass for months.
     if [ "$found_rom" -eq 1 ] || [ "$found_disk" -eq 1 ]; then
-        echo "PASS: every artifact names a RomWBW release this core can run ($warn warning(s))"
+        echo "PASS: every artifact is a readable RomWBW artifact and every disk pairs ($warn warning(s))"
     else
-        echo "PASS: src/romwbw_pin.h is consistent and the built binary agrees with it"
+        echo "PASS: nothing here contradicts itself"
         echo "      NO ARTIFACT WAS INSPECTED - none in the tree (expected since"
         echo "      v1.40) and none in $CACHE."
         echo "      tools/romwbw-get fetch  populates it, and re-running this"

@@ -27,12 +27,13 @@ publishes the ROMs and images for every supported RomWBW release, behind a
 two-level catalog. Adding one is a release *there*, and it reaches everyone who
 already has this installed. Nothing here has to move.
 
-There is one exception, and it is deliberate: a new RomWBW **release** — 3.7.0,
-say — still needs a rebuild here, because `ROMWBW_SUPPORTED_RELEASES` in
-`src/romwbw_pin.h` is compile-time, and adding a line to it is a claim that
-somebody booted that release and watched it work. `romwbw-get` refuses such a
-release by name before it downloads anything - a catalog ROM is 512 KB, and
-the 49 MB is the disk `run` fetches beside it.
+There used to be an exception, and since v1.44 there is not: a new RomWBW
+**release** — 3.7.0, say — is a release tag and a regenerated index in
+`romwbw_disks`, and nothing here or in any client. A compile-time allowlist
+made it cost five application releases; the interface those clients actually
+depend on is versioned by the `v0` in this catalog's own name, and an interface
+change would be published as `index-v1.json`, which a v0 client ignores by
+name.
 
 ## The shape of it
 
@@ -95,8 +96,7 @@ is not:
 | `--offline` | never open a socket |
 | `--refresh` | ignore the one-hour index cache TTL |
 | `--romwbw VER` | use this RomWBW release for this run |
-| `--allow-untested` | allow a release this build has not been checked against |
-| `--emu PATH` | the `romwbw_emu` binary to run, and to ask what it supports |
+| `--emu PATH` | the `romwbw_emu` binary to run |
 | `--trust-cache` | check cached sizes but not their sha256 |
 
 **The index is cached for an hour** (`INDEX_TTL`), and a cached one is used for
@@ -213,12 +213,15 @@ hashes. Generate them; do not transcribe them. `romwbw_disks`'
 `tools/gen_catalog.py` computes every one from the built artifact, and
 `tools/verify_catalog.py` re-derives them independently.
 
-One constraint is not negotiable: a fork can only publish RomWBW releases this
-binary lists in `ROMWBW_SUPPORTED_RELEASES` — 3.5.1 and 3.6.0 today. Anything
-else is refused by name before a byte is downloaded, because bank 0 of an
-`emu_*` ROM is this repository's HBIOS proxy and a release whose CBIOS calls
-something the dispatcher does not implement would load and then misbehave.
-`--allow-untested` gets past that, on both this program and the binary.
+A fork may publish any RomWBW release. There used to be a constraint here —
+a fork could only publish releases the binary named in
+`ROMWBW_SUPPORTED_RELEASES`, and anything else was refused before a byte was
+downloaded — and it went in v1.44 along with the list. What a fork must keep is
+the **interface**: bank 0 of an `emu_*` ROM is this repository's HBIOS proxy,
+and a release whose CBIOS calls something `src/hbios_dispatch.cc` does not
+implement will load and then misbehave. That is what `v0` in the index name
+promises, and what `romwbw_disks/tools/boot_test.sh` measures before a
+release is published.
 
 ## Pristine bytes and working copies
 
@@ -347,19 +350,13 @@ checked the size only rather than reporting a pass it did not perform).
 mirror as part of the deploy, so **a newly published disk reaches the page by
 re-running a deploy** — no source edit, no wasm rebuild, no release.
 
-That sentence is also why the page does **not** take the manifest's word for
-which RomWBW releases it can boot. `romwbw-get mirror` writes `emu_supported`
-into the manifest by asking the CLI binary beside it — a different build from
-the wasm being served, and re-mirroring without rebuilding is the workflow
-above rather than a mistake. So once the runtime is up the page asks the core
-it is running, through the `romwbw_supported_releases` export, and rebuilds its
-lists if the two disagree; the manifest's value is the fallback for a page
-served beside a wasm built before that export existed. It is the same list
-`emu_validate_rom_hcb` enforces when the ROM is loaded, so what the select
-disables and what a load would refuse now come from one place. `make -C web
-check` asserts the export against `src/romwbw_pin.h` right after a build, and
-`release.yml` runs it — that is the only place a wasm is built, so it is the
-only place a rename could be caught.
+The page offers every release in the mirror and greys none of them out. It
+used to disable any release the core had not been compiled to allow — reading
+`emu_supported` from the manifest, then asking the wasm directly through a
+`romwbw_supported_releases` export, because the mirror had been written beside
+a possibly different CLI binary. None of that exists now: no build has an
+opinion about which releases it can boot, `mirror` writes no `emu_supported`,
+and a manifest still carrying the field from an older mirror is ignored.
 
 An installed `.deb` has no mirror. The page says so, in its status line and in
 the terminal, and the file pickers still work. `romwbw-get mirror
@@ -374,15 +371,23 @@ the catalog publishes:
 
     $ roms/build_emu_rom.sh
     ...
-    PASS: byte-identical to the published emu_avw for RomWBW 3.5.1
-          sha256 4b11402a29fad22de304775b7c415eb6a74600df06bd57828b9931a7e9693258
+    PASS: byte-identical to the published emu_avw for RomWBW 3.6.0
+          sha256 01d1ca6d142e9b757d4fd98c2229f2e506dd8c3253839391c8f5d4f6263c6557
 
-It builds only the release `ROMWBW_DEFAULT_*` in `src/romwbw_pin.h` names, because
-`src/emu_hbios.asm` here hardcodes its version stamp. The copy in romwbw_disks
-takes that stamp from a generated include and can build any release;
-`romwbw_disks/tools/build_rom.sh` is what cuts what users download. Overlaying
-this bank 0 on another release's banks would produce a ROM that boots and then
-prints `*** WARNING: HBIOS/CBIOS Version Mismatch ***`, so the script refuses it.
+**This is a debugging tool, not part of any workflow here.** ROMs are
+romwbw_disks' province; nothing in this repository's build, test or release
+path assembles one. Run it when something is wrong - a suspected drift in
+bank 0, or a check of the attestation claim. It builds any published release:
+`--romwbw VER` picks one, `--rom-id ID` picks which ROM, and with neither it
+reproduces the catalog's default. Bank 0's
+version stamp is generated into `romwbw_ver.inc` from the HCB of the stock ROM
+being overlaid, so bank 0 and banks 1-15 name the same release by construction.
+`src/emu_hbios.asm` is byte-identical to the copy in romwbw_disks, whose
+`tools/build_rom.sh` generates the same include from
+`versions/<ver>/version.json` and is what cuts what users download;
+`check_source_drift.sh` there asserts the two copies stay identical. Until
+v1.44 this script could build only one hardcoded release — by then not even the
+catalog's default.
 
 ## What is checked, and where
 
@@ -392,7 +397,7 @@ prints `*** WARNING: HBIOS/CBIOS Version Mismatch ***`, so the script refuses it
 | `tests/web_manifest.js` — the page's manifest → `<option>` logic | no | `make -C src test` |
 | `disks/verify_disk_utils.sh` — `src/{r8,w8}.asm` build, and w8 keeps its `HBF_HOST_CAPS` interlock | no | `make -C src test` |
 | the same script against the images in the cache | yes | CI, after a fetch |
-| `roms/verify_romwbw_pin.sh` — the binary's release list vs `src/romwbw_pin.h` | no | `make -C src test` |
+| `roms/verify_romwbw_pin.sh` — every ROM and disk readable, and every disk paired with a ROM of its release | no | `make -C src test` |
 | booting the published ROM and disk to a CP/M prompt | yes | CI, after a fetch |
 
 Both shell verifiers read the `romwbw-get` cache - `ROMWBW_GET_CACHE` if it is

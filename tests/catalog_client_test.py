@@ -197,7 +197,10 @@ def serve(directory):
 def run(cache, base, *args, **kw):
     argv = [sys.executable, GET, "--index-url", base + "index-v0.json",
             "--cache", cache, "--retries", "0"]
-    argv += ["--assume-supported", kw.pop("supported", "3.5.1,3.6.0")]
+    # `supported=` is accepted and dropped.  It used to become
+    # --assume-supported, which steered the compile-time release allowlist
+    # romwbw-get no longer has.
+    kw.pop("supported", None)
     argv += list(args)
     env = dict(os.environ)
     env["XDG_CONFIG_HOME"] = kw.pop("confdir", os.path.join(cache, "conf"))
@@ -252,28 +255,20 @@ def _tests(tmp, web, base):
 
     cache = os.path.join(tmp, "cache")
 
-    # 1. versions, and the runnable filter -------------------------------------
+    # 1. versions lists everything published ------------------------------------
     r = run(cache, base, "versions")
     check(r.returncode == EX_OK and "3.5.1" in r.stdout and "3.6.0" in r.stdout,
           "versions lists every published release")
     check("index default" in r.stdout,
           "and marks the one the index nominates")
-
-    r = run(cache, base, "versions", supported="3.5.1")
-    check("3.6.0" not in r.stdout and "1 more this build cannot run" in r.stdout,
-          "a release this build cannot run is counted, not offered")
-    r = run(cache, base, "versions", "--all", supported="3.5.1")
-    check("NOT RUNNABLE" in r.stdout,
-          "--all shows it, and says why it is not selectable")
+    check("NOT RUNNABLE" not in r.stdout and "cannot run" not in r.stdout,
+          "and nothing is hidden or marked unrunnable - every release a v0 "
+          "catalog publishes speaks the same HBIOS-to-emulator interface")
 
     # 2. selection precedence ---------------------------------------------------
     r = run(cache, base, "list", "--roms")
     check("RomWBW 3.6.0" in r.stdout,
           "with nothing stored, the index default is selected")
-    r = run(cache, base, "list", "--roms", supported="3.5.1")
-    check("RomWBW 3.5.1" in r.stdout,
-          "the runnable filter is applied BEFORE the index default, so a "
-          "default this build cannot run does not win")
 
     # 3. a healthy fetch --------------------------------------------------------
     r = run(cache, base, "fetch", "@rom")
@@ -584,12 +579,24 @@ def _tests(tmp, web, base):
     check(r.returncode == EX_CONTRADICTION and "does not publish" in r.stderr,
           "a release the index has stopped publishing is refused by name")
 
-    # 9. no overlap between what is published and what this build runs ----------
-    r = run(cache, base, "--refresh", "fetch", "@rom", supported="9.9.9")
-    check(r.returncode == EX_CONTRADICTION and "no overlap" in r.stderr,
-          "a build that can run nothing published fails with that as the reason")
-    check("romwbw_pin.h" in r.stderr,
-          "and names the file to edit once the release has been booted")
+    # 9. an obsolete gate flag is accepted and ignored --------------------------
+    #
+    # --assume-supported and --allow-untested steered a compile-time release
+    # allowlist that no longer exists.  Installed scripts still pass them, so
+    # they must not become "unrecognized arguments" and exit 64.
+    plain = run(cache, base, "--refresh", "versions")
+    flagged = run(cache, base, "--refresh", "--assume-supported", "9.9.9",
+                  "--allow-untested", "versions")
+    check(flagged.returncode == EX_OK,
+          "the retired gate flags are accepted, not an argparse error")
+    # "9.9.9" is published by nothing.  While the allowlist existed this
+    # steered selection and would have emptied the listing; it must now be
+    # inert, so the two runs have to agree byte for byte.
+    check(flagged.stdout == plain.stdout,
+          "and they are inert - the listing is identical with and without them")
+    r = run(cache, base, "--assume-supported", "9.9.9", "fetch", "@rom")
+    check(r.returncode == EX_OK,
+          "and a fetch still resolves a release they claim is unsupported")
 
     # 10. the web mirror --------------------------------------------------------
     site = os.path.join(tmp, "site")
@@ -608,8 +615,9 @@ def _tests(tmp, web, base):
           "a browser cannot follow the catalog's own base_url")
     check(block["roms"][0]["sha256"] and block["roms"][0]["size"],
           "the size and hash travel with it, so the page can check what it got")
-    check(doc.get("emu_supported") == ["3.5.1", "3.6.0"],
-          "the manifest records which releases the core beside it can run")
+    check("emu_supported" not in doc,
+          "and no longer records a release allowlist for the page to grey "
+          "options out with")
 
     r = run(cache, base, "mirror", site, "--versions", "all", "--only", "emu_avw")
     doc = json.load(open(man))
@@ -766,7 +774,7 @@ def _tests(tmp, web, base):
           "fnv1a32 matches ioscpm's Swift and cpmdroid's Kotlin, verified by "
           "compiling and running all three")
 
-    # 11. `use` persists a choice, and refuses an unrunnable one ----------------
+    # 11. `use` persists a choice ------------------------------------------------
     conf = os.path.join(tmp, "conf")
     r = run(cache, base, "--refresh", "use", "3.6.0", confdir=conf)
     check(r.returncode == EX_OK, "use stores a release")
@@ -775,9 +783,6 @@ def _tests(tmp, web, base):
           "in its own file, scoped to the interface version")
     check("rom" not in stored or stored.get("rom") is None,
           "and stores only what was asked for")
-    r = run(cache, base, "use", "3.6.0", confdir=conf, supported="3.5.1")
-    check(r.returncode == EX_CONTRADICTION and "cannot run" in r.stderr,
-          "and refuses a release this build cannot run")
     r = run(cache, base, "use", "--clear", confdir=conf)
     check(r.returncode == EX_OK and
           not os.path.exists(os.path.join(conf, "romwbw_emu", "catalog.json")),
@@ -786,12 +791,16 @@ def _tests(tmp, web, base):
     # 11b. a stored release that stops being usable must SAY so --------------
     #
     # The stored value is durable and the world around it is not: an index can
-    # stop publishing a release, and a rebuilt binary can stop running one.
-    # Neither rewrites catalog.json, and until this was fixed neither said
-    # anything either - the file named a release for ever while every run
-    # fetched and booted something else, and the only place it showed was
+    # stop publishing a release.  That does not rewrite catalog.json, and until
+    # this was fixed it said nothing either - the file named a release for ever
+    # while every run fetched something else, and the only place it showed was
     # `versions --json`.  What is asserted here is the SAYING, not a change of
     # choice: the file is still left exactly as the user left it.
+    #
+    # There used to be a second way in, and it is gone: a rebuilt binary could
+    # stop RUNNING a release, because the core carried a compile-time release
+    # allowlist.  Nothing has that opinion now, so the index is the only thing
+    # that can strand a stored choice.
     #
     # On its own index and its own cache.  The fixture above has been rewritten
     # several times by the sections in between, and a test of what is stored
@@ -812,36 +821,37 @@ def _tests(tmp, web, base):
         r = run(kcache, b4, "use", "3.6.0", confdir=kconf)
         check(r.returncode == EX_OK, "a release is stored")
 
-        # The binary moves: same file, same index, a build that runs 3.5.1 only.
-        r = run(kcache, b4, "list", "--roms", confdir=kconf, supported="3.5.1")
-        check(r.returncode == EX_OK and "RomWBW 3.5.1" in r.stdout,
-              "a stored release this build cannot run does not stop the command")
-        check("3.6.0" in r.stderr and "cannot run" in r.stderr and
-              "3.5.1 is being used instead" in r.stderr,
-              "but it warns, naming the stored release and the one really used")
+        # A stored release the index still publishes is simply used, with no
+        # warning and no divergence - the case a retired binary allowlist used
+        # to be able to break.
+        r = run(kcache, b4, "list", "--roms", confdir=kconf)
+        check(r.returncode == EX_OK and "RomWBW 3.6.0" in r.stdout,
+              "a stored release the index publishes is the one used")
+        check("being used instead" not in r.stderr,
+              "with nothing to warn about")
+        r = run(kcache, b4, "versions", "--json", confdir=kconf)
+        doc = json.loads(r.stdout)
+        check(doc["selected"] == "3.6.0" and doc["in_use"] == "3.6.0",
+              "and --json agrees: `selected` is the file, `in_use` is what a "
+              "run gets, and they match")
+        check("emu_supported" not in doc,
+              "and it no longer reports a release allowlist")
         stored = json.load(open(os.path.join(kconf, "romwbw_emu", "catalog.json")))
         check(stored["romwbw_version"] == "3.6.0",
-              "and leaves the stored choice alone - it becomes usable again "
-              "the moment the binary or the index does")
-
-        r = run(kcache, b4, "versions", confdir=kconf, supported="3.5.1")
-        check("catalog.json selects RomWBW 3.6.0" in r.stdout and
-              "runs use 3.5.1" in r.stdout,
-              "`versions` says it in the listing, where the filtered-out row "
-              "it belongs to is not printed to carry a `selected` mark")
-        r = run(kcache, b4, "versions", "--json", confdir=kconf, supported="3.5.1")
-        doc = json.loads(r.stdout)
-        check(doc["selected"] == "3.6.0" and doc["in_use"] == "3.5.1",
-              "and --json reports both: `selected` is the file, `in_use` is "
-              "what a run gets")
+              "and the stored choice is left exactly as the user left it")
 
         r = run(kcache, b4, "versions", confdir=kconf)
         check("catalog.json selects" not in r.stdout,
               "and says none of it when the stored release IS the one in use")
-        r = run(kcache, b4, "list", "--roms", confdir=kconf)
+        check("NOT RUNNABLE" not in r.stdout and "cannot run" not in r.stdout,
+              "and marks no row unrunnable, whatever is stored")
+        # An explicit --romwbw that differs from the stored choice is honoured
+        # without a warning: overriding is not divergence.
+        r = run(kcache, b4, "--romwbw", "3.5.1", "list", "--roms", confdir=kconf)
+        check(r.returncode == EX_OK and "RomWBW 3.5.1" in r.stdout,
+              "an explicit --romwbw overrides the stored release")
         check("being used instead" not in r.stderr,
-              "nor on the commands that resolve - no warning without a "
-              "divergence")
+              "and overriding is not reported as a stale stored choice")
 
         # The other way in: the index moves.  A second one that has never heard
         # of 3.6.0, reached with the same config file.
@@ -858,12 +868,10 @@ def _tests(tmp, web, base):
             r = run(gcache, b5, "list", "--roms", confdir=kconf)
             check(r.returncode == EX_OK and "does not publish" in r.stderr and
                   "3.6.0" in r.stderr,
-                  "a stored release the index has dropped warns too, and says "
-                  "which of the two reasons it is")
+                  "a stored release the index has dropped warns, naming it")
             r = run(gcache, b5, "versions", confdir=kconf)
             check("this index does not publish it" in r.stdout,
-                  "and `versions` distinguishes that from a release this "
-                  "build cannot run")
+                  "and `versions` says so in the listing")
 
             # `use --index-url URL` with no version stores the URL and
             # resolves nothing against it, which is the easiest way to arrive

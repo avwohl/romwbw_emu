@@ -944,29 +944,12 @@
       return null;
     }
 
-    function versionRunnable(manifest, version) {
-      // emu_supported starts as what the CLI binary beside the wasm reported
-      // at mirror time, and applyCoreSupported replaces it with what THIS
-      // core says as soon as the runtime can be asked. A manifest that does
-      // not say (an older mirror) is trusted rather than second-guessed - the
-      // ROM's own load-time check is the real gate either way.
-      const sup = manifest && manifest.emu_supported;
-      if (!sup || !sup.length) return true;
-      return sup.indexOf(version) !== -1;
-    }
-
-    function applyCoreSupported(manifest, core) {
-      // Put the running core's own answer where versionRunnable reads from,
-      // and say whether that changed anything.  `core` is null when the wasm
-      // cannot be asked - not yet initialised, or built before the export
-      // existed - and then the mirror's value stands, which is exactly what
-      // the page did before this existed.
-      if (!manifest || !core || !core.length) return false;
-      const was = (manifest.emu_supported || []).join(',');
-      if (was === core.join(',')) return false;
-      manifest.emu_supported = core.slice();
-      return true;
-    }
+    // versionRunnable() and applyCoreSupported() used to live here, and the
+    // release select used to grey out a release the core could not boot.  The
+    // core has no opinion about releases any more - every release a v0 catalog
+    // publishes speaks the same HBIOS-to-emulator interface - so every
+    // mirrored release is offered, and a manifest's emu_supported (which
+    // `romwbw-get mirror` no longer writes) is ignored where it survives.
 
     function fillVersionSelect(manifest) {
       const el = document.getElementById('romwbwVersionSelect');
@@ -979,16 +962,11 @@
       let preferred = '';
       for (let i = 0; i < vs.length; i++) {
         const v = vs[i];
-        const runs = versionRunnable(manifest, v.romwbw_version);
-        const label = (v.label || ('RomWBW ' + v.romwbw_version))
-                    + (runs ? '' : ' (needs a newer build)');
-        const opt = new Option(label, v.romwbw_version);
+        const opt = new Option(v.label || ('RomWBW ' + v.romwbw_version),
+                               v.romwbw_version);
         opt.dataset.id = v.romwbw_version;
-        // Shown and disabled rather than hidden: a user who mirrored a release
-        // this core cannot run should see why it is not selectable.
-        opt.disabled = !runs;
         el.appendChild(opt);
-        if (runs && (!preferred || v.default)) preferred = v.romwbw_version;
+        if (!preferred || v.default) preferred = v.romwbw_version;
       }
       el.value = preferred || vs[0].romwbw_version;
       return vs.length;
@@ -1070,27 +1048,8 @@
       return n;
     }
 
-    function coreSupportedReleases() {
-      // Ask the wasm itself which RomWBW releases it can load.  Only callable
-      // once the runtime is initialised, which is the only place it is called
-      // from.  Returns null when there is no answer - a page served beside a
-      // wasm built before this export existed - and null means "leave the
-      // mirror's value alone", which is what the page did before.
-      try {
-        const s = Module.ccall('romwbw_supported_releases', 'string', [], []);
-        if (!s) return null;
-        return s.split(',').map(function (x) { return x.trim(); })
-                .filter(function (x) { return x; });
-      } catch (e) {
-        return null;
-      }
-    }
-
     function applyManifest(manifest) {
-      // Every select the manifest governs, in the one order that works.  Also
-      // the rebuild path: when the core turns out to disagree with the mirror
-      // about which releases it runs, the lists have already been built from
-      // the wrong answer and have to be built again from the right one.
+      // Every select the manifest governs, in the one order that works.
       fillVersionSelect(manifest);
       fillCatalogSelects(manifest,
                          document.getElementById('romwbwVersionSelect').value);
@@ -1098,8 +1057,7 @@
       restoreSettings();
       // A stored RomWBW version has to be applied before the lists it governs.
       const s = storedSettings();
-      if (s && s.romwbwVersion && manifestVersion(manifest, s.romwbwVersion)
-          && versionRunnable(manifest, s.romwbwVersion)) {
+      if (s && s.romwbwVersion && manifestVersion(manifest, s.romwbwVersion)) {
         document.getElementById('romwbwVersionSelect').value = s.romwbwVersion;
         fillCatalogSelects(manifest, s.romwbwVersion);
         restoreSettings();
@@ -1776,21 +1734,11 @@
       term.writeln('RomWBW Emulator v' + EMU_VERSION + ' ready.');
       term.writeln('Load a ROM image or click Start to boot.');
       term.writeln('');
-      // Now that there is a core to ask, ask it.  catalog/manifest.json's
-      // emu_supported was written by whatever binary ran `romwbw-get mirror`;
-      // this core is the one that will refuse the ROM, and re-mirroring
-      // without rebuilding the wasm is the intended workflow.  Through
-      // manifestReady because the fetch and the runtime race, and the lists
-      // have to exist before they can be rebuilt.
-      manifestReady.then(function () {
-        const core = coreSupportedReleases();
-        if (!applyCoreSupported(catalogManifest, core)) return;
-        applyManifest(catalogManifest);
-        term.writeln('This build runs RomWBW ' + core.join(', ')
-                     + ' - the catalog mirror beside this page says otherwise,'
-                     + ' and this build is what will load the ROM.');
-        term.writeln('');
-      });
+      // There used to be a block here that asked the core which RomWBW
+      // releases it could boot and rebuilt the selects if it disagreed with
+      // the mirror.  The core has no such answer any more, and needs none:
+      // every release in the mirror is bootable by any build that can read a
+      // v0 catalog.
     };
   </script>
 </body>

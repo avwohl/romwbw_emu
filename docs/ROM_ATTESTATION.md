@@ -23,9 +23,9 @@ RomWBW releases:
   `01d1ca6d142e9b757d4fd98c2229f2e506dd8c3253839391c8f5d4f6263c6557`.
 
 Both banks 1-15 come from the upstream RomWBW `SBC_simh_std` ROM of the release
-named. Both releases are ones this emulator core has been checked against and
-will load; the list is `ROMWBW_SUPPORTED_RELEASES` in `src/romwbw_pin.h`, and
-the emulator refuses a ROM whose release is not on it.
+named. The emulator loads a ROM of any RomWBW release whose HBIOS
+Configuration Block it can read, and reports the release it found; it does not
+carry a list of releases. (Until v1.44 it did, and this paragraph named it.)
 
 The same catalog also publishes an alternate ROM id for each release,
 `emu_rcz80`, which differs only in taking banks 1-15 from the upstream
@@ -88,13 +88,19 @@ A reviewer with `um80` and a checkout can therefore reproduce the exact bytes of
 a ROM the application downloads, and be told by the script whether they match,
 instead of comparing hashes by hand.
 
-That script reproduces RomWBW 3.5.1 only: this repository's `src/emu_hbios.asm`
-hardcodes its version stamp, so bank 0 as built here can be overlaid on 3.5.1's
-banks 1-15 and on no others, and the script refuses any other source ROM rather
-than building a mismatched image. The parameterised copy of the same source,
-which builds bank 0 for any release, is in romwbw_disks alongside the script
-that cuts what users download; romwbw_disks' `tools/check_source_drift.sh`
-asserts the two trees' copies have not diverged.
+The ROMs users download are built by romwbw_disks' `tools/build_rom.sh` from
+its own byte-identical copy of `src/emu_hbios.asm`; that script is a local
+reproduction, run to check this claim rather than to produce anything. It
+reproduces either ROM above, and any other release the catalog publishes:
+`--romwbw VER` selects one and `--rom-id ID` selects which ROM.
+Bank 0's version stamp is generated from the HBIOS Configuration Block of the
+stock ROM being overlaid, so bank 0 and banks 1-15 declare the same release by
+construction, and the script refuses a source ROM of a different release rather
+than building a mismatched image. `src/emu_hbios.asm` is byte-identical to the
+copy in romwbw_disks that cuts what users download, and romwbw_disks'
+`tools/check_source_drift.sh` asserts the two trees' copies have not diverged.
+(Until v1.44 this repository's copy hardcoded a 3.5.1 stamp and the script
+could reproduce that one ROM only.)
 
 ## Authorization for Apple
 

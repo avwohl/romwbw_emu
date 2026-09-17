@@ -74,11 +74,14 @@ static constexpr uint8_t DIODEV_EMPTY = 0xFF;     // Empty slot
 // verifier that inspects ROM bytes can see them, so a stored copy that was
 // never updated would be invisible until a guest printed the wrong version.
 //
-// See src/romwbw_pin.h for which releases this core is checked against.
+// There is no list of releases here, and no constant naming one. Which
+// RomWBW releases exist is catalog data, published by romwbw_disks; which
+// one is running is a property of the ROM in memory. This core knows
+// neither at compile time.
 
 // A RomWBW release, in the two packed bytes RomWBW itself uses:
 //   ver = major<<4 | minor, upd = update<<4 | patch.
-// v3.5.1 is {0x35, 0x10}; v3.6.0 is {0x36, 0x00}.
+// So a release written x.y.z.w packs to {(x<<4)|y, (z<<4)|w}.
 struct emu_romwbw_release {
   uint8_t ver;
   uint8_t upd;
@@ -105,33 +108,16 @@ bool emu_romwbw_release_loaded(const banked_mem* memory,
 // buf, which needs EMU_ROMWBW_STR_MAX bytes. Returns buf.
 const char* emu_romwbw_release_str(emu_romwbw_release r, char* buf, size_t n);
 
-// Has this core been checked against that release? The list is
-// ROMWBW_SUPPORTED_RELEASES in src/romwbw_pin.h.
-bool emu_romwbw_release_supported(emu_romwbw_release r);
-
-// The supported releases as "3.5.1, 3.6.0", for messages. Static storage.
-const char* emu_romwbw_supported_list();
-
-// Load a release this core has never been checked against anyway.
-//
-// Off by default, and it stays a deliberate act: the refusal is the only
-// thing standing between a user and a ROM whose CBIOS may call an HBIOS
-// function this dispatcher does not implement, which fails as a hang or as
-// wrong output rather than as an error. A port that exposes this should say
-// "untested", not "advanced". emu_validate_rom_hcb() warns loudly and
-// proceeds when it is set.
-void emu_set_allow_untested_romwbw(bool allow);
-bool emu_allow_untested_romwbw();
-
 //=============================================================================
 // ROM Loading
 //=============================================================================
 
 // Check a ROM's HBIOS configuration block. Returns nullptr when the ROM is
-// usable, or a message naming the problem: a missing/corrupt HCB marker, or a
-// RomWBW release this core has not been checked against (see
-// ROMWBW_SUPPORTED_RELEASES in src/romwbw_pin.h). A stock hardware ROM
-// (CB_PLATFORM != 0) only logs a warning and still returns nullptr.
+// usable, or a message naming the problem: too short to hold an HCB, or a
+// missing/corrupt HCB marker. The RELEASE is not judged here - any release
+// with a readable HCB loads, and the version a guest sees is read back out
+// of it. A stock hardware ROM (CB_PLATFORM != 0) only logs a warning and
+// still returns nullptr.
 // The returned pointer is to static storage, valid until the next call.
 // Both emu_load_rom() and emu_load_rom_from_buffer() call this and fail the
 // load on a non-null result, so ports get the check for free.

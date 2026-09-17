@@ -7,7 +7,6 @@
  */
 
 #include "emu_init.h"
-#include "romwbw_pin.h"
 #include "romwbw_mem.h"
 #include "hbios_dispatch.h"
 #include "qkz80.h"
@@ -31,28 +30,9 @@ static const size_t HCB_PLATFORM = 0x107; // 0 = EMU, non-zero = real hardware
 // RomWBW Release Identification
 //=============================================================================
 
-// The releases this core has been checked against, expanded from the one list
-// in romwbw_pin.h so the table and the message below cannot disagree.
-namespace {
-
-struct SupportedRelease {
-  uint8_t ver;
-  uint8_t upd;
-  const char* note;
-};
-
-const SupportedRelease kSupportedReleases[] = {
-#define EMU_SUPPORTED_ROW(MAJ, MIN, UPD, PAT, NOTE) \
-  {(uint8_t)(((MAJ) << 4) | (MIN)), (uint8_t)(((UPD) << 4) | (PAT)), NOTE},
-    ROMWBW_SUPPORTED_RELEASES(EMU_SUPPORTED_ROW)
-#undef EMU_SUPPORTED_ROW
-};
-
-const size_t kSupportedCount = sizeof(kSupportedReleases) / sizeof(kSupportedReleases[0]);
-
-bool g_allow_untested_romwbw = false;
-
-}  // namespace
+// There is no table of releases here any more, and no compile-time constant
+// naming one. A release is read out of whatever ROM is loaded; which releases
+// exist is the romwbw_disks catalog's business, not this core's.
 
 bool emu_romwbw_release_of_image(const uint8_t* rom, size_t size,
                                  emu_romwbw_release* out) {
@@ -97,69 +77,30 @@ const char* emu_romwbw_release_str(emu_romwbw_release r, char* buf, size_t n) {
   return buf;
 }
 
-bool emu_romwbw_release_supported(emu_romwbw_release r) {
-  for (size_t i = 0; i < kSupportedCount; i++) {
-    if (kSupportedReleases[i].ver == r.ver && kSupportedReleases[i].upd == r.upd) {
-      return true;
-    }
-  }
-  return false;
-}
-
-const char* emu_romwbw_supported_list() {
-  static char list[128];
-  static bool built = false;
-  if (built) return list;
-
-  list[0] = '\0';
-  size_t used = 0;
-  for (size_t i = 0; i < kSupportedCount; i++) {
-    char one[EMU_ROMWBW_STR_MAX];
-    emu_romwbw_release r = {kSupportedReleases[i].ver, kSupportedReleases[i].upd};
-    emu_romwbw_release_str(r, one, sizeof(one));
-    // Truncating the list would understate what this binary can run, so stop
-    // at the last entry that fits whole rather than emitting half a version.
-    const char* sep = (used == 0) ? "" : ", ";
-    size_t need = strlen(sep) + strlen(one);
-    if (used + need + 1 > sizeof(list)) break;
-    memcpy(list + used, sep, strlen(sep));
-    used += strlen(sep);
-    memcpy(list + used, one, strlen(one));
-    used += strlen(one);
-    list[used] = '\0';
-  }
-  built = true;
-  return list;
-}
-
-void emu_set_allow_untested_romwbw(bool allow) { g_allow_untested_romwbw = allow; }
-
-bool emu_allow_untested_romwbw() { return g_allow_untested_romwbw; }
-
-// The release to fall back on when a guest-visible site is asked for a
-// version and no ROM is loaded. Reaching this is a bug in the caller - the
-// whole init sequence runs after emu_load_rom() - so every use logs first.
-// It exists so that such a bug produces this tree's own default rather than
-// stamping 00 00 into page zero, which a guest reads as RomWBW v0.0.0.
+// The release to report when a guest-visible site is asked for a version and
+// no ROM is loaded. Reaching this is a bug in the caller - the whole init
+// sequence runs after emu_load_rom() - so every use logs first.
+//
+// It answers 0.0.0, which is what a guest will print, and that is the point:
+// there is no release this core can honestly substitute. It used to answer a
+// compile-time default, which turned "no ROM is loaded" into a plausible
+// version number and hid the bug behind it.
 static emu_romwbw_release emu_romwbw_release_or_default(const banked_mem* memory,
                                                         const char* site) {
   emu_romwbw_release r;
   if (emu_romwbw_release_loaded(memory, &r)) return r;
 
-  char buf[EMU_ROMWBW_STR_MAX];
-  emu_romwbw_release fallback = {(uint8_t)ROMWBW_DEFAULT_VER_BYTE,
-                                 (uint8_t)ROMWBW_DEFAULT_UPD_BYTE};
   emu_error("[EMU_INIT] %s: no HBIOS configuration block in ROM bank 0 - the "
-            "ROM is not loaded yet. Reporting v%s to the guest; load the ROM "
-            "before initialisation.\n",
-            site, emu_romwbw_release_str(fallback, buf, sizeof(buf)));
-  return fallback;
+            "ROM is not loaded yet. Reporting v0.0.0 to the guest; load the "
+            "ROM before initialisation.\n",
+            site);
+  emu_romwbw_release none = {0, 0};
+  return none;
 }
 
 const char* emu_validate_rom_hcb(const uint8_t* rom, size_t size) {
-  // Large enough for the unsupported-release message, which interpolates the
-  // whole supported list plus the release found twice.  -Wformat-truncation
-  // catches this at 256.
+  // Large enough for the marker message, which interpolates an offset and
+  // two bytes.
   static char msg[512];
 
   if (!rom || size <= HCB_PLATFORM) {
@@ -177,38 +118,21 @@ const char* emu_validate_rom_hcb(const uint8_t* rom, size_t size) {
     return msg;
   }
 
-  // Which RomWBW release this ROM is, and whether this core has been checked
-  // against it. The version itself is no longer a compile-time constant -
-  // everything guest-visible reads it back out of this ROM - so what is left
-  // to refuse is a release nobody has run. Bank 0 of an emu_*.rom is our
-  // HBIOS proxy and the C++ dispatcher behind it implements a specific set of
-  // functions; a release whose CBIOS calls something it does not implement
-  // would load and then hang or misbehave, which is far harder to diagnose
-  // than a refusal at load time.
-  emu_romwbw_release release;
-  if (!emu_romwbw_release_of_image(rom, size, &release)) {
-    // Unreachable: the marker test above already returned. Kept so that a
-    // later reordering cannot silently skip the version check.
-    return "ROM has no readable HBIOS configuration block";
-  }
-  if (!emu_romwbw_release_supported(release)) {
-    char found[EMU_ROMWBW_STR_MAX];
-    emu_romwbw_release_str(release, found, sizeof(found));
-    if (!emu_allow_untested_romwbw()) {
-      snprintf(msg, sizeof(msg),
-               "ROM is built for RomWBW v%s, which this emulator has not been "
-               "checked against (it can run %s) - use one of those, or add "
-               "v%s to ROMWBW_SUPPORTED_RELEASES in src/romwbw_pin.h once you "
-               "have booted it",
-               found, emu_romwbw_supported_list(), found);
-      return msg;
-    }
-    emu_error("[EMU_INIT] Warning: loading RomWBW v%s anyway - this emulator "
-              "has only been checked against %s. If the guest hangs or prints "
-              "nothing, an HBIOS function it calls is probably not "
-              "implemented.\n",
-              found, emu_romwbw_supported_list());
-  }
+  // The RELEASE this ROM declares is deliberately NOT judged here.
+  //
+  // What this core depends on is the emulator-to-ROM interface - the two
+  // ports in src/emu_hbios.asm and the set of HBIOS functions
+  // hbios_dispatch.cc services - and none of that is versioned by a RomWBW
+  // release number. The release number is the HBIOS-to-CBIOS pairing, which
+  // is a property of a ROM and a disk image and is enforced by the guest's
+  // own "HBIOS/CBIOS Version Mismatch" warning, not by us.
+  //
+  // This used to be an allowlist compiled in from src/romwbw_pin.h, which
+  // meant publishing a new RomWBW release cost a rebuild of every front end
+  // - the exact coupling the romwbw_disks catalog was built to remove. The
+  // catalog carries the interface version in its own name (v0); a change
+  // this core could not service would be a v1 catalog, which is a gate no
+  // client has to be rebuilt to honour.
 
   // Non-fatal: a stock RomWBW ROM for real hardware has a real HBIOS in bank
   // 0 that drives hardware we do not emulate, instead of the port 0xEF proxy.

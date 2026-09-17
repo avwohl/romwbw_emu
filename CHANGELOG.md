@@ -17,6 +17,143 @@ symlinks into `src/`, `z80cpmw`'s vcxproj compiles it in place, and `cpmdroid`'s
 CMakeLists pulls it from a sibling checkout — so a commit here reaches all three
 on their next build, tag or no tag.
 
+## [1.44] - 2026-09-17
+
+### The RomWBW release is not this core's business
+
+`ROMWBW_SUPPORTED_RELEASES` gated ROM loading on the RomWBW release number, and
+that is the wrong axis. **It is gone, and so is `src/romwbw_pin.h`.** A ROM
+whose HCB declares any release now loads; the release a guest sees is read back
+out of it, as it already was.
+
+The release number is the **HBIOS-to-CBIOS pairing** — a fact about a ROM and a
+disk image, enforced by the guest's own
+`*** WARNING: HBIOS/CBIOS Version Mismatch ***`. What this core depends on is
+the **emulator-to-ROM interface**: two I/O ports and the set of HBIOS functions
+`hbios_dispatch.cc` services. That interface is versioned by the catalog's own
+name — `v0` — and an interface change this core could not service would be
+published as `index-v1.json`, which a v0 client ignores by name. A
+compile-time allowlist was a second, weaker gate on the wrong axis, and its
+price was that publishing a RomWBW release required releasing Windows, macOS,
+iOS, Android and Linux first — the exact coupling `romwbw_disks` exists to
+remove.
+
+Checked, not asserted: a ROM patched to declare `3.7.0` now loads and boots to
+the RomWBW boot loader. Before this it was refused at load.
+
+`docs/RELEASE_GATE.md` argued for this change and is now the record of it —
+what came out, what stayed, and what downstream must do.
+
+### What came out
+
+`emu_romwbw_release_supported()`, `emu_romwbw_supported_list()`,
+`emu_set_allow_untested_romwbw()`, `emu_allow_untested_romwbw()`, the
+supported-release table, the release branch of `emu_validate_rom_hcb()`,
+`--allow-untested-romwbw`, and the
+`RomWBW releases this build can run:` line in `--version` — which was a
+cross-repository protocol with four consumers. In `tools/romwbw-get`:
+`supported_releases()`, `_runnable()` and its eight call sites, the `runnable`
+parameter threaded through `Catalog.pool()` and `resolve_version()`, and the
+`emu_supported` key in `versions --json` and in the mirror manifest. In `web/`:
+the `romwbw_supported_releases` export and the whole select-greying path.
+
+`emu_validate_rom_hcb()` keeps its name and signature, and still refuses a ROM
+that is too short or has no `57 A8` marker. `emu_romwbw_release_of_image()`,
+`emu_romwbw_release_loaded()`, `emu_romwbw_release_str()`, the
+`emu_romwbw_release` struct and `emu_load_rom_from_buffer()` are untouched.
+
+### Obsolete flags are accepted, not rejected
+
+`romwbw-get --assume-supported`, `--allow-untested`, `versions --all` and
+`mirror --versions=runnable` all still parse, and do nothing. Installed
+scripts and test suites pass them, and an argparse error would have turned
+"this flag is obsolete" into exit 64 after a 51 MB fetch.
+
+### `roms/verify_romwbw_pin.sh` keeps its name, and loses half its job
+
+Its release-allowlist checks and its built-binary check are gone. Its HCB
+marker, `CB_PLATFORM` and **ROM↔disk pairing** checks stay — the pairing is the
+axis that is real, and this script is the only thing here that checks it. Both
+its PASS lines changed spelling and `.github/workflows/test.yml` matches the
+new ones.
+
+### The last release number left the tree
+
+Deleting the gate did not by itself stop this repository knowing that 3.5.1 and
+3.6.0 exist. Two more things did.
+
+- **`src/emu_hbios.asm` no longer hardcodes a version stamp.** `db 035h` /
+  `db 010h` at `CB_VERSION` and in the proxy ident block now come from a
+  generated `romwbw_ver.inc`, and the file is **byte-identical** to the copy in
+  `romwbw_disks`. This moved no published byte — published ROMs are built from
+  that repository's copy, which was already parameterised — and its
+  `check_source_drift.sh` changed from asserting the two copies *differ* in a
+  documented way to asserting they are *identical*, which is strictly stronger
+  and caught a comment that had already drifted.
+- **`roms/build_emu_rom.sh` stopped reading the header, and is now labelled
+  what it is: a debugging tool.** ROMs are romwbw_disks' province — its
+  `tools/build_rom.sh` cuts every ROM users download — and nothing in this
+  repository's build, test or release path assembles one. This script exists to
+  reproduce a published ROM locally when something is *wrong*: a suspected
+  drift in bank 0, or a check of the claim `docs/ROM_ATTESTATION.md` and the
+  GPL both turn on. It used to `sed` `ROMWBW_DEFAULT_*` out of the header and
+  could reproduce 3.5.1 only — by then not even the catalog's default, so it
+  could not reproduce the ROM most users download. It now takes `--romwbw VER`,
+  defaults to the catalog's default, and generates the stamp from the HCB of
+  the stock ROM it is overlaying, so bank 0 and banks 1–15 name the same
+  release by construction. All four published ROMs were reproduced
+  byte-for-byte to verify this change, which is the kind of occasion that
+  warrants running it.
+
+### With no ROM loaded, the answer is 0.0.0
+
+`emu_romwbw_release_or_default()` used to substitute a compile-time default
+when asked for a version before a ROM was loaded. There is no honest default
+now, so it answers `0.0.0` and logs loudly. Reaching it is a caller bug — the
+whole init sequence runs after `emu_load_rom()` — and a plausible-looking
+version number was hiding it.
+
+### `0x0406` stays, and the note that said to move it was wrong
+
+`docs/RELEASE_GATE.md` called `0x0406` "the one genuine release constant in
+bank 0" and proposed moving it into the generated include. Upstream 3.6.0's
+`romldr.asm` contains **no reference to `$0406` at all** — the special case is
+live under 3.5.1 and inert under 3.6.0. Moving it would buy nothing and would
+move all four published ROMs' hashes, bumping both catalog generations and
+making every user re-download their disk images. It also has a second half
+nothing had named: `handlePRTSUM` in `src/hbios_cpu.cc` is C++ compiled into
+every client, which a generated assembler include could never have reached.
+
+### Companion changes in `romwbw_disks`
+
+`tools/boot_test.sh` **consumed** the gate: it parsed the `--version` banner
+and `die`d when the line was absent, so deleting the gate without touching it
+would have blocked every publish rather than leaving it unguarded. It now
+derives the versions to test from `versions/` unconditionally, parses no
+banner, and has no refusal branch — a ROM that does not boot is a failure,
+never a correct refusal. Run against this build it boots 3.5.1 and 3.6.0,
+round-trips R8/W8 on both, and still gets the mismatch warning in both
+directions from a crossed pair.
+
+### Downstream: this is a compile break, not a filter that can lag
+
+All three GUI clients call the deleted functions from source they compile out
+of a sibling checkout — `z80cpmw` and `cpmdroid` compile `src/emu_init.cc` in
+place, `ioscpm` symlinks ten files out of `src/` including `emu_init.cc` and
+`romwbw_pin.h`. `DOWNSTREAM.md`'s "RomWBW releases are not this core's
+business" says what to delete and what to do instead;
+`docs/RELEASE_GATE.md` enumerates every call site in each client. `cpmemu` is
+unaffected.
+
+### todo.txt said things about this machine that were not true
+
+Its header claimed emcc had been installed here and node upgraded beside it.
+Neither is in `brew list`; `make -C web` has never run on this machine. It also
+claimed a v1.43 release had been cut — there is no `v1.43` tag, as `WIP.md`
+itself records. The header now states what was measured, tool by tool. node
+*was* installed while making this change, to run the web JS tests, which had
+been skipping.
+
 ## [1.43] - 2026-09-17
 
 `VERSION` is `1.43`. The `[1.37]` rule applies twice over: `src/emu_io_common.cc`

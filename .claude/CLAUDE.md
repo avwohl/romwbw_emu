@@ -89,9 +89,11 @@ When working on RomWBW integration:
    - Contains the RomWBW boot loader, OS images, and ROM disk
    - Does NOT contain hardware-probing driver code
 
-   That ROM is built and published by romwbw_disks now, not here.
-   `roms/build_emu_rom.sh` reproduces it from `src/emu_hbios.asm` and checks
-   the result against the published hash; see the Build Tools section.
+   That ROM is built and published by romwbw_disks now, not here, and building
+   one here is not part of any normal workflow. `roms/build_emu_rom.sh` can
+   reproduce it from `src/emu_hbios.asm` and check the result against the
+   published hash, as a DEBUGGING step when bank 0 is suspect; see the Build
+   Tools section for when that is and is not warranted.
 
 5. **STUDY THE BUILD SYSTEM** - Understand how RomWBW builds ROMs and how to
    configure it to exclude hardware drivers while keeping the useful parts
@@ -166,31 +168,31 @@ check red in another repository.
     fails the file: `Unknown instruction or directive: LD`.
   - Assemble: `um80 -g file.asm` (creates file.rel in same directory as source)
   - Link: `ul80 -o output.bin -p 0000 file.rel`
-  - **Building the ROM is one command.** `roms/build_emu_rom.sh` does the
-    assemble, the 32 KB pad and the overlay itself; there is no hand-run
-    `um80`/`ul80`/`dd` sequence any more, and no stock ROM in the tree to pass
-    it:
-    ```
-    roms/build_emu_rom.sh
-    ```
-    It assembles bank 0 from `src/emu_hbios.asm`, takes banks 1-15 from a
-    512 KB stock RomWBW ROM you name or from the sha256-pinned upstream
-    `Package.zip` it fetches with `tools/romwbw-get`, and then - this is the
-    point of running it - compares the result against the SHA-256 the catalog
-    publishes:
-    ```
-    PASS: byte-identical to the published emu_avw for RomWBW 3.5.1
-          sha256 4b11402a29fad22de304775b7c415eb6a74600df06bd57828b9931a7e9693258
-    ```
-    The file is written to a temporary directory it prints at the end; it
-    refuses to write inside the repository, because a built ROM in the tree is
-    exactly what was removed. It can only reproduce the release
-    `ROMWBW_DEFAULT_*` in `src/romwbw_pin.h` names, because `src/emu_hbios.asm`
-    here hardcodes `db 035h` / `db 010h` at CB_VERSION and again in the ident
-    block. Overlaying this bank 0 on another release's banks would build a ROM
-    that boots and then prints
-    `*** WARNING: HBIOS/CBIOS Version Mismatch ***`, so the script refuses it
-    rather than producing one.
+  - **DO NOT BUILD ROMs HERE IN THE NORMAL COURSE OF WORK.** ROMs are
+    entirely `romwbw_disks`' province: its `tools/build_rom.sh` cuts every ROM
+    users download, from its own copy of `src/emu_hbios.asm`. Nothing in this
+    repository's build, test or release path assembles a ROM, and nothing
+    should start.
+
+    `roms/build_emu_rom.sh` exists for ONE reason and it is not routine: to
+    reproduce a published ROM locally **when debugging a problem** - a
+    suspected drift between the two trees' `emu_hbios.asm`, or a check of the
+    reproducibility claim `docs/ROM_ATTESTATION.md` makes. It assembles bank 0,
+    overlays it on the upstream banks 1-15, and compares the result against the
+    sha256 the catalog publishes. It writes to a temporary directory and
+    refuses to write inside the repository. `--romwbw VER` picks a release,
+    `--rom-id ID` picks which ROM, and with neither it reproduces the catalog's
+    default.
+
+    Reach for it when something is actually wrong. Do not run it to "check"
+    an ordinary change, do not add it to a script, a test or a workflow, and
+    do not quote its output as evidence that a routine edit is fine -
+    `romwbw_disks/tools/check_source_drift.sh` is what continuously asserts the
+    two trees agree, and it needs no ROM.
+
+    `src/emu_hbios.asm` is **byte-identical** to romwbw_disks' copy and that
+    drift check asserts it, so an edit here is an edit to every published ROM -
+    see the generation cost in `todo.txt`.
   - **Never write `org 0100h` in a CP/M `.COM` source.** L80 bases a relocatable
     code segment at 0100h by itself, so an ORG is applied *on top of* that base
     and puts the code at 0200h behind 256 zero bytes. The result runs - CP/M

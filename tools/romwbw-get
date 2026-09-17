@@ -17,11 +17,13 @@
 # release and it reaches a user who has already installed this without anybody
 # cutting a romwbw_emu release.
 #
-# The one thing that does need a rebuild is a new RomWBW *release*, because
-# ROMWBW_SUPPORTED_RELEASES in src/romwbw_pin.h is compile-time and adding a
-# line to it is a claim that somebody booted that release.  This script asks
-# the binary what it can run rather than assuming, so an entry the local build
-# cannot boot is reported as such instead of being downloaded and refused.
+# A new RomWBW *release* is no exception to that, and used to be: this script
+# asked the binary which releases it had been compiled to allow, and hid the
+# rest.  Every release a v0 catalog publishes speaks the same
+# HBIOS-to-emulator interface - that is what the v0 in the name means - so
+# there was nothing to filter, and the filter cost a rebuild of five front
+# ends every time a release was published.  An interface this build could not
+# service would be published as v1, which index() refuses by name.
 #
 # Why a separate program and not C++ in the emulator: fetching needs HTTP, TLS
 # and SHA-256, none of which belong inside a program whose job is to execute
@@ -46,7 +48,6 @@ import errno
 import hashlib
 import json
 import os
-import re
 import shutil
 import stat
 import subprocess
@@ -188,13 +189,13 @@ def save_choice(d):
 _warned_stored = [False]
 
 
-def warn_stored_ignored(stored, chosen, published, runnable):
+def warn_stored_ignored(stored, chosen, published):
     """Say, once, that catalog.json names a release no run is going to use.
 
     THE FILE IS NOT REWRITTEN, and that is deliberate.  A stored choice is the
     user's, and a release can become selectable again - an index is
-    regenerated, a binary is rebuilt with another X() line - so overwriting it
-    here would throw away a preference that is about to be satisfiable.  What
+    regenerated - so overwriting it here would throw away a preference that is
+    about to be satisfiable.  What
     was wrong was never the pairing, which cannot go wrong: one resolved
     version feeds the ROM and both disks.  It was the silence.  The value sat
     in the file for ever while every run fetched and booted something else,
@@ -203,12 +204,8 @@ def warn_stored_ignored(stored, chosen, published, runnable):
     if _warned_stored[0]:
         return
     _warned_stored[0] = True
-    if stored not in published:
-        why = ("which this index does not publish (it publishes %s)"
-               % ", ".join(published))
-    else:
-        why = ("which this build cannot run (it runs %s)"
-               % (", ".join(runnable) if runnable else "nothing"))
+    why = ("which this index does not publish (it publishes %s)"
+           % ", ".join(published))
     warn("\n            ".join([
         "%s selects RomWBW %s," % (config_path(), stored),
         "%s." % why,
@@ -417,16 +414,14 @@ def sha256_file(path):
     return h.hexdigest()
 
 
-# --- what this build can run --------------------------------------------------
+# --- finding the emulator -----------------------------------------------------
 #
-# Parsed off `romwbw_emu --version`, which is the protocol romwbw_disks'
-# tools/boot_test.sh already speaks.  Three consumers now read that one line;
-# a machine-readable flag would be a fourth surface for the same fact and would
-# not exist on binaries that are already installed.
-
-RE_RUNS = re.compile(r"^RomWBW releases this build can run:\s*(.+)$", re.M)
-RE_PINNED = re.compile(r"^RomWBW compatibility:\s*v([0-9.]+)", re.M)
-
+# `run` execs it.  Nothing here asks it which RomWBW releases it can run any
+# more: every release in a v0 catalog speaks the same HBIOS-to-emulator
+# interface, so the question had one answer and asking it cost a rebuild of
+# every front end whenever a release was published.  An interface this build
+# could not service would be a v1 catalog, which `index()` already refuses by
+# name.
 
 def find_emulator(explicit=None):
     if explicit:
@@ -440,25 +435,6 @@ def find_emulator(explicit=None):
         if os.path.exists(cand):
             return os.path.abspath(cand)
     return shutil.which("romwbw_emu")
-
-
-def supported_releases(emu):
-    """Ask the binary.  Returns a list of version strings, or None if it could not be asked."""
-    if not emu:
-        return None
-    try:
-        out = subprocess.run([emu, "--version"], capture_output=True, text=True,
-                             timeout=20)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    blob = (out.stdout or "") + (out.stderr or "")
-    m = RE_RUNS.search(blob)
-    if m:
-        return [v.strip() for v in m.group(1).split(",") if v.strip()]
-    m = RE_PINNED.search(blob)      # a binary from before the runtime version
-    if m:
-        return [m.group(1).strip()]
-    return None
 
 
 # --- the catalog ---------------------------------------------------------------
@@ -615,10 +591,9 @@ class Catalog(object):
             "the index does not publish RomWBW %s.  It publishes: %s"
             % (version, ", ".join(e["romwbw_version"] for e in self.entries())))
 
-    def pool(self, runnable):
-        """The published releases this build is allowed to choose from."""
-        return [e for e in self.entries()
-                if runnable is None or e["romwbw_version"] in runnable]
+    def pool(self):
+        """The published releases a run can choose from - all of them."""
+        return list(self.entries())
 
     @staticmethod
     def fallback(pool):
@@ -628,7 +603,7 @@ class Catalog(object):
                 return e["romwbw_version"]
         return pool[0]["romwbw_version"]
 
-    def resolve_version(self, args, runnable):
+    def resolve_version(self, args):
         """Precedence, matching what the three GUI clients converged on."""
         if getattr(args, "romwbw", None):
             v = args.romwbw
@@ -640,19 +615,9 @@ class Catalog(object):
             self.entry(env)
             return env
 
-        # Filter to runnable BEFORE honouring `default`.  Otherwise a newly
-        # published release carrying default:true that this build cannot boot
-        # would be selected, and 51 MB downloaded for a ROM the binary refuses.
-        pool = self.pool(runnable)
+        pool = self.pool()
         if not pool:
-            raise Contradiction(
-                "this build can run %s, and the index publishes %s - no "
-                "overlap.\n"
-                "            Add the release to ROMWBW_SUPPORTED_RELEASES in "
-                "src/romwbw_pin.h once you have booted it, or pass "
-                "--allow-untested."
-                % (", ".join(runnable or []) or "nothing",
-                   ", ".join(e["romwbw_version"] for e in self.entries())))
+            raise Contradiction("the index publishes no RomWBW releases")
 
         stored = load_choice().get("romwbw_version")
         if stored and any(e["romwbw_version"] == stored for e in pool):
@@ -662,8 +627,7 @@ class Catalog(object):
             # The stored release is not in the pool, so it is about to be
             # ignored for the whole of this run.  Nothing used to say so.
             warn_stored_ignored(stored, chosen,
-                                [e["romwbw_version"] for e in self.entries()],
-                                runnable)
+                                [e["romwbw_version"] for e in self.entries()])
         return chosen
 
     # -- per-version catalog --------------------------------------------------
@@ -1039,70 +1003,52 @@ def _ago(seconds):
 # --- subcommands ---------------------------------------------------------------
 
 def cmd_versions(cat, args):
-    runnable = _runnable(args)
     entries = cat.entries()
     stored = load_choice().get("romwbw_version")
     # `selected` is what the file says; `in_use` is what a run actually gets,
     # with no --romwbw and no ROMWBW_VERSION in front of it.  They are the same
-    # value until the stored release stops being published or stops being
-    # runnable, and this command is where that has to be visible - it is the
-    # one a user runs to ask what is going on.
-    pool = cat.pool(None if args.allow_untested else runnable)
+    # value until the stored release stops being published, and this
+    # command is where that has to be visible - it is the one a user runs to
+    # ask what is going on.
+    pool = cat.pool()
     stored_ok = bool(stored) and any(e["romwbw_version"] == stored for e in pool)
     in_use = stored if stored_ok else (cat.fallback(pool) if pool else None)
     if args.json:
-        out = []
-        for e in entries:
-            d = dict(e)
-            d["runnable"] = (runnable is None or e["romwbw_version"] in runnable)
-            out.append(d)
-        json.dump({"index_url": cat.index_url, "emu_supported": runnable,
+        json.dump({"index_url": cat.index_url,
                    "selected": stored, "in_use": in_use,
-                   "romwbw_versions": out},
+                   "romwbw_versions": [dict(e) for e in entries]},
                   sys.stdout, indent=2)
         sys.stdout.write("\n")
         return EX_OK
 
-    hidden = 0
     for e in entries:
         v = e["romwbw_version"]
-        runs = runnable is None or v in runnable
-        if not runs and not args.all:
-            hidden += 1
-            continue
         marks = []
         if e.get("default"):
             marks.append("index default")
         if v == stored:
             marks.append("selected")
-        if not runs:
-            marks.append("NOT RUNNABLE by this build")
         print("  %-7s %-8s %-22s %s"
               % (v, e.get("status", "?"), e.get("label", ""),
                  ("(" + ", ".join(marks) + ")") if marks else ""))
-    if hidden:
-        print("  (%d more this build cannot run; --all shows them)" % hidden)
-    # No warning here: _runnable() already said so once, for every subcommand.
-    if runnable is not None:
-        print("\n  this build runs: %s" % ", ".join(runnable))
-    # A stored release that is filtered out is marked on no row, because the
-    # row is not printed - and one the index has dropped has no row at all.
-    # Either way the listing used to show nothing, which is how a stale choice
-    # survives unnoticed.
+    # Every published release is listed, because every one of them is
+    # runnable: a v0 catalog is one HBIOS-to-emulator interface.  There used
+    # to be a filter here, and rows it hid said "NOT RUNNABLE by this build".
+    #
+    # A stored release the index has dropped has no row at all, which is how
+    # a stale choice survives unnoticed.
     if stored and not stored_ok:
-        why = ("this index does not publish it"
-               if not any(e["romwbw_version"] == stored for e in entries)
-               else "this build cannot run it")
-        print("\n  catalog.json selects RomWBW %s, but %s, so runs use %s."
-              % (stored, why, in_use or "nothing"))
+        # One reason left.  There were two while the core carried a release
+        # allowlist: the index had dropped it, or this build could not run it.
+        print("\n  catalog.json selects RomWBW %s, but this index does not "
+              "publish it, so runs use %s." % (stored, in_use or "nothing"))
         print("  The file is left alone: `romwbw-get use <version>` chooses "
               "another, `use --clear` forgets it.")
     return EX_OK
 
 
 def cmd_list(cat, args):
-    runnable = _runnable(args)
-    version = cat.resolve_version(args, None if args.allow_untested else runnable)
+    version = cat.resolve_version(args)
     doc = cat.catalog(version)
     roms = [r for r in doc.get("roms", []) if isinstance(r, dict)]
     disks = [d for d in doc.get("disks", []) if isinstance(d, dict)]
@@ -1156,16 +1102,7 @@ def cmd_use(cat, args):
 
     choice = load_choice()
     if args.version:
-        runnable = _runnable(args)
         cat.entry(args.version)
-        if runnable is not None and args.version not in runnable \
-                and not args.allow_untested:
-            raise Contradiction(
-                "this build cannot run RomWBW %s (it runs %s).\n"
-                "            Add it to ROMWBW_SUPPORTED_RELEASES in "
-                "src/romwbw_pin.h once you have booted it, or pass "
-                "--allow-untested."
-                % (args.version, ", ".join(runnable)))
         choice["romwbw_version"] = args.version
     for key in ("rom", "disk0", "disk1"):
         v = getattr(args, key)
@@ -1200,8 +1137,7 @@ def cmd_use(cat, args):
 
 
 def cmd_fetch(cat, args):
-    runnable = _runnable(args)
-    version = cat.resolve_version(args, None if args.allow_untested else runnable)
+    version = cat.resolve_version(args)
     ids = args.ids or _default_ids(cat, version)
     paths = []
     for ident in ids:
@@ -1223,8 +1159,7 @@ def _default_ids(cat, version):
 
 
 def cmd_path(cat, args):
-    runnable = _runnable(args)
-    version = cat.resolve_version(args, None if args.allow_untested else runnable)
+    version = cat.resolve_version(args)
     for ident in args.ids:
         kind, _ = cat.resolve_id(version, ident)
         p = cat.fetch(version, ident, trust_cache=args.trust_cache)
@@ -1235,8 +1170,7 @@ def cmd_path(cat, args):
 
 
 def cmd_run(cat, args):
-    runnable = _runnable(args)
-    version = cat.resolve_version(args, None if args.allow_untested else runnable)
+    version = cat.resolve_version(args)
     choice = load_choice()
 
     rom_id = args.rom or choice.get("rom") or "@rom"
@@ -1260,13 +1194,9 @@ def cmd_run(cat, args):
             continue
         pristine = cat.fetch(version, ident, trust_cache=args.trust_cache)
         argv.append("--disk%d=%s" % (slot, cat.working_copy(version, pristine)))
-    # resolve_version() honours --allow-untested, so this is the path that gets
-    # to a ROM the binary has not been checked against.  Without passing the
-    # flag on, the user follows this program's own advice ("or pass
-    # --allow-untested", above), waits for ~51 MB, and is then refused by
-    # emu_validate_rom_hcb - with a message about a flag they did pass.
-    if args.allow_untested:
-        argv.append("--allow-untested-romwbw")
+    # Everything after `--` goes to the emulator untouched.  There used to be
+    # a --allow-untested-romwbw forwarded here too; the binary has no such
+    # flag any more and would exit 1 on it, after the ~51 MB fetch above.
     argv.extend(args.emu_args)
 
     info("+ " + " ".join(argv), cat.quiet)
@@ -1277,7 +1207,6 @@ def cmd_run(cat, args):
 
 
 def cmd_verify(cat, args):
-    runnable = _runnable(args)
     versions = ([args.romwbw] if args.romwbw and args.romwbw != "default"
                 else [e["romwbw_version"] for e in cat.entries()])
     bad = 0
@@ -1348,25 +1277,14 @@ def cmd_mirror(cat, args):
     jsdelivr 404 on them.  So the page reads a manifest and files served from
     its own origin, and this is what writes them.
     """
-    runnable = _runnable(args)
     dest = os.path.abspath(args.dir)
     cdir = os.path.join(dest, "catalog")
 
-    if args.versions == "runnable":
-        if runnable is None:
-            raise Contradiction(
-                "--versions=runnable needs a romwbw_emu binary to ask "
-                "(--emu=PATH).  The wasm core and that binary are compiled "
-                "from the same src/romwbw_pin.h, so it is the right thing to "
-                "ask - but it has to exist.")
-        want = [e["romwbw_version"] for e in cat.entries()
-                if e["romwbw_version"] in runnable]
-        for e in cat.entries():
-            if e["romwbw_version"] not in runnable:
-                info("skipping RomWBW %s: this build cannot run it - add it "
-                     "to ROMWBW_SUPPORTED_RELEASES in src/romwbw_pin.h once "
-                     "you have booted it" % e["romwbw_version"], cat.quiet)
-    elif args.versions == "all":
+    # "runnable" is accepted and means "all".  It was the default for as
+    # long as the core carried a compile-time release allowlist, so it is
+    # spelled in web/makefile, in deploy scripts and in whatever anyone
+    # copied out of them; refusing it now would break those for no gain.
+    if args.versions in ("all", "runnable"):
         want = [e["romwbw_version"] for e in cat.entries()]
     else:
         want = [v.strip() for v in args.versions.split(",") if v.strip()]
@@ -1383,7 +1301,6 @@ def cmd_mirror(cat, args):
         "schema_version": MIRROR_SCHEMA_VERSION,
         "interface": INTERFACE,
         "mirrored_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "emu_supported": runnable,
         "source": {"index_url": cat.index_url},
         "romwbw_versions": [],
     }
@@ -1498,31 +1415,6 @@ def cmd_mirror(cat, args):
     return EX_OK
 
 
-_warned_no_emu = [False]
-
-
-def _runnable(args):
-    """Which RomWBW releases the local build can boot, or None if it could not be asked."""
-    if getattr(args, "assume_supported", None):
-        return [v.strip() for v in args.assume_supported.split(",") if v.strip()]
-    emu = find_emulator(args.emu)
-    rel = supported_releases(emu)
-    if rel is None and not _warned_no_emu[0]:
-        # Said once, on every subcommand rather than only on `versions`.  With
-        # no answer the release list is not filtered at all, so a user can be
-        # handed a 51 MB image for a release their binary will refuse to load -
-        # and the refusal happens at the end of the download, not before it.
-        _warned_no_emu[0] = True
-        if emu:
-            warn("%s did not report a supported-release list, so nothing was "
-                 "filtered" % emu)
-        else:
-            warn("no romwbw_emu binary found (build it with `make -C src`, or "
-                 "pass --emu=PATH), so the release list was not filtered by "
-                 "what this build can run")
-    return rel
-
-
 # --- argument parsing -----------------------------------------------------------
 
 class Parser(argparse.ArgumentParser):
@@ -1551,11 +1443,15 @@ def build_parser():
     p.add_argument("--romwbw", metavar="VER",
                    help="use this RomWBW release for this run ('default' = the index's)")
     p.add_argument("--emu", metavar="PATH",
-                   help="the romwbw_emu binary to ask what releases it can run")
-    p.add_argument("--assume-supported", metavar="A,B",
-                   help="skip asking a binary and assume these releases are runnable")
-    p.add_argument("--allow-untested", action="store_true",
-                   help="allow a release this build has not been checked against")
+                   help="the romwbw_emu binary that `run` should launch")
+    # --assume-supported and --allow-untested are accepted and ignored.
+    # They steered a compile-time release allowlist that no longer exists:
+    # every release a v0 catalog publishes speaks the same HBIOS-to-emulator
+    # interface, so there is nothing left to filter or to override.  They stay
+    # as no-ops because installed scripts and test suites pass them, and an
+    # argparse error would turn "this flag is obsolete" into exit 64.
+    p.add_argument("--assume-supported", metavar="A,B", help=argparse.SUPPRESS)
+    p.add_argument("--allow-untested", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--offline", action="store_true", help="never open a socket")
     p.add_argument("--refresh", action="store_true", help="ignore the index cache TTL")
     p.add_argument("--trust-cache", action="store_true",
@@ -1566,8 +1462,7 @@ def build_parser():
     sub = p.add_subparsers(dest="cmd", parser_class=Parser)
 
     s = sub.add_parser("versions", help="what RomWBW releases are published")
-    s.add_argument("--all", action="store_true",
-                   help="include releases this build cannot run")
+    s.add_argument("--all", action="store_true", help=argparse.SUPPRESS)
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_versions)
 
@@ -1609,8 +1504,8 @@ def build_parser():
 
     s = sub.add_parser("mirror", help="populate a same-origin directory for the web page")
     s.add_argument("dir", metavar="DIR")
-    s.add_argument("--versions", default="runnable",
-                   help="'runnable' (default), 'all', or a comma-separated list")
+    s.add_argument("--versions", default="all",
+                   help="'all' (default), or a comma-separated list")
     s.add_argument("--only", metavar="ID,ID", help="mirror only these ids")
     s.add_argument("--exclude", metavar="ID,ID")
     s.add_argument("--prune", action="store_true",

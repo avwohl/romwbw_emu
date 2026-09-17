@@ -129,10 +129,11 @@ romwbw_emu.o: $(wildcard $(THIS_DIR)../VERSION)
 #
 # -MMD -MP writes a .d file next to each .o listing the headers that object
 # actually included, and the -include below feeds them back to make.  Without
-# this there were NO header dependencies at all: editing romwbw_pin.h - the
-# file whose whole job is to be the single source of truth about which RomWBW
-# releases this build runs - left every .o untouched, `make` reported nothing
-# to do, and the binary kept whatever was compiled in before.  A wrong answer
+# this there were NO header dependencies at all: editing a header - at the time
+# romwbw_pin.h, whose whole job was to be the single source of truth about
+# which RomWBW releases this build ran - left every .o untouched, `make`
+# reported nothing to do, and the binary kept whatever was compiled in before.
+# (That header is gone since v1.44; the hazard the flags fix is not.)  A wrong answer
 # that survives a rebuild is the hardest kind to catch, and this file was the
 # one most likely to produce it.
 #
@@ -171,12 +172,12 @@ endif
 # The web frontend's JS is tested with node when node is present.  It is not a
 # build dependency - the wasm needs emcc, which this does not - so a machine
 # without node skips it rather than failing.
-# romwbw_emu is a prerequisite because roms/verify_romwbw_pin.sh (run below)
-# checks the built binary's supported-release list against the header, and it
-# reports "info  not built - skipping" rather than failing when the binary is
-# absent.  Without this, `make test` on a clean tree would silently not perform
-# the one check that catches a stale binary.  It also means `make test` proves
-# the CLI still links, which the four test programs do not.
+# romwbw_emu is a prerequisite so that `make test` proves the CLI still LINKS,
+# which the four test programs do not - they each link a subset of the core.
+# It used to be needed for a second reason as well: verify_romwbw_pin.sh ran
+# the built binary and compared its supported-release list against the header.
+# That check went with the header in v1.44; the script no longer runs the
+# binary at all.
 #
 # The loop below names the test binaries rather than using $^, which is what it
 # used to do: $^ is every prerequisite, so adding romwbw_emu to the list made
@@ -189,7 +190,6 @@ test: romwbw_emu $(addprefix test_,$(TESTS))
 	  node $(THIS_DIR)../tests/web_reload_disks.js || status=1; echo; \
 	  node $(THIS_DIR)../tests/web_console_output.js || status=1; echo; \
 	  node $(THIS_DIR)../tests/web_manifest.js || status=1; echo; \
-	  node $(THIS_DIR)../tests/web_supported_releases.js || status=1; echo; \
 	  node $(THIS_DIR)../tests/web_nvram_boot.js || status=1; echo; \
 	else \
 	  echo "SKIP  web JS tests (node not on PATH)"; echo; \
@@ -212,12 +212,12 @@ test: romwbw_emu $(addprefix test_,$(TESTS))
 # broken convenience.
 
 # verify_romwbw_pin.sh runs here because nothing ran it.  Every ROM and disk
-# image in the tree, and the built binary, carry a RomWBW release, and until
-# now the only thing that checked them agreed was a human remembering to type
-# the script's name - which is the same class of mistake as the missing header
-# dependencies above, and it went unnoticed for as long.  It needs the binary
-# to check its supported-release list, and `test` has already built the
-# objects by the time it runs.
+# image in the tree and in the fetch cache carries a RomWBW release, and a
+# disk whose release has no ROM beside it is the mixed pair that makes a guest
+# print "HBIOS/CBIOS Version Mismatch".  Until this was added, the only thing
+# checking that was a human remembering to type the script's name - the same
+# class of mistake as the missing header dependencies above, and it went
+# unnoticed for as long.
 
 test_vda_keyboard: $(THIS_DIR)../tests/vda_keyboard.cc $(DISPATCH_OBJS)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< $(DISPATCH_OBJS) $(LDLIBS) -o $@

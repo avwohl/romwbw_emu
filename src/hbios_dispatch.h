@@ -736,9 +736,15 @@ private:
   static constexpr int NVRAM_SIZE = 5;
   uint8_t nvram_switches[NVRAM_SIZE] = {0, 'H', BOPTS_ROM, 0, 0};
   bool nvram_dirty = false;  // Set when NVRAM modified, cleared by getNvramSetting()
+  // The checksum is seeded with the loaded ROM's release bytes, and the CLI
+  // configures NVRAM (--boot, a persisted setting) BEFORE it loads the ROM.
+  // Such a checksum is provisional; this says so, and the first guest read
+  // re-seeds it with the ROM in place.
+  bool nvram_checksum_provisional = false;
 
   // Helper to recalculate NVRAM checksum (byte 4) and set dirty flag
   void recalcNvramChecksum();
+  void settleNvramChecksum();
 
   // Disks
   HBDisk disks[16];

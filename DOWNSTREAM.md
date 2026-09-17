@@ -85,9 +85,12 @@ Plus these headers:
 - `hbios_dispatch.h`
 - `hbios_cpu.h`
 - `romwbw_mem.h`
-- `romwbw_pin.h` - **required**: `emu_init.cc` and `hbios_dispatch.cc` both
-  `#include` it. A port that takes exactly the five headers above does not
-  compile.
+`romwbw_pin.h` **is gone** (v1.44). It held the compile-time RomWBW release
+allowlist and `ROMWBW_DEFAULT_*`, nothing else includes it, and nothing in the
+core names a RomWBW release any more. **If your tree carries a symlink or a
+copy of it, or names it in a project file, remove that** - `ioscpm` symlinks
+it, and `z80cpmw.vcxproj` lists it as a `<ClInclude>`. See "RomWBW releases are
+not this core's business" below.
 
 **And qkz80, which is not in this tree.** `hbios_cpu.h` includes `qkz80.h` and
 `romwbw_mem.h` includes `qkz80_mem.h`, so the core cannot be compiled or linked
@@ -448,12 +451,10 @@ against the hash the index carries, before a byte of either is parsed.
   does, it needs nothing. Keep keying on the catalog's `id` and ignoring fields
   you do not know.
 - **Publishing a new ROM or disk now reaches users with no release of this
-  repository and none of yours.** A new RomWBW *release* still needs a rebuild,
-  because `ROMWBW_SUPPORTED_RELEASES` in `src/romwbw_pin.h` is compile-time and
-  adding a line to it is a claim that somebody booted it - see "Adding a RomWBW
-  release" above. `romwbw-get` refuses such a release by name before it
-  downloads anything - a catalog ROM is 512 KB, and the 49 MB is the disk `run`
-  fetches beside it.
+  repository and none of yours.** Since v1.44 that is true of a new RomWBW
+  *release* too - see "RomWBW releases are not this core's business" below.
+  When this section was written it was not: a compile-time allowlist meant a
+  new release cost a rebuild of all five front ends.
 - **The packaged `.deb` and `.rpm` contain no ROM.** They install
   `/usr/bin/romwbw-get` beside `/usr/bin/romwbw_emu`, plus
   `/usr/share/doc/romwbw_emu/CATALOG.md`. `romwbw_emu` started with no ROM now
@@ -471,10 +472,13 @@ against the hash the index carries, before a byte of either is parsed.
   around it moved and it did not, because this document and three client
   changelogs name that path. It now scans the `romwbw-get` cache as well as the
   tree it is pointed at. With nothing in either it still exits 0 and still
-  prints a PASS line - `src/romwbw_pin.h` is consistent and the built binary
-  agrees with it - followed by `NO ARTIFACT WAS INSPECTED`. Gate on which of
-  the two PASS lines you got, not on there being none: there always is one,
-  and `.github/workflows/test.yml` matches both spellings.
+  prints a PASS line - `nothing here contradicts itself` - followed by
+  `NO ARTIFACT WAS INSPECTED`. Gate on which of the two PASS lines you got, not
+  on there being none: there always is one, and
+  `.github/workflows/test.yml` matches both spellings. **Both spellings changed
+  in v1.44**, when the release allowlist came out of it; it now checks that
+  every artifact is readable and that every disk has a ROM of its own release
+  beside it, and nothing else.
 - **`--romwbw=FILE` and `--disk0=`..`--disk15=` are unchanged**, and so is the
   settings file (`./romwbw_emu.json`, then
   `$XDG_CONFIG_HOME/romwbw_emu/config.json`), which still holds `rom` and
@@ -491,151 +495,91 @@ against the hash the index carries, before a byte of either is parsed.
   targets run it. A port with a browser front end that reached for the catalog
   from JavaScript will find the same wall.
 
-## RomWBW Version: runtime, not a pin (September 2026, VERSION 1.39 - shipped in v1.41)
+## RomWBW releases are not this core's business (VERSION 1.44)
 
-**The compile-time pin is gone.** This core used to emulate exactly one
-RomWBW release, and refused to load a ROM from any other. It now reads the
-release out of the loaded ROM's HBIOS Configuration Block at run time, so one
-binary boots any release in `ROMWBW_SUPPORTED_RELEASES`
-(`src/romwbw_pin.h`) - today v3.5.1 and v3.6.0:
+**The compile-time release allowlist is gone, and with it `src/romwbw_pin.h`.**
+This core used to refuse to load a ROM from any RomWBW release not named in
+`ROMWBW_SUPPORTED_RELEASES`. It now loads any ROM with a readable HBIOS
+Configuration Block, and reads the release out of it.
 
-```c
-#define ROMWBW_SUPPORTED_RELEASES(X)                       \
-  X(3, 5, 1, 0, "2025-05-21 release; checked 2026-09-05")  \
-  X(3, 6, 0, 0, "2026-03-28 release; checked 2026-09-05")
-```
+### Why
 
-That is the change that lets a client offer the user a choice of RomWBW
-version instead of filtering the list down to the one its binary was built
-for. `ROMWBW_PIN_MAJOR` and friends no longer exist; `ROMWBW_DEFAULT_*` in
-the same header stays, and since v1.40 its meaning has narrowed to the release
-`roms/build_emu_rom.sh` reproduces, plus the release the core assumes for a ROM
-whose HCB it cannot read. It is a build input and a fallback, not a constraint
-on loading - and it no longer names artifacts in this tree, because there are
-none.
+The release number is the **HBIOS-to-CBIOS pairing** - a fact about a ROM and a
+disk image, enforced by the guest's own
+`*** WARNING: HBIOS/CBIOS Version Mismatch ***`. It is not what this core
+depends on. What this core depends on is the **emulator-to-ROM interface**:
 
-Five things report a version to the guest, and every one of them now derives
-it from the loaded ROM: `HBF_SYSVER`, the NVRAM checksum seed, the HBIOS
-ident block, the CBIOS page-zero stamp at `0x42`/`0x43`, and the load-time
-check. Two of those exist only in emulated RAM - nothing that inspects a
-built ROM can see them, which is why they are derived rather than stored.
+- two I/O ports, `EMU_DISPATCH_PORT equ 0EFh` and `EMU_BNKCALL_PORT equ 0EDh`
+  (`src/emu_hbios.asm`);
+- the set of HBIOS functions `src/hbios_dispatch.cc` services.
 
-### What did NOT change: ROM and disks must still match
+That interface is versioned by the catalog's own name. Every release a **v0**
+catalog publishes speaks it; an interface change this core could not service
+would be published as `index-v1.json` beside `index-v0.json`, and a v0 client
+would ignore it rather than mis-load it. That is a gate no application has to
+be rebuilt to honour - which the release allowlist was not.
 
-The emulator will now load either release. The **guest** still will not
-tolerate a mixed pair: a CBIOS compares its own build against `HBF_SYSVER`
-and prints
+### What you must change
 
-```
-*** WARNING: HBIOS/CBIOS Version Mismatch ***
-```
+**Your build breaks the day you pull this**, and not only if you symlink
+headers: `z80cpmw` and `cpmdroid` compile `romwbw_emu/src/emu_init.cc` in place
+out of a sibling checkout, and `ioscpm` symlinks ten files including
+`emu_init.cc` and `romwbw_pin.h`. These symbols no longer exist:
 
-So the pairing rule is unchanged and is now enforced *only* by that warning,
-not by a refusal at load time. Ship `emu_avw-...-3.6.0.rom` with 3.6.0 disk
-images, or 3.5.1 with 3.5.1 - never one of each.
+	Gone					Do instead
+	emu_romwbw_release_supported()		nothing - every release loads
+	emu_romwbw_supported_list()		name no release; for an About
+						screen use emu_romwbw_release_loaded()
+						after a ROM is loaded
+	emu_set_allow_untested_romwbw()		nothing - there is nothing to override
+	emu_allow_untested_romwbw()		nothing
+	src/romwbw_pin.h			delete your symlink/copy, and any
+						<ClInclude> or project entry naming it
+	--allow-untested-romwbw (CLI)		accepted nowhere; remove it from
+						any argv you build
 
-### Why it matters
+**Delete your per-entry catalog filter too.** `catalogv0::runnableVersions`
+(z80cpmw), `RomWBWIndex.offered` (ioscpm), `runnableRomwbwVersions` (cpmdroid)
+and the JNI/bridge methods behind them have nothing left to ask. Offer the user
+every release the index publishes. A client that keeps filtering is not broken,
+it just silently hides releases it could boot - but the *compile* cannot lag,
+because the symbols are gone.
 
-A guest's CBIOS compares its own build against the HBIOS version this core
-reports. Mismatched, it prints
-`*** WARNING: HBIOS/CBIOS Version Mismatch ***`, and in the worst case the
-ROM never reaches the boot loader and the emulator sits there producing no
-output at all. Three of the ROMs this repository shipped in `roms/` before
-v1.35 did exactly that, and nothing told the user why. They are gone with the
-rest: `roms/` has tracked no artifact since v1.40, and the catalog publishes
-matched sets.
+### What did NOT change
 
-### What you must do
+`emu_validate_rom_hcb()` keeps its name and signature. It still refuses a ROM
+that is too short or has no `57 A8` HCB marker, and still only *warns* on
+`CB_PLATFORM != 0`. It no longer judges the release. So do
+`emu_romwbw_release_of_image()`, `emu_romwbw_release_loaded()`,
+`emu_romwbw_release_str()`, the `emu_romwbw_release` struct and
+`emu_load_rom_from_buffer()` - a caller of any of those needs no change.
 
-1. **Ship a matching set.** Bundle or download `emu_*.rom` and `hd1k_*.img`
-   from the same RomWBW release. Do not mix a ROM from one release with disk
-   images from another. You may now ship two complete sets and let the user
-   choose - that is the point of this change - but each set has to stay
-   internally matched. [avwohl/romwbw_disks](https://github.com/avwohl/romwbw_disks)
-   publishes matched sets per release with both versions in every filename,
-   for exactly this reason.
-2. **Check your tree.** Run `roms/verify_romwbw_pin.sh` in CI or before
-   cutting a build; the path is deliberately unchanged, see the v1.40 section
-   above. It checks every ROM in the tree you point it at (HCB marker,
-   release, `CB_PLATFORM`), every disk image (the `CBIOS v<ver> [WBW]` string
-   in its boot slices), the **pairing** between them, and the built binary's
-   `--version` release list against `ROMWBW_SUPPORTED_RELEASES` in
-   `src/romwbw_pin.h`. Since v1.40 it also scans the `romwbw-get` cache
-   (`$XDG_CACHE_HOME/romwbw_emu`, or `ROMWBW_GET_CACHE`), because a tree with
-   no artifact in it is now this repository's normal state and a check that
-   passes because it looked at nothing is the failure it was added to `make
-   test` to stop - with nothing in either place the PASS line claims only that
-   `src/romwbw_pin.h` is consistent and the binary agrees with it, and a second
-   line says `NO ARTIFACT WAS INSPECTED`. Exit status 0 means nothing it found
-   contradicts the pin, which includes finding nothing at all; 1 names each
-   problem.
-   `make -C src test` runs it.
-3. **Report the release in your About screen** if you show a version, but
-   report the one that was LOADED, not a constant - there is no constant any
-   more. `emu_romwbw_release_loaded()` (`emu_init.h`) returns it once a ROM
-   is in memory; `emu_romwbw_supported_list()` returns "3.5.1, 3.6.0" for a
-   screen shown before any ROM is loaded.
+`hbios.ver_byte` and `upd_byte` stay in every catalog index entry. They stop
+being an emulator gate and remain what they always described: the
+ROM-to-disk-image pairing. You may still use them to refuse to mount a 3.5.1
+image under a 3.6.0 ROM.
 
-### New: ROM loads now fail loudly
+### ROM and disks must still match
 
-`emu_load_rom()` and `emu_load_rom_from_buffer()` call the new
-`emu_validate_rom_hcb()` and **return false** on a ROM this core cannot run,
-where they previously accepted it and produced a dead emulator:
+The emulator will load either. The **guest** still will not tolerate a mixed
+pair, and that warning is now the only thing enforcing it. Ship
+`emu_*-<rel>.rom` with `hd1k_*-<rel>.img` from the same release, never one of
+each. `romwbw-get` only ever hands out a matched pair, and
+`roms/verify_romwbw_pin.sh` is what checks a tree for it.
 
-	Condition	Result
-	HCB marker at 0x103 is not `57 A8`	load fails - corrupt or not a RomWBW ROM
-	Release is not in ROMWBW_SUPPORTED_RELEASES	load fails - names the release and the supported list
-	`CB_PLATFORM != 0` (stock hardware ROM)	warning only, load proceeds
+### Reporting a version
 
-The middle row is the one that changed in v1.39. It used to read "HCB version
-bytes differ from the pin", and it fired on a perfectly good v3.6.0 ROM. It
-now fires only on a release nobody has checked this core against - bank 0 is
-our HBIOS proxy, and a release whose CBIOS calls a function the dispatcher
-does not implement would load and then hang, which is far worse than a
-refusal. `emu_set_allow_untested_romwbw(true)` overrides it with a warning
-(the CLI's `--allow-untested-romwbw`); a port that exposes it should say
-"untested", not "advanced".
+Report the one that was **LOADED**, not a constant - there is no constant any
+more, and no list either. `emu_romwbw_release_loaded()` (`emu_init.h`) returns
+it once a ROM is in memory. Before any ROM is loaded there is no honest answer:
+the core reports `0.0.0` and logs loudly, where it used to substitute a
+compile-time default and make a caller bug look like a plausible version.
 
-GUI ports are the main beneficiaries: you load ROMs from a bundle or a
-download and have no console to notice a silent failure on. **Handle the new
-`false` return** - show the user an error rather than starting a CPU that
-will never print anything. `emu_validate_rom_hcb()` is public if you want to
-check an image before offering it in a picker.
-
-### Adding a RomWBW release
-
-Adding one is not a version bump, and it no longer requires a coordinated
-release across all ports: a port that has not rebuilt simply does not offer
-the new release, and one that has offers both.
-
-Adding a release IS a claim that somebody ran it. To add one:
-
-1. Build its `emu_*.rom` and disk images. That is
-   [romwbw_disks](https://github.com/avwohl/romwbw_disks)' job:
-   `tools/build_all.sh <ver>`.
-2. Boot them. `romwbw_disks/tools/boot_test.sh` asserts the CBIOS banner,
-   the CP/M prompt, no version-mismatch warning on a matched pair, and a
-   warning on a mismatched one.
-3. Round-trip a file through `R8`/`W8`. That exercises the private
-   `0xE1`-`0xEA` host block, which upstream RomWBW knows nothing about and
-   which no upstream test covers.
-4. Add the `X()` line to `ROMWBW_SUPPORTED_RELEASES` with the date checked.
-
-There is no `proto.asm` to diff. Earlier revisions of this section named one
-as required reading; RomWBW ships no `Source/HBIOS/proto.asm` in any release
-- the files carrying that information are `Source/HBIOS/hbios.asm` and
-`Source/Doc/SystemGuide.md`. Booting the release and exercising the host
-block is the check that actually found nothing wrong with v3.6.0.
-
-**`archive/romwbw-v3.6.0/SBC_simh_std_v360.rom` is gone, and must not come
-back.** It was a `v3.6.0-dev.46` snapshot from 2025-12-12, not the release, and
-its HCB read `36 00` exactly as the release does - so no version check could
-tell them apart, and none of the three that look at a ROM ever would. Deleted
-2026-09-05; recoverable as blob `141a027d` if it is ever wanted as evidence
-rather than as an input, sha256
-`4b387ec4137ce49d65044a7298855a9327b6182cc0c3aa2b8e90cb526bf1921c`. If your
-checkout still has it, delete it: build 3.6.0 from the upstream `Package.zip`,
-which `romwbw_disks/tools/fetch_romwbw.sh` pins by sha256.
+Five things report a version to the guest and every one derives it from the
+loaded ROM: `HBF_SYSVER`, the NVRAM checksum seed, the HBIOS ident block, the
+CBIOS page-zero stamp at `0x42`/`0x43`, and the load-time check. Two of those
+exist only in emulated RAM - nothing that inspects a built ROM can see them,
+which is why they are derived rather than stored.
 
 ## Console Output
 
@@ -1118,7 +1062,8 @@ against, and it is not being moved or retracted.
 - [ ] v1.35: Handle a `false` return from `emu_load_rom*()` - show the user an error instead of starting a dead CPU
 - [ ] v1.35: Ship ROM and disk images from the same release; run `roms/verify_romwbw_pin.sh` before cutting a build - since v1.40 it scans the `romwbw-get` cache as well as the tree, so it still has something to inspect on a tree that ships no artifact of its own
 - [ ] v1.35: If your About screen shows a version, add the RomWBW release
-- [ ] v1.39: `ROMWBW_PIN_*` is gone. If you referenced `ROMWBW_PIN_STR`, use `emu_romwbw_release_loaded()` after a ROM is loaded, or `emu_romwbw_supported_list()` before
+- [ ] v1.44: `src/romwbw_pin.h` is gone, and with it `emu_romwbw_release_supported()`, `emu_romwbw_supported_list()`, `emu_set_allow_untested_romwbw()`, `emu_allow_untested_romwbw()` and `--allow-untested-romwbw`. Delete your symlink/copy of the header and your per-entry release filter; report the LOADED release with `emu_romwbw_release_loaded()`
+- [ ] v1.39: `ROMWBW_PIN_*` is gone. If you referenced `ROMWBW_PIN_STR`, use `emu_romwbw_release_loaded()` after a ROM is loaded
 - [ ] v1.39: A v3.6.0 ROM now loads. If you filter a catalog down to one RomWBW version, you can stop - offer the list instead
 - [ ] v1.39: Namespace any persisted NVRAM blob per RomWBW release - the checksum seed mixes in the version bytes, so a blob saved under one release silently resets under another
 - [ ] v1.35: If your port copied `emu_file_load()`/`emu_file_save()`/`emu_disk_*()`, take the hardening below
@@ -1137,4 +1082,4 @@ against, and it is not being moved or retracted.
 - [ ] v1.37: MSVC ports can drop any C4267 suppression on `hbios_dispatch.cc` - `8eeb227` cast all six sites (a `size_t` loop index promoting a `uint16_t` guest address in `write_to_bank`/`read_from_bank`, where truncating to sixteen bits *is* the Z80 64K wrap HBIOS wants). Grep for the MSBuild spelling, not the compiler flag: `z80cpmw` still carries it as `<DisableSpecificWarnings>4267` at `z80cpmw/z80cpmw.vcxproj:260`, which a search for `/wd4267` reports as already gone
 - [ ] v1.40: Nothing to compile - no header, no signature, no link contract changed. But if you fetched artifacts out of this repository's `roms/` or `disks/`, or out of one of its release assets, take them from the [romwbw_disks](https://github.com/avwohl/romwbw_disks) catalog instead: `tools/romwbw-get` is a working client and [docs/CATALOG.md](docs/CATALOG.md) describes the documents. A `.deb`/`.rpm` built from this tree no longer contains a ROM
 - [ ] v1.40: If you download disk images, keep the hash-verified copy and the copy the guest writes to as **separate files**. The core opens every image `"rw"`, so the first CP/M `SAVE` breaks the hash of the file you verified, and re-downloading to repair it destroys the user's work
-- [ ] v1.40: If any of your tooling calls `roms/verify_romwbw_pin.sh`, the path is unchanged on purpose - keep calling it. It now scans the `romwbw-get` cache too, and when it finds nothing it still passes and exits 0 - a PASS line naming only the header-against-binary check, then a second line reading `NO ARTIFACT WAS INSPECTED`. Match the text of the PASS line; do not gate on a missing PASS line or a non-zero exit, because neither happens
+- [ ] v1.40: If any of your tooling calls `roms/verify_romwbw_pin.sh`, the path is unchanged on purpose - keep calling it. It now scans the `romwbw-get` cache too, and when it finds nothing it still passes and exits 0 - a PASS line, then a second line reading `NO ARTIFACT WAS INSPECTED`. Match the text of the PASS line; do not gate on a missing PASS line or a non-zero exit, because neither happens. **Both PASS spellings changed in v1.44** when the release allowlist came out of the script - they are now `every artifact is a readable RomWBW artifact and every disk pairs` and `nothing here contradicts itself`

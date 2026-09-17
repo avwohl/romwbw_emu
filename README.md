@@ -21,8 +21,8 @@ What changed in each version: [CHANGELOG.md](CHANGELOG.md).
 - **HBIOS:** hardware abstraction layer implemented in C++
 - **Disks:** ROM disk, RAM disk, and up to 16 file-backed hard disk images
 - **Disk formats:** auto-detects hd1k and hd512, including 49 MB combo images
-- **RomWBW releases:** boots 3.5.1 and 3.6.0 from one binary, reading the
-  version out of the ROM it loads
+- **RomWBW releases:** boots any release the catalog publishes, from one
+  binary, reading the version out of the ROM it loads
 - **Operating systems:** CP/M 2.2, CP/M 3, ZSDOS, ZPM3, NZCOM and QPM, from the
   published disk images
 - **Console:** raw mode, so every control character reaches the guest; the VT
@@ -151,14 +151,19 @@ is also the only published image carrying `R8` and `W8`, which `list` marks
 
 ### RomWBW releases
 
-One binary boots any release named in `ROMWBW_SUPPORTED_RELEASES`
-([`src/romwbw_pin.h`](src/romwbw_pin.h)) - today 3.5.1 and 3.6.0 - and
-`romwbw_emu --version` prints the list. The version the guest sees is read from
-the loaded ROM's HBIOS Configuration Block at run time, not compiled in. A
-release this core has not been checked against is refused, because bank 0 of an
-`emu_*.rom` is this project's C++ dispatcher and a CBIOS calling something it
-does not implement would load and then hang; `--allow-untested-romwbw`
-overrides that with a warning.
+One binary boots **any** RomWBW release, and this repository names none. The
+version the guest sees is read from the loaded ROM's HBIOS Configuration Block
+at run time; `romwbw-get versions` says which releases exist, from the catalog.
+
+That is the whole of it, and it used to be more. Until v1.44 the core carried a
+compile-time allowlist, so publishing a new RomWBW release meant rebuilding and
+re-releasing Windows, macOS, iOS, Android and Linux before anybody could boot
+it - the exact coupling the catalog was built to remove. What this core
+actually depends on is the emulator-to-ROM interface: two I/O ports and the set
+of HBIOS functions `src/hbios_dispatch.cc` services. That is versioned by the
+catalog's own name - `v0` - and an interface change this core could not service
+would be published as `v1`, which `romwbw-get` refuses by name without anyone
+rebuilding anything.
 
 `romwbw-get use 3.5.1` picks a release and remembers it; `--romwbw VER` before
 a subcommand does it for one run.
@@ -168,7 +173,8 @@ prints `*** WARNING: HBIOS/CBIOS Version Mismatch ***`. `romwbw-get` only ever
 hands out a matched pair. Using another release's disks for data files, without
 booting from them, is fine. `./roms/verify_romwbw_pin.sh [tree]` checks every
 ROM and image it can find, in the tree you name and in the `romwbw-get` cache,
-against `src/romwbw_pin.h`; `make -C src test` runs it.
+and is the only thing here that checks that pairing; `make -C src test` runs
+it.
 
 ### Disk formats
 
@@ -311,9 +317,6 @@ use:
   --save-config[=F] Write the effective settings as JSON and exit
   --debug           Enable debug output
   --strict-io       Halt on unexpected I/O ports
-  --allow-untested-romwbw
-                    Load a ROM from a RomWBW release this build has not been
-                    checked against
 ```
 
 `--version`, `-v`, `--help` and `-h` are answered before any settings file is
@@ -467,7 +470,6 @@ romwbw_emu/
 				CLI and browser back ends
     emu_init.*			Start-up shared by all front ends (ROM load, HCB, disks)
     emu_config.*		JSON settings file (vendored nlohmann in include/)
-    romwbw_pin.h		The RomWBW releases this core can run
     r8.asm w8.asm		The CP/M file-transfer utilities
     emu_hbios.asm emu_rom.asm	The Z80 side of the emulator ROM
   tests/			4 C++, 3 node JS and 1 Python suite (make -C src test)

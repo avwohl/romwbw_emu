@@ -25,13 +25,11 @@
  *     `default` at all - measured - so a rule written against it selects
  *     nothing, on every page load, forever.
  *
- *  4. Which releases the page greys out must come from the CORE, not from the
- *     mirror. `emu_supported` in the manifest is what the CLI binary beside
- *     the wasm answered when `romwbw-get mirror` ran - a different build, and
- *     re-mirroring to publish a new disk without rebuilding the wasm is the
- *     intended workflow. applyCoreSupported replaces it with what the running
- *     core says, once there is a core to ask; the manifest is the fallback
- *     for a page served beside a wasm too old to have the export.
+ *  4. Every mirrored release is offered and none is greyed out. The page used
+ *     to disable a release the core had not been compiled to allow, from
+ *     `emu_supported` in the manifest; no build has that opinion any more, and
+ *     a manifest still carrying the field from an older mirror is ignored
+ *     rather than obeyed.
  *
  * The functions are lifted out of the template by text extraction, the same
  * way tests/web_reload_disks.js does it: there is no bundler and no module
@@ -61,9 +59,7 @@ function lift(name, re) {
 
 const SOURCES = [
   lift('manifestVersion', /( {4}function manifestVersion\(manifest, version\) \{[\s\S]*?\n {4}\}\n)/),
-  lift('versionRunnable', /( {4}function versionRunnable\(manifest, version\) \{[\s\S]*?\n {4}\}\n)/),
   lift('fillVersionSelect', /( {4}function fillVersionSelect\(manifest\) \{[\s\S]*?\n {4}\}\n)/),
-  lift('applyCoreSupported', /( {4}function applyCoreSupported\(manifest, core\) \{[\s\S]*?\n {4}\}\n)/),
   lift('applyManifest', /( {4}function applyManifest\(manifest\) \{[\s\S]*?\n {4}\}\n)/),
   lift('fillCatalogSelects', /( {4}function fillCatalogSelects\(manifest, version\) \{[\s\S]*?\n {4}\}\n)/),
   lift('selId', /( {4}function selId\(id\) \{[\s\S]*?\n {4}\}\n)/),
@@ -190,15 +186,14 @@ const MANIFEST_URL = 'catalog/manifest.json';
 const lifted = new Function(
   'document', 'localStorage', 'Option', 'formatSize', 'SETTINGS_KEY',
   'MANIFEST_URL',
-  SOURCES + '\nreturn { manifestVersion, versionRunnable, fillVersionSelect,'
-          + ' applyCoreSupported, applyManifest,'
+  SOURCES + '\nreturn { manifestVersion, fillVersionSelect, applyManifest,'
           + ' fillCatalogSelects, selId, saveSettings, storedSettings,'
           + ' restoreSettings, expectOf };'
 )(document, localStorage, Option, formatSize, SETTINGS_KEY, MANIFEST_URL);
 
-const { manifestVersion, versionRunnable, fillVersionSelect, applyCoreSupported,
-        applyManifest, fillCatalogSelects, selId, saveSettings, storedSettings,
-        restoreSettings, expectOf } = lifted;
+const { manifestVersion, fillVersionSelect, applyManifest, fillCatalogSelects,
+        selId, saveSettings, storedSettings, restoreSettings,
+        expectOf } = lifted;
 
 // ------------------------------------------------------------- the fixtures
 
@@ -206,12 +201,11 @@ const { manifestVersion, versionRunnable, fillVersionSelect, applyCoreSupported,
 // RomWBW version, `default` on a ROM and `defaultSlot` on a disk - and NO
 // `default` on any disk, which is what the published catalogs actually look
 // like.
-function manifest(emuSupported) {
+function manifest() {
   return {
     schema: 'romwbw-emu-mirror',
     schema_version: 1,
     interface: 'v0',
-    emu_supported: emuSupported,
     romwbw_versions: [
       {
         romwbw_version: '3.5.1', label: 'RomWBW 3.5.1', default: false, generation: 2,
@@ -261,7 +255,7 @@ function manifest(emuSupported) {
 freshDom();
 store = {};
 {
-  const m = manifest(['3.5.1', '3.6.0']);
+  const m = manifest();
   fillVersionSelect(m);
   check(els.romwbwVersionSelect.value === '3.6.0',
         'the version select defaults to the manifest entry marked default');
@@ -286,7 +280,7 @@ store = {};
 // 2. A ROM with no default:true falls back to the first, and never to a name.
 freshDom();
 {
-  const m = manifest(['3.6.0']);
+  const m = manifest();
   const b = m.romwbw_versions[1];
   delete b.roms[0].default;
   // Put the non-emu_avw ROM first, so "the first" and "the one called
@@ -297,35 +291,85 @@ freshDom();
         'with no default flag the first ROM wins - not the one named emu_avw');
 }
 
-// 3. A release this build cannot run is shown and disabled, not hidden.
+// 3. Every mirrored release is offered, and none is disabled.
+//
+// The page used to grey out a release the core had not been compiled to
+// allow, from `emu_supported` in the manifest.  No build has that opinion any
+// more - every release a v0 catalog publishes speaks the same
+// HBIOS-to-emulator interface - so a mirrored release is a bootable release.
 freshDom();
 {
-  const m = manifest(['3.5.1']);           // a mirror carrying a newer release
+  const m = manifest();
   fillVersionSelect(m);
   const opts = els.romwbwVersionSelect.options;
-  const newer = opts.find(o => o.value === '3.6.0');
-  check(!!newer && newer.disabled === true,
-        'a mirrored release this core cannot run is offered but disabled');
-  check(/needs a newer build/.test(newer.text),
-        'and says why');
-  check(els.romwbwVersionSelect.value === '3.5.1',
-        'the selection lands on a release this core CAN run');
+  check(opts.length === 2, 'both mirrored releases are offered');
+  check(opts.every(o => !o.disabled), 'and neither is disabled');
+  check(!opts.some(o => /needs a newer build/.test(o.text)),
+        'and none is labelled as needing a newer build');
 }
 
-// 4. An older mirror with no emu_supported is trusted rather than emptied.
+// 4. A manifest still carrying emu_supported from an older mirror is ignored.
 freshDom();
 {
-  const m = manifest(undefined);
+  const m = manifest();
+  m.emu_supported = ['3.5.1'];      // what a pre-2026-09-17 mirror wrote
   fillVersionSelect(m);
   check(els.romwbwVersionSelect.options.every(o => !o.disabled),
-        'a manifest that does not say what the core supports disables nothing');
+        'a stale emu_supported disables nothing');
+  check(els.romwbwVersionSelect.value === '3.6.0',
+        'and the default release is still the one the catalog flags');
+  // The `!o.disabled` assertions above are only worth anything if the stub
+  // can express a disabled option at all.  Nothing else in this file ever
+  // sees one now that the release select stopped greying rows out, so pin it
+  // here: a FakeOption that silently dropped `disabled` would make every
+  // check in this section pass vacuously.
+  const probe = new Option('probe', 'probe');
+  probe.disabled = true;
+  check(probe.disabled === true,
+        'and the Option stub really models `disabled`, so those checks can fail');
+}
+
+// 4b. applyManifest honours a stored release that is NOT the catalog default.
+//
+// That branch is the second place versionRunnable was called from, and it
+// used to be able to reject a stored release the core could not run.  Nothing
+// exercised it, so deleting the guard outright would have left the suite
+// green.
+freshDom();
+store = {};
+{
+  const m = manifest();
+  saveSettings();                       // seed the shape restoreSettings reads
+  store[SETTINGS_KEY] = JSON.stringify(
+    Object.assign(JSON.parse(store[SETTINGS_KEY] || '{}'),
+                  { romwbwVersion: '3.5.1' }));
+  applyManifest(m);
+  check(els.romwbwVersionSelect.value === '3.5.1',
+        'a stored non-default release is restored, not overridden by the '
+        + 'catalog default');
+  check(els.romSelect.options.length > 0,
+        'and the ROM list was rebuilt for it');
+}
+
+// 4c. A stored release the manifest does not carry falls back to the default.
+freshDom();
+store = {};
+{
+  const m = manifest();
+  saveSettings();
+  store[SETTINGS_KEY] = JSON.stringify(
+    Object.assign(JSON.parse(store[SETTINGS_KEY] || '{}'),
+                  { romwbwVersion: '9.9.9' }));
+  applyManifest(m);
+  check(els.romwbwVersionSelect.value === '3.6.0',
+        'a stored release this mirror does not carry falls back to the default');
 }
 
 // 5. What gets stored is the id, and it survives a release switch.
 freshDom();
 store = {};
 {
-  const m = manifest(['3.5.1', '3.6.0']);
+  const m = manifest();
   fillVersionSelect(m);
   fillCatalogSelects(m, '3.6.0');
   els.disk1Select.value = 'catalog/v0/3.6.0/hd1k_games-v0-3.6.0.img';
@@ -353,7 +397,7 @@ store = {};
 freshDom();
 store = {};
 {
-  const m = manifest(['3.5.1', '3.6.0']);
+  const m = manifest();
   fillVersionSelect(m);
   fillCatalogSelects(m, '3.6.0');
   els.disk0Select.value = 'catalog/v0/3.6.0/hd1k_games-v0-3.6.0.img';
@@ -394,7 +438,7 @@ freshDom();
 // 8. expectOf reads the catalog size and hash off the selected option.
 freshDom();
 {
-  const m = manifest(['3.6.0']);
+  const m = manifest();
   fillCatalogSelects(m, '3.6.0');
   const e = expectOf('disk0Select');
   check(e && e.size === 51380224 && e.sha256 === 'ff'.repeat(32),
@@ -403,69 +447,11 @@ freshDom();
         'and the name shown to the user is the catalog filename');
 }
 
-// 9. The core's own answer beats the mirror's, in both directions.
-//
-// `romwbw_supported_releases` is exported from the wasm (web/romwbw_web.cc,
-// web/makefile's EXPORTED_FUNCTIONS) and answered "3.5.1, 3.6.0" when this
-// was written - built with emcc and called under node, not assumed.  What is
-// checked here is the page half: what the page does with that answer, and
-// what it does when there is not one.
-freshDom();
-store = {};
-{
-  // The ordinary case: they agree, and NOTHING is rebuilt.  This matters as
-  // much as the disagreement - a page that tears down and repopulates its
-  // selects on every load would lose a selection and flicker for no reason.
-  const m = manifest(['3.5.1', '3.6.0']);
-  check(applyCoreSupported(m, ['3.5.1', '3.6.0']) === false,
-        'a core that agrees with the mirror changes nothing');
-  check(applyCoreSupported(m, null) === false,
-        'and a wasm too old to have the export leaves the mirror alone');
-  check(applyCoreSupported(m, []) === false,
-        'as does one that answers nothing');
-  check(m.emu_supported.join(',') === '3.5.1,3.6.0',
-        'the manifest is untouched in all three cases');
-
-  // Disagreement, the direction that greys a release OUT: the mirror was
-  // written beside a newer binary than the wasm being served.
-  const out = manifest(['3.5.1', '3.6.0']);
-  check(applyCoreSupported(out, ['3.6.0']) === true,
-        'a core that runs fewer releases than the mirror claims says so');
-  applyManifest(out);
-  const only360 = els.romwbwVersionSelect.options.find(o => o.value === '3.5.1');
-  check(only360 && only360.disabled === true,
-        'and the release it cannot run is disabled after the rebuild');
-  check(els.romwbwVersionSelect.value === '3.6.0',
-        'with the selection moved to one it can');
-
-  // The other direction, which is the one no amount of care with the mirror
-  // could fix: the wasm runs MORE than the mirror said, and the page used to
-  // grey out a release it would have booted.
-  freshDom();
-  const inn = manifest(['3.5.1']);
-  check(applyCoreSupported(inn, ['3.5.1', '3.6.0']) === true,
-        'a core that runs MORE than the mirror claims says so too');
-  applyManifest(inn);
-  check(els.romwbwVersionSelect.options.every(o => !o.disabled),
-        'and nothing is greyed out that this core would actually boot');
-
-  // An older mirror that says nothing gets the core's real list rather than
-  // the blanket trust it used to get.
-  freshDom();
-  const old = manifest(undefined);
-  check(applyCoreSupported(old, ['3.6.0']) === true,
-        'a mirror with no emu_supported takes the core\'s answer');
-  applyManifest(old);
-  const older351 = els.romwbwVersionSelect.options.find(o => o.value === '3.5.1');
-  check(older351 && older351.disabled === true,
-        'so an old mirror stops offering what this core cannot run');
-}
-
 // 10. applyManifest is the one ordering, used by both callers.
 freshDom();
 store = {};
 {
-  const m = manifest(['3.5.1', '3.6.0']);
+  const m = manifest();
   fillVersionSelect(m);
   fillCatalogSelects(m, '3.6.0');
   els.disk1Select.value = 'catalog/v0/3.6.0/hd1k_games-v0-3.6.0.img';

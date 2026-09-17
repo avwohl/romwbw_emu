@@ -461,13 +461,17 @@ That line is the deliverable, not the file. It is what makes
 rather than asserted: the ROM users download really is reproducible from the
 source in this repository.
 
-It reproduces one release. `src/emu_hbios.asm` here hardcodes its version stamp
-(`db 035h` / `db 010h` at CB_VERSION and again in the ident block), so the
-script can only build what `ROMWBW_DEFAULT_*` in `src/romwbw_pin.h` names. The
-copy of the same file in romwbw_disks reads that stamp from a generated include
-and can build any release; `romwbw_disks/tools/build_rom.sh` is what cuts what
-users actually download. Overlaying this bank 0 on another release's banks
-produces a ROM that boots and then prints `*** WARNING: HBIOS/CBIOS Version
+It is a debugging tool - ROMs are romwbw_disks' province and nothing here
+builds one in the normal course - and it reproduces any published release.
+`src/emu_hbios.asm` takes its version stamp from a generated `romwbw_ver.inc`, and `build_emu_rom.sh` generates that
+from the HCB of the stock ROM it is overlaying - so bank 0 and banks 1-15 name
+the same release by construction. `--romwbw VER` picks a release; with none
+given it reproduces the catalog's default. The file is byte-identical to the
+copy in romwbw_disks, whose `tools/build_rom.sh` generates the same include
+from `versions/<ver>/version.json` and is what cuts what users actually
+download; `romwbw_disks/tools/check_source_drift.sh` asserts the two copies
+stay identical. Overlaying a bank 0 on another release's banks would produce a
+ROM that boots and then prints `*** WARNING: HBIOS/CBIOS Version
 Mismatch ***`, so the script refuses rather than building it.
 
 ### ROM Types
@@ -496,41 +500,40 @@ SBC ROM (`CB_PLATFORM=1`) whose name said otherwise and which never ran here.
 
 ## Version Compatibility
 
-The shared HBIOS emulates a **set** of RomWBW releases, not RomWBW 3.x in
-general and no longer just one. The set is `ROMWBW_SUPPORTED_RELEASES` in
-[`../src/romwbw_pin.h`](../src/romwbw_pin.h) - today v3.5.1 and v3.6.0 - and
-the release actually in play is read out of the loaded ROM's HCB at run time.
+The shared HBIOS emulates **any** RomWBW release, and this repository names
+none. The release in play is read out of the loaded ROM's HCB at run time.
 
-That is a deliberate inversion of what this section used to say. The version
-is now *derived* from the ROM at every site that reports it (`HBF_SYSVER`,
-the NVRAM checksum seed, the HBIOS ident block, the CBIOS page-zero stamp)
-rather than *stored* anywhere, because two of those sites exist only in
-emulated RAM: a stored copy that was never updated is invisible to every
-verifier in this tree and surfaces only as a guest printing the wrong
-version. Deriving it removes the possibility.
+That is the end of a two-step inversion. The version used to be a single
+compile-time pin; v1.39 made it a compile-time *list* with the running value
+derived from the ROM; v1.44 removed the list. What is left is derivation only,
+at every site that reports a version (`HBF_SYSVER`, the NVRAM checksum seed,
+the HBIOS ident block, the CBIOS page-zero stamp) - because two of those sites
+exist only in emulated RAM, where a stored copy that was never updated is
+invisible to every verifier in this tree and surfaces only as a guest printing
+the wrong version.
 
-`ROMWBW_DEFAULT_*` in the same header is a different thing: the release
-`roms/build_emu_rom.sh` reproduces, which is the one this tree's bank 0 has its
-version stamp hardcoded for. It is also what the C++ falls back to for a ROM
-whose HCB cannot be read (`hbios_dispatch.cc`, `emu_init.cc`). It does not
-constrain what the binary can load, and it no longer describes any artifact in
-the tree, because there are none.
+Why no list: the release number is the HBIOS-to-CBIOS pairing, not the
+emulator-to-ROM interface. The interface is two I/O ports and the set of HBIOS
+functions `hbios_dispatch.cc` services, and it is versioned by the catalog's
+own name - `v0`. An interface change this core could not service would be
+published as `v1`, which `romwbw-get` refuses by name. A compile-time list
+gated the wrong axis and made publishing a RomWBW release cost a rebuild of
+five front ends.
 
-A guest's CBIOS compares its own build against the version this core
-reports, so a ROM paired with a boot slice from a *different* release prints
-`*** WARNING: HBIOS/CBIOS Version Mismatch ***`. Since the emulator now
-loads either release happily, that warning is the only thing left enforcing
-the pairing. `roms/verify_romwbw_pin.sh` checks a whole tree - every
-artifact's release, the pairing between ROMs and disks, and the binary's
-supported list - and `make -C src test` runs it. Its path and name are
+A guest's CBIOS compares its own build against the version this core reports,
+so a ROM paired with a boot slice from a *different* release prints
+`*** WARNING: HBIOS/CBIOS Version Mismatch ***`. That warning is the only thing
+left enforcing the pairing. `roms/verify_romwbw_pin.sh` checks a whole tree -
+every artifact is a readable RomWBW artifact, and every disk has a ROM of its
+own release beside it - and `make -C src test` runs it. Its path and name are
 unchanged; what it looks at is not, because this tree holds no artifacts to
-look at. It now also scans the `romwbw-get` cache, so on a machine that has
-fetched anything it is checking what was actually downloaded, and where there
-is nothing anywhere it still passes and exits 0, but the PASS line claims only
-that `src/romwbw_pin.h` is consistent and the binary agrees with it, and a
-second line says `NO ARTIFACT WAS INSPECTED` - so a pass over zero files does
-not read like a pass over twenty. See the "RomWBW Version" section of
-`../DOWNSTREAM.md` for what adding a release involves, and
+look at. It also scans the `romwbw-get` cache, so on a machine that has fetched
+anything it is checking what was actually downloaded, and where there is
+nothing anywhere it still passes and exits 0, but the PASS line claims only
+that `nothing here contradicts itself`, and a second line says
+`NO ARTIFACT WAS INSPECTED` - so a pass over zero files does not read like a
+pass over twenty. See "RomWBW releases are not this core's business" in
+`../DOWNSTREAM.md` for what downstream ports must change, and
 [CATALOG.md](CATALOG.md) for where the artifacts come from.
 
 Key compatibility points:

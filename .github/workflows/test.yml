@@ -17,9 +17,10 @@ name: Tests
 #                                itself on 127.0.0.1
 #   disks/verify_disk_utils.sh   src/r8.asm and src/w8.asm build, and w8 still
 #                                carries the HBF_HOST_CAPS interlock
-#   roms/verify_romwbw_pin.sh    the built binary's --version release list
-#                                against ROMWBW_SUPPORTED_RELEASES, plus every
-#                                artifact in the tree and in the fetch cache
+#   tests/web_nvram_boot.js      the page's Boot box against NVRAM
+#   roms/verify_romwbw_pin.sh    every ROM and disk image in the tree and in
+#                                the fetch cache: readable, and every disk
+#                                paired with a ROM of its own release
 #
 # THE ARTIFACTS ARE NOT IN THIS REPOSITORY any more. Since v1.40 the ROMs and
 # disk images are published by avwohl/romwbw_disks and fetched with
@@ -171,22 +172,15 @@ jobs:
             grep -E '^(PASS|FAIL|SKIP)' /tmp/test.log || true
             exit 1
           }
-          # And that the RomWBW release check ran at all. It went years without
-          # being run by anything - not `make test`, not any job here - so the
-          # thing worth asserting is not that it passed but that it happened.
-          grep -qE '^PASS: (every artifact names a RomWBW release|src/romwbw_pin.h is consistent)' /tmp/test.log || {
+          # And that the RomWBW artifact check ran at all. It went years
+          # without being run by anything - not `make test`, not any job here -
+          # so the thing worth asserting is not that it passed but that it
+          # happened.
+          grep -qE '^PASS: (every artifact is a readable RomWBW artifact|nothing here contradicts itself)' /tmp/test.log || {
             echo "roms/verify_romwbw_pin.sh did not run, or did not pass; got:"
             grep -E '^(PASS|FAIL|warn)' /tmp/test.log || true
             exit 1
           }
-          # The binary's supported list is only checked when the binary exists.
-          # `make test` does not build romwbw_emu, so a tree where it happens
-          # not to be built reports "info not built" and the staleness check
-          # silently does not happen - which is the same shape of gap.
-          if grep -q 'info  not built' /tmp/test.log; then
-            echo "romwbw_emu was not built, so its supported-release list was not checked"
-            exit 1
-          fi
 
       - name: Nothing binary has come back into the tree
         run: |
@@ -274,7 +268,7 @@ jobs:
             exit 1
           }
           sh roms/verify_romwbw_pin.sh 2>&1 | tee /tmp/pin.log
-          grep -qE '^PASS: every artifact names a RomWBW release' /tmp/pin.log || {
+          grep -qE '^PASS: every artifact is a readable RomWBW artifact' /tmp/pin.log || {
             echo "the fetched artifacts did not pass the release check:"
             cat /tmp/pin.log
             exit 1

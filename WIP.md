@@ -127,22 +127,26 @@ Two open threads, neither blocking:
 - It corrected a suggestion of mine and was right: its `todaysCore` stub cannot
   ask the core, because that suite compiles Swift standalone with no core
   linked. Its own better version — derive the stub from the `X()` lines in
-  `iOSCPM/Core/romwbw_pin.h`, a symlink to `src/romwbw_pin.h` — is its call, not
-  mine.
+  `iOSCPM/Core/romwbw_pin.h` — and **that is now moot**: v1.44 deleted
+  `src/romwbw_pin.h`, so that symlink dangles and there are no `X()` lines left
+  to read. The stub and everything around it come out.
 
 **Delivery of both messages to it was unconfirmed** (that session has not
 reported it can receive cross-session messages). If it matters, the load-bearing
 line is: everything is on `origin/main` at `c57e686`, and there is no `v1.43`
 tag.
 
-## Release gate: still blocked, and the blocker is now named correctly
+## Release gate: DONE in v1.44
 
-Not started, not scheduled. `todo.txt`'s first item and `docs/RELEASE_GATE.md`
-carry the detail. The one thing to not re-derive: `romwbw_disks`'
-`tools/boot_test.sh` **consumes** the gate — it parses
-`RomWBW releases this build can run:` off `romwbw_emu --version`, which
-`print_version_banner` prints from `emu_romwbw_supported_list()`. Delete the gate
-first and that script `die`s (exit 1), so publishing breaks rather than going
-unguarded. Step 1 is the `boot_test.sh` rewrite in `romwbw_disks`, not "make it
-required" — `RELEASING.md:825` already requires it and already closes the SKIP
-hole. The ioscpm session verified this independently from the script.
+This section used to say "still blocked", and named `romwbw_disks`'
+`tools/boot_test.sh` as the blocker: it parsed
+`RomWBW releases this build can run:` off `romwbw_emu --version` and would
+`die` (exit 1) once that line went, so publishing would have broken rather than
+gone unguarded.
+
+That is all done. `boot_test.sh` now derives the versions to test from
+`versions/` and parses no banner; the gate, `src/romwbw_pin.h` and
+`ROMWBW_DEFAULT_*` are gone; `roms/build_emu_rom.sh` builds any published
+release. `docs/RELEASE_GATE.md` is the record. What is NOT done is the three
+GUI clients, which do not compile until they drop their own gate code — see
+`todo.txt`.

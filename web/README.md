@@ -65,11 +65,11 @@ Makefile targets:
 - `make mirror-dev` / `make mirror-prod` - run `../tools/romwbw-get mirror`
   into `~/www/romwbw1` / `~/www/romwbw`, writing the `catalog/` directory the
   page reads its ROM and disk lists from. `MIRROR_FLAGS` defaults to
-  `--versions=runnable --emu=../src/romwbw_emu`, so only releases the CLI
-  binary says it can boot are mirrored - it and the wasm are compiled from the
-  same `../src/romwbw_pin.h`, so it is the right thing to ask. Both releases
-  with every disk is roughly 460 MB; `MIRROR_ONLY=--only=emu_avw,hd1k_combo`
-  trims a small host.
+  `--versions=all`, so every published release is mirrored; it used to be
+  `--versions=runnable --emu=../src/romwbw_emu`, which asked the CLI binary
+  which releases it had been compiled to allow. Both releases with every disk
+  is roughly 460 MB; `MIRROR_ONLY=--only=emu_avw,hd1k_combo` trims a small
+  host.
 - `make serve` - mirror `emu_avw` and `hd1k_combo` into this directory, then
   serve it with `python3 -m http.server 8080`. The mirror step is what makes a
   local serve boot at all: this repository tracks no ROM and no disk image, and
@@ -244,10 +244,11 @@ keeps the catalog's `id`, `name`, `description`, `filename`, `size`, `sha256`,
 `format`, `default` / `defaultSlot`, `host_transfer` and a `url` relative to
 `catalog/`. Anything left out of the mirror is listed in `not_mirrored` with
 the reason, so a partial mirror says what is missing instead of offering a
-shorter list that looks complete. `emu_supported` is the release list the CLI
-binary reported at mirror time; a release outside it is shown disabled and
-labelled "(needs a newer build)" rather than hidden, so a user who mirrored one
-can see why it is not selectable.
+shorter list that looks complete. There used to be an `emu_supported` key
+carrying the release list the CLI binary reported at mirror time, and the page
+showed anything outside it disabled and labelled "(needs a newer build)"; no
+build has that opinion since v1.44, `mirror` no longer writes the key, and the
+page ignores it where an older mirror left one behind.
 
 What the page does with it:
 

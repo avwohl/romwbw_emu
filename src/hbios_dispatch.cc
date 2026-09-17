@@ -7,7 +7,6 @@
 #include "hbios_dispatch.h"
 #include "emu_init.h"
 #include "emu_io.h"
-#include "romwbw_pin.h"
 #include "qkz80.h"
 #include "qkz80_cpu_flags.h"
 #include "romwbw_mem.h"
@@ -701,18 +700,35 @@ void HBIOSDispatch::recalcNvramChecksum() {
   // Checksum = (byte0 ^ byte1 ^ byte2 ^ byte3) ^ ((RMJ << 4) | RMN) ^ ((RUP << 4) | RTP)
   //
   // The version comes from the loaded ROM: SYSCONF, running inside that ROM,
-  // seeds its checksum the same way, and a seed computed from a different
-  // release makes every stored switch look corrupt. Every caller runs during
-  // HBIOS dispatch, so the ROM is loaded by definition; the fallback only
-  // guards against a future caller that is not.
+  // seeds its checksum the same way.
+  //
+  // NOT every caller runs during HBIOS dispatch, which this comment used to
+  // claim. romwbw_emu.cc calls setNvramSetting() for --boot and for a
+  // persisted setting BEFORE emu_load_rom(), so there is no ROM to ask and
+  // the seed would be zero. Before v1.44 it was a compile-time default
+  // instead, which was just as wrong for every release that was not that
+  // default - a 3.6.0 ROM got a 3.5.1 seed and nothing ever corrected it.
+  //
+  // So a checksum computed with no ROM is marked provisional and re-seeded on
+  // the first guest read, where the ROM is loaded by definition.
   uint8_t xsum = nvram_switches[0] ^ nvram_switches[1] ^ nvram_switches[2] ^ nvram_switches[3];
-  emu_romwbw_release release = {(uint8_t)ROMWBW_DEFAULT_VER_BYTE,
-                                (uint8_t)ROMWBW_DEFAULT_UPD_BYTE};
-  emu_romwbw_release_loaded(memory, &release);
+  emu_romwbw_release release = {0, 0};
+  nvram_checksum_provisional = !emu_romwbw_release_loaded(memory, &release);
   xsum ^= release.ver;  // RMJ.RMN
   xsum ^= release.upd;  // RUP.RTP
   nvram_switches[4] = xsum;
   nvram_dirty = true;
+}
+
+// Re-seed a checksum computed before the ROM was loaded. Called on every path
+// that hands NVRAM bytes to the guest; a no-op once the seed is real.
+void HBIOSDispatch::settleNvramChecksum() {
+  if (!nvram_checksum_provisional) return;
+  bool was_dirty = nvram_dirty;
+  recalcNvramChecksum();
+  // Re-seeding is not a modification the guest made, so it must not look like
+  // one: nvram_dirty drives whether the setting is written back at exit.
+  nvram_dirty = was_dirty;
 }
 
 void HBIOSDispatch::doRet() {
@@ -1555,6 +1571,7 @@ void HBIOSDispatch::handleRTC() {
       // Get NVRAM byte by index
       // Input: C = byte index (0-4 for NVRAM switches)
       // Output: E = byte value
+      settleNvramChecksum();
       uint8_t idx = cpu->regs.BC.get_low();
       uint8_t value = 0;
       if (idx < NVRAM_SIZE) {
@@ -1595,6 +1612,7 @@ void HBIOSDispatch::handleRTC() {
       // Get NVRAM data block
       // Input: HL = buffer address
       // Output: buffer filled with NVRAM data (5 bytes)
+      settleNvramChecksum();
       uint16_t buffer = cpu->regs.HL.get_pair16();
       for (int i = 0; i < NVRAM_SIZE; i++) {
         memory->store_mem((uint16_t)(buffer + i), nvram_switches[i]);
@@ -1699,8 +1717,7 @@ void HBIOSDispatch::handleSYS() {
       // RomWBW release; answering from the ROM is what lets it boot any
       // release it was built to run, and still warn on a mismatched disk.
       // Format: D=major/minor (high/low nibble), E=update/patch (high/low nibble)
-      emu_romwbw_release release = {(uint8_t)ROMWBW_DEFAULT_VER_BYTE,
-                                    (uint8_t)ROMWBW_DEFAULT_UPD_BYTE};
+      emu_romwbw_release release = {0, 0};
       emu_romwbw_release_loaded(memory, &release);
       cpu->regs.DE.set_pair16((uint16_t)((release.ver << 8) | release.upd));
       cpu->regs.HL.set_low(0x01);  // Platform ID = SBC

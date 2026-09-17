@@ -8,188 +8,81 @@ makes about every tag in this file.
 Every item carries a tag saying what a machine has to be able to do to take it,
 so a session on another OS can see at a glance what it can pick up.
 
-[EMSCRIPTEN] USED TO MEAN "not here".  emcc was installed on this machine on
-2026-09-17 - brew emscripten 6.0.9 - to build and check the wasm export that
-closed the release-list item, so `make -C web` and `make -C web check` run here
-now.  Anything still tagged [EMSCRIPTEN] is worth re-reading before it is
-assumed blocked; what those items are really waiting for is a person at a
-browser, which is [BROWSER].
+WHAT THIS MACHINE ACTUALLY HAS, measured 2026-09-17 and not inferred:
 
-- [ANY] DELETE THE RELEASE GATE.  ROMWBW_SUPPORTED_RELEASES gates ROM loading on
-the RomWBW release number, which is the HBIOS-to-disk-image axis and none of this
-core's business.  What this core actually depends on is three things and the
-release number is not one of them: the two ports at src/emu_hbios.asm:38-39, the
-function set in src/hbios_dispatch.cc, and the hardcoded 0x0406 in HBX_BNKCALL
-(:336-365).  romwbw_disks already versions the first two as interface v0, and the
-third belongs in the romwbw_ver.inc its build generates.  Because of this macro,
-INTERFACE_V0.md's "Adding RomWBW 3.7.0 is a new release tag and a regenerated
-index - no client change, no interface bump" is false: a 3.7.0 entry is discarded
-by every client, and emu_validate_rom_hcb refuses the ROM at load
-(src/emu_init.cc:194-211) even with the client filters gone.  So publishing 3.7.0
-costs a release of Windows, macOS, iOS, Android and Linux, which is the coupling
-romwbw_disks was built to remove.  Note also that the release bytes this macro
-adjudicates are written by romwbw_disks' own tools/build_rom.sh, which generates
-romwbw_ver.inc and stamps the HCB at 0x105 - the number is written there and
-judged here, with nothing keeping the two in step but a person editing a macro.
-  What comes out, in what order, and what it costs is docs/RELEASE_GATE.md.  It
-also takes emu_romwbw_release_supported, emu_romwbw_supported_list,
-emu_set_allow_untested_romwbw / emu_allow_untested_romwbw,
---allow-untested-romwbw, roms/verify_romwbw_pin.sh and its step in
-.github/workflows/test.yml, and in tools/romwbw-get the _runnable() filter, the
---allow-untested and --assume-supported flags, and the default of `mirror
---versions` - three flags and a function, not the "four flags" this item used to
-say.  ROMWBW_DEFAULT_* stays: it is a build input and a fallback, not a
-constraint on loading.
-  IT ALSO TAKES A CROSS-REPOSITORY PROTOCOL, which is what this item and
-docs/RELEASE_GATE.md's "what comes out" both missed.  emu_romwbw_supported_list()
-is printed as the second line of print_version_banner (src/romwbw_emu.cc:806-811),
-and tools/romwbw-get:389-393 calls that line a protocol with three consumers: its
-own RE_RUNS (:395), roms/verify_romwbw_pin.sh, and romwbw_disks'
-tools/boot_test.sh.  `romwbw-get mirror` then copies the answer into
-catalog/manifest.json as emu_supported.  And since 2026-09-17 there is a FOURTH
-consumer, built and checked rather than proposed: web/romwbw_web.cc exports
-romwbw_supported_releases, web/makefile lists it in EXPORTED_FUNCTIONS, and the
-page asks the running core instead of the mirror
-(web/romwbw.html-template's applyCoreSupported).  That was a [EMSCRIPTEN] item
-here and is now done, so deleting the gate costs the page's release select as
-well - it does not fall back to the mirror, it stops greying anything out at
-all.  tests/web_supported_releases.js and `make -C web check` go with it.
-  THE BLOCKER IS NOT THE ONE THIS ITEM NAMED.  boot_test.sh is already a required
-publish step: romwbw_disks docs/RELEASING.md:825 makes it a checklist item and
-closes the obvious hole itself - "A SKIP line means no emulator was found, which
-is not a pass" - and :441-447 already orders `boot_test.sh 3.7.0` before the X()
-line is added here.  It is required by the written procedure and by no script:
-neither publish_release.sh nor verify.yml runs it.  The real blocker is that
-boot_test.sh CONSUMES THE GATE.  It asks the binary which releases it can run
-(:85-98); with that banner line deleted RUNS is empty, the pre-v1.39 "RomWBW
-compatibility: v..." fallback is empty too, and it die()s - exit 1, not a skip.
-Cut the gate first and the publish-time gate does not lose a fact, it FAILS, and
-every publish is blocked until boot_test.sh is changed to test every published
-version unconditionally and to drop its refusal branch (:210-218), whose failure
-message names emu_validate_rom_hcb.  So step 1 of docs/RELEASE_GATE.md's order of
-work is that change to boot_test.sh, not the checklist line that is already
-there.
-  TWO THINGS IT STILL DOES NOT FIX, both from the note.  v0's pillar 3 covers the
-private 0xE1-0xEA block and two standard functions, not the whole dispatcher
-surface - so a release whose CBIOS calls a standard function this core lacks is
-exactly the risk the allowlist stands in for, and v0 as written does not catch
-it.  And 0x0406 should ride along with the next bank-0 change rather than be cut
-on its own, for the generation cost the emu_hbios.asm item below spells out.
+  node        YES, v26.8.2 (brew, installed 2026-09-17 to run the web JS tests)
+  emcc        NO.  Not in `brew list`, not on PATH.  So `make -C web` and
+              `make -C web check` do NOT run here, and web/ holds no .wasm.
+  python3     Apple 3.9.6 at /usr/bin/python3.  There is NO ~/bin shim, so
+              plain `python3` is 3.9.6; /opt/homebrew/bin/python3.14 for 3.14.
+  um80/ul80   YES, ~/Library/Python/3.14/bin
+  Chrome      YES, and headless Chrome is drivable with nothing installed -
+              see the [BROWSER] note below.
+  newest tag  v1.42.  There is NO v1.43 tag: WIP.md records that v1.43 was
+              committed and the GitHub release never cut, blocked on a dead PAT.
 
-- [ANY] src/emu_hbios.asm is bank 0 of every published ROM, and romwbw_disks
-carries a copy that tools/check_source_drift.sh requires to assemble to the same
-512 KB ROM.  so ANY edit here moves every ROM's sha256, which bumps each
-romwbw_disks version's generation, and a generation bump is what makes a client
-invalidate its cached images - every user re-downloads their disks.  that is not
-theoretical: HB_BNKCALL (e47c948, d4f4a2a, 2026-09-06) cost exactly that, a
-generation-2 republish of both 3.5.1 and 3.6.0.  budget it before the next
-emu_hbios.asm change.  the finished HB_BNKCALL work is CHANGELOG.md's `### HB_BNKCALL performs a real
-bank call` section (grep it; CHANGELOG grows at the top, so a line number will
-not stay right).
-  UPDATE 2026-09-15: the comparison runs again, and is stronger than the one it
-replaced.  romwbw_disks fe08145 (2026-09-07) dropped the read of
-romwbw_emu/roms/emu_avw.rom - which v1.40 deleted - and now assembles BOTH
-trees' emu_hbios.asm and compares the 32 KB bank 0, plus builds this tree's
-src/{r8,w8}.asm and compares against build/utils/.  No ROM, no image, no
-network.  Its comparison of the four .asm sources is why those four stay here.
-what replaces the ROM half here is roms/build_emu_rom.sh, which assembles bank 0
-and compares the result against the sha256 the catalog publishes - a stronger
-question, because it is asked against what users download rather than against a
-second copy in a sibling checkout.  the generation cost above is unchanged: an
-edit here still moves every published ROM and still makes every user re-download.
+  A previous revision of this header said emcc had been installed here on
+  2026-09-17 and that node had been upgraded as its dependency.  Both were
+  false when written; the emcc half still is.  [EMSCRIPTEN] means "not on this
+  machine".  [BROWSER] means "needs a person, or the headless-Chrome trick".
 
-- [BROWSER] no browser has drawn the page since xterm was vendored, since a
-zero-byte export started downloading, and since the download name became the
-lowercased last component of the typed path.  the checklist is in
-MANUAL_CHECKS.md.  the wasm is no longer the blocker, and it no longer needs a
-CI artifact: the v1.38 release ships romwbw-emu_1.38_amd64.deb, which carries
-web/romwbw.html, romwbw.js, romwbw.wasm, vendor/ and emu_avw.rom as a servable
-layout - `gh release download v1.38 -R avwohl/romwbw_emu -p
-'romwbw-emu_1.38_amd64.deb'` then `dpkg-deb -x`.  the packaged romwbw.html is
-HEAD's template rendered apart from the three @VERSION@ substitutions, which say
-1.38 where VERSION now says 1.39.  its emu_avw.rom is c7abc580, the ROM from
-before e47c948, so anything that exercises the bank call answers for the old
-one.  serve the UNPACKED DEB, not web/ out of
-this tree: web/ held gitignored March leftovers of romwbw.js and romwbw.wasm
-whose md5s differed from the CI build's, and serving them would have answered
-all three checks against a five-month-old wasm.  they are deleted (make -C web
-clean), as are the December 2025 romwbw_node.* and romwbw_test.* pairs that
-`clean` does not name - there is no .wasm left in web/ at all, so `make serve`
-and both deploy targets now fail on absent emcc instead of shipping a stale one.
-what is left is a person at a browser.  (emcc was absent when this was
-written; it is installed now - see the note under the header.)
-  UPDATE 2026-09-15: the packaged page answers for HEAD again.  v1.41
-(2026-09-10) and v1.42 (2026-09-13) both ran release.yml's emcc build, and the
-v1.42 amd64 deb's usr/share/romwbw_emu/web/romwbw.html is byte-identical to
-`sed s/@VERSION@/1.42/ web/romwbw.html-template`, with a freshly built
-romwbw.wasm and romwbw.js beside it and vendor/ staged.  It carries
-no ROM, as designed, so `romwbw-get mirror` has to be run beside the page
-before it will boot anything.  Download the v1.42 deb and serve that, rather
-than the stale v1.38 one this entry used to name.
-  UPDATE 2026-09-17: it is one commit behind again, in the one place that
-matters to this entry.  The line above used to end "nothing under src/ or web/
-has changed since the v1.42 tag, so that wasm is HEAD's core".  6d059ec
-(2026-09-15) changed src/emu_io_common.cc, which IS in web/makefile's
-ROMWBW_SRCS, and what it fixed is emu_host_path_cap_name returning "" - reached
-through emu_host_path_basename(), the function that produces the download name.
-So of the three checks this entry lists, the third - "the download name became
-the lowercased last component of the typed path" - is the one the v1.42 wasm no
-longer answers for.  The other two are unaffected.  Serve the v1.42 deb anyway
-if that is all there is, it is still far closer than v1.38; a release after
-6d059ec is what closes the download-name check.  The sentence above about what
-this machine lacks has been corrected in place at the same time: it said "emcc,
-node and every browser are absent", and none of the three is - see the note
-under the header.
-  AND THAT RELEASE IS v1.43, cut 2026-09-17, which carries 6d059ec and both
-web changes of that day.  Once its release.yml run has finished, the deb to
-download is v1.43 and all three checks answer for HEAD again.  Better still on
-this machine: `make -C web` builds the same wasm locally and `make -C web
-serve` puts a ROM and a disk beside it, which no deb does.
+- [BROWSER] no browser has drawn the page since a zero-byte export started
+downloading and since the download name became the lowercased last component of
+the typed path.  the checklist is in MANUAL_CHECKS.md.
+  WHAT IS ALREADY SETTLED, so nobody re-does it: the xterm viewport WAS drawn
+headless on 2026-09-15 (MANUAL_CHECKS.md records it), and the RomWBW release
+select was drawn headless on 2026-09-17 - and that select has since been
+DELETED along with the release gate, so that check is gone rather than passed.
+  WHAT TO SERVE.  `make -C web serve` is the best answer and does not work on
+this machine: no emcc, so no wasm.  Failing that, the newest deb is v1.42
+(2026-09-13); its web/romwbw.html is byte-identical to
+`sed s/@VERSION@/1.42/ web/romwbw.html-template` at tag v1.42, it carries a
+freshly built wasm and vendor/, and it carries NO ROM - so `romwbw-get mirror`
+has to be run beside it.  It is now several commits behind HEAD, including the
+whole v1.44 release-gate change, so it answers for the two download checks and
+for nothing about the release select.
 
 - [BROWSER] the wasm's video, DSKY, sound and printer callbacks are wired to
-names nothing implements.  emu_io_wasm.cc emits Module.onVideo*, Module.onDsky*
-and Module.onPrinterOutput; romwbw.html-template implements Module.onVda* and
-Module.onSnd*.  renaming one side does not switch it on: there is no sound
-emitter in the core at all, five of the eight onVda* handlers have no
-counterpart, and onVdaWriteChar takes an attribute byte the emitter never
-sends.  about 200 lines on each side that have never executed - wire it
-properly behind a browser, or delete one side.
+names nothing implements.  MEASURED 2026-09-17, and the numbers this item used
+to carry were all wrong:
+  emu_io_wasm.cc emits 14 Module.on* names; romwbw.html-template assigns 19;
+exactly 6 appear on both sides (onConsoleOutput, onStatus, onLog, onError,
+onHostFileRequestRead, onHostFileDownload).
+  8 emitted names reach no handler: onPrinterOutput, onDskyHex, onDskySegments,
+onDskyLeds, onDskyBeep, onVideoClear, onVideoSetCursor, onVideoWriteChar.
+  12 assigned handlers are never called: eight onVda*, four onSnd*.
+  renaming does not switch it on.  onVideoClear->onVdaClear and
+onVideoSetCursor->onVdaSetCursor are arity-identical and WOULD work;
+onVideoWriteChar->onVdaWriteChar draws invisibly, because the page reads an
+attribute byte the emitter never sends and `undefined & 0x0F` is 0; and five
+onVda* and all four onSnd* have no emitter at all.
+  "there is no sound emitter in the core" was WRONG: hbios_dispatch.cc's
+HBF_SNDPLAY and HBF_SNDBEEP both call emu_dsky_beep(), which emits
+Module.onDskyBeep(ms).  It carries a duration and no frequency, which is the
+[SOUND] item below, not this one.
+  the real sizes are 114 lines on the core side and 150 on the page, not "about
+200 each" - AND there is a SECOND dead copy: web/romwbw-debug.html carries the
+same onVda*/onSnd* block, 152 more lines.  deleting one side means deleting it
+twice.  wire it properly behind a browser, or delete it.
 
-- [BROWSER] nobody has opened the page in a browser, and four things in it
-are new.  the ROM, disk and RomWBW-release selects are built from
-catalog/manifest.json at load time rather than from hardcoded <option> lists;
-each download is checked against the manifest's size and sha256 through
-crypto.subtle, which needs a secure context and says so rather than claiming a
-pass it did not perform; a directory with no mirror in it gets an explanatory
-status line and working file pickers instead of a 404; and the RomWBW select
-disables a release this build cannot boot.  all four are covered by
-tests/web_manifest.js under node, which RUNS on this machine now - node
-is on PATH, `make -C src test` ran all three JS tests and the whole suite passed
-on 2026-09-17, where this entry used to record a SKIP - and none has been
-DRAWN.  Chrome and
-Safari are both installed here, and so is emcc since 2026-09-17: `make -C web`
-built romwbw.js and romwbw.wasm on this machine, so the page CAN be built
-locally now and the last missing piece is a person at a browser with the
-checklist in MANUAL_CHECKS.md.  `make -C
-web serve` mirrors emu_avw and hd1k_combo into web/ before starting the server,
-so a local serve has a bootable ROM and disk for the first time - that half is
-worth checking too, because nothing has ever exercised it.
-  UPDATE 2026-09-17: "none has been DRAWN" is no longer true of the fourth.
-The RomWBW select was rendered in headless Chrome against a wasm built here,
-served with a manifest that lied in each direction, and it disabled exactly the
-release the core cannot run and left the others alone - see CHANGELOG's
-"asks the core which RomWBW releases it can boot".  The other three are still
-undrawn.
-  AND THE BROWSER IS DRIVABLE FROM HERE, which is what this item kept waiting
-for a person to do.  Chrome's DevTools endpoint is plain HTTP plus a WebSocket,
-node 26 has a global WebSocket, so `--headless=new --remote-debugging-port=N`
-plus Runtime.evaluate drives the real page with NOTHING installed - no
-puppeteer, no npm.  Both browser checks of 2026-09-17 were run that way,
-including the NVRAM one that reloaded the page and read the Boot box back.  A
-harness was not committed; the question of whether one should be is open, and
-it is the real decision hiding behind "needs a person at a browser".  What
-still genuinely needs a human is the checks that turn on a browser DEFAULT
-ACTION - a download, a paste, a zoom - which is most of MANUAL_CHECKS.md.
+- [BROWSER] three of the four things that were new in the page are still
+undrawn: the manifest-built ROM/disk selects, the crypto.subtle size+sha256
+check (which needs a secure context and says so rather than claiming a pass it
+did not perform), and the no-mirror directory case with its explanatory status
+line and working file pickers.  all three are covered by tests/web_manifest.js
+under node, which RUNS here now, and none has been DRAWN.
+  the fourth - the RomWBW select that greyed out a release the core could not
+boot - was drawn headless on 2026-09-17 and then deleted in v1.44.  the core
+has no opinion about releases any more, so there is nothing to grey out.
+  THE BROWSER IS DRIVABLE FROM HERE with nothing installed: Chrome's DevTools
+endpoint is plain HTTP plus a WebSocket, node has a global WebSocket, so
+`--headless=new --remote-debugging-port=N` plus Runtime.evaluate drives the real
+page - no puppeteer, no npm.  Both checks of 2026-09-17 were run that way.  A
+harness was not committed; whether one should be is the real decision hiding
+behind "needs a person at a browser", and it is open.  What still genuinely
+needs a human is the checks that turn on a browser DEFAULT ACTION - a download,
+a paste, a zoom - which is most of MANUAL_CHECKS.md.
+  ALL OF IT NEEDS emcc, which this machine does not have.
 
 - [EMSCRIPTEN] R8's "Reading:" line names the file that was really opened on
 the CLI only.  emu_host_file_get_read_name() returns "" in emu_io_wasm.cc on
@@ -199,53 +92,52 @@ changing it needs a name parameter on emu_host_file_provide_data() and a change
 to the page's picker callback.  until then the browser answers 0xFF and R8
 prints what was typed, which is what it always did.
 
-- [RELEASE] a new RomWBW release needs a tag here, not just a catalog entry:
-the releases a client will offer are filtered by ROMWBW_SUPPORTED_RELEASES,
-which is compiled into this core, so a release nobody has added here is one no
-client can boot however the catalog is cut.  the order is romwbw_disks'
-(RELEASING.md:441-447): boot it with `tools/boot_test.sh <ver>` first, THEN add
-the X() line here, because that line is the claim that somebody booted it.
-  this is the procedure the first item in this file wants abolished - it is the
-cost of the gate, stated as a standing rule.  it is correct today and stays
-correct until the gate goes; see docs/RELEASE_GATE.md.
+- [ANY] src/emu_hbios.asm is bank 0 of every published ROM, and it is now
+BYTE-IDENTICAL to romwbw_disks' copy - tools/check_source_drift.sh there
+asserts exactly that, where it used to assert the two differed in a documented
+way.  so an edit in either tree is an edit to the other, and to every published
+ROM's sha256, which bumps each romwbw_disks version's generation, and a
+generation bump is what makes a client invalidate its cached images - every
+user re-downloads their disks.  that is not theoretical: HB_BNKCALL (e47c948,
+d4f4a2a, 2026-09-06) cost exactly that, a generation-2 republish of both 3.5.1
+and 3.6.0.  budget it before the next emu_hbios.asm change.
+  the file no longer names a release: both version stamps come from a generated
+romwbw_ver.inc.  making it so moved no published byte, because published ROMs
+are built from romwbw_disks' copy, which was already parameterised.
+  DO NOT BUILD ROMs HERE as a matter of routine.  They are romwbw_disks'
+province; nothing in this repository's build, test or release path assembles
+one.  roms/build_emu_rom.sh is a DEBUGGING tool for when bank 0 is actually
+suspect - what continuously asserts the two trees agree is
+romwbw_disks/tools/check_source_drift.sh, which needs no ROM.
+  the finished HB_BNKCALL work is CHANGELOG.md's `### HB_BNKCALL performs a
+real bank call` section (grep it; CHANGELOG grows at the top, so a line number
+will not stay right).
 
-- [ANY] docs/ROM_ATTESTATION.md is stale in three places and none of them is
-safe to fix unasked.  it lives here rather than in DECISIONS.md because the work
-is a document edit any machine can make; what is missing is agreement on the
-wording, not a capability.  it is a signed filing to Apple - "I hereby
+- [ANY] docs/ROM_ATTESTATION.md is a signed filing to Apple - "I hereby
 affirm", "I hereby grant Apple Inc. permission", "Digital Signature" - so the
-signed text is not something to reword quietly, and the v1.40 migration
-deliberately touched none of it.  three things in it are now out of date.  its
-Component 2 says "Version: 3.5.1", which was the whole truth when a single
-pinned ROM shipped and is narrower than what the
-binary supports since v1.39 (3.5.1 and 3.6.0, and the version a guest sees is
-read from the ROM it loads).  its "Date: December 2024" is two years stale.  and
-ioscpm carries a near-identical copy of the same document that differs from this
-one only in that date, so there are two signed filings and no rule about which
-is the original.  the ruling is whose document it is, whether it is re-signed
-today naming both releases, and whether one of the two copies goes.  what did
-not need a ruling has been done: a dated note below the signature records that
-the ROM has left this repository and that roms/build_emu_rom.sh reproduces the
-published bytes and says so, which is what makes the GPL and attestation claim
-checkable rather than asserted.  that note is additive and stops at the
-signature line; everything above it is untouched.
+signed text is not something to reword quietly, and what is open is agreement
+on the wording rather than a capability.  TWO of the three stale things are
+now fixed, because they were statements of technical fact that had become
+FALSE rather than parts of the affirmation: its claim that the emulator
+"refuses a ROM whose release is not on" a list, and its claim that
+build_emu_rom.sh "reproduces RomWBW 3.5.1 only".  Both were corrected in v1.44
+and the affirmation and signature block were not touched.
+  WHAT IS STILL OPEN, and needs the owner: its "Date: December 2024" is two
+years stale, and ioscpm carries a near-identical copy of the same document that
+differs from this one only in that date - so there are two signed filings and
+no rule about which is the original.  The ruling is whose document it is,
+whether it is re-signed today, and whether one of the two copies goes.
 
 - [WINDOWS] nothing on Windows is RUN, only compiled.  the msvc job builds the
 three core .cc files z80cpmw pulls straight out of src/ and stops there: there
 is no MSVC build of the emulator to link and no test program that would run.
 the only thing that executes Windows code is z80cpmw built and run by hand on a
-Windows box (build.bat, run_test.bat, tests/): that port has no CI at all -
-`gh api repos/avwohl/z80cpmw/actions/workflows` answers 0 and `gh run list` is
-empty.  cpmemu is no longer in that position: 43bff79 added
-.github/workflows/ci.yml on 2026-09-03, whose ubuntu and macos jobs run
-tests/run_tests.sh --require and whose windows-latest job builds with MSVC and
-then runs tests\win_console.bat under CPMEMU_REQUIRE_MSVC=1 - the same batch
-file that suite's "windows console" section shells out to, so those cases are
-finally executed by a machine, and the file's header says that job is the first
-one ever to run them.  the other of that suite's two Windows sections, "windows
-cross-compile", skips merely for want of x86_64-w64-mingw32-g++, which IS
-installed here, so it runs and is another compile rather than a run.  what is
-still only compiled and never run is this repository's own core.
+Windows box (build.bat, run_test.bat, tests/): that port has no CI at all.
+cpmemu is no longer in that position: 43bff79 added .github/workflows/ci.yml on
+2026-09-03, whose ubuntu and macos jobs run tests/run_tests.sh --require and
+whose windows-latest job builds with MSVC and then runs tests\win_console.bat
+under CPMEMU_REQUIRE_MSVC=1 - so those cases are finally executed by a machine.
+what is still only compiled and never run is this repository's own core.
 
 - [SOUND] the SND handler stores four channels and plays one beep.  handleSND
 in src/hbios_dispatch.cc keeps snd_period[4] and snd_volume[4], and
@@ -254,8 +146,7 @@ those arrays back out.  BF_SNDPLAY looks at channel 0 only and calls
 emu_dsky_beep(duration), which is a fixed beep of that length: the period is
 not a pitch and the other three channels are inaudible.  a guest playing a
 four-voice tune hears four identical beeps in sequence.  SNDQ_DEV already
-declines to name a chip for exactly this reason - "there is no sound chip here
-- nothing reads snd_period or snd_volume back out".
+declines to name a chip for exactly this reason.
   WHAT WOULD CLOSE IT is rendering the channels the handler already records:
 period -> frequency, volume -> amplitude, mixed across the four.  that is one
 AY-3-8910/YM2149 worth of square-wave generation and it belongs here, in the
@@ -276,3 +167,25 @@ that came of it: RomWBW has no native MIDI in HBIOS, and MIDI on RC2014/Z80
 hardware is an external module.  Read it before treating MIDI as a second
 feature - it is a different question from rendering the SND channels, and only
 this one has a driver interface already sitting in handleSND.
+
+- [ANY] THE THREE GUI CLIENTS DO NOT COMPILE against this tree until they drop
+the release gate.  v1.44 deleted src/romwbw_pin.h and four functions, and all
+three clients call them from source they compile out of a sibling checkout -
+z80cpmw and cpmdroid compile src/emu_init.cc IN PLACE, ioscpm symlinks ten
+files out of src/ including emu_init.cc and romwbw_pin.h.  This is not a filter
+that can lag; it is a build break on the day they pull.
+  What each one has to delete is enumerated in docs/RELEASE_GATE.md's "What
+downstream must do", and what to do instead is in DOWNSTREAM.md's "RomWBW
+releases are not this core's business".  Not started in any of the three.
+
+- [ANY] romwbw_disks still documents the gate in six files - INTERFACE_V0.md,
+CATALOG_SCHEMA.md, CLIENT_MIGRATION.md, ROMWBW_VERSIONS.md, RELEASING.md and
+README.md - and its todo.txt carries the step-1 item that v1.44 has now done.
+Its two SCRIPTS were changed with v1.44 and are green: tools/boot_test.sh tests
+every published release unconditionally and has no refusal branch, and
+tools/check_source_drift.sh asserts the two emu_hbios.asm copies are identical.
+Only the prose is left.
+  INTERFACE_V0.md is the one that matters: its "Adding RomWBW 3.7.0 is a new
+release tag and a regenerated index - no client change, no interface bump" was
+FALSE while the gate existed and is TRUE now, and its "The one thing v0 could
+not fix on its own" section is about a thing that is fixed.
