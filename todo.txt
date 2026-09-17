@@ -31,6 +31,38 @@ and a fallback, not a constraint on loading.
 first.  Cut the compile-time gate before the publish-time one exists and the
 protection moves to nowhere rather than moving.
 
+- [ANY] The stored romwbw_version in catalog.json can differ, durably and
+silently, from the release every run actually uses.  save_choice writes it to
+$XDG_CONFIG_HOME/romwbw_emu/catalog.json (tools/romwbw-get:175-185) and cmd_use
+(:1107) is its only writer; resolve_version (:616-619) then falls through to the
+index default when the stored release is not in the pool, WITHOUT rewriting the
+file and without saying anything.  So `romwbw-get use 3.5.1` followed by an index
+that stops offering 3.5.1 leaves catalog.json naming 3.5.1 for ever while every
+run fetches and boots something else.  It surfaces only in `versions --json` as
+"selected" (:1003-1005); the plain listing marks "selected" only on rows it
+prints (:1019-1020), so a filtered-out entry shows nothing at all.
+  THE DAMAGE IS SMALL AND THAT IS WHY THIS IS NOT URGENT.  One resolved version
+feeds every asset path - Catalog.scoped (:467-469), assets_dir (:693),
+working_copy (:931-943) - and cmd_run fetches the ROM and both disks for that
+same version (:1152-1175), so unlike the GUI ports a ROM and images from
+DIFFERENT releases cannot be assembled here.  What is wrong is the silence, not
+the pairing.
+  Nor is this z80cpmw's bug, which was filed there on 2026-09-17 after measuring
+a machine with 3.6.0 stored against two -v0-3.5.1 disks.  That one turns on a
+back-fill that corrects only an EMPTY stored value; the reconciliation here is
+the inverse, running on a non-empty one (`if stored and any(...)`, :613-614).
+Nothing in this repo derives a release from a filename at all: the only release
+readers are emu_romwbw_release_of_image (src/emu_init.cc:57-67) and
+emu_romwbw_release_loaded (:69-81), and both read HCB bytes out of ROM content.
+  Two reachability notes for whoever takes it.  _runnable() (:1417-1436) returns
+None - warning once and filtering NOTHING - when no romwbw_emu binary is found,
+when the binary reports no list, or under --assume-supported, and cmd_run passes
+None for --allow-untested (:1152); on any of those the stored value is accepted
+unchecked.  And `romwbw-get use --index-url URL` with no version argument stores
+a new index_url and validates nothing against it (:1105-1106), which is the
+easiest way to end up pointing at an index that has never heard of the release
+still named in the file.
+
 - [ANY] src/emu_hbios.asm is bank 0 of every published ROM, and romwbw_disks
 carries a copy that tools/check_source_drift.sh requires to assemble to the same
 512 KB ROM.  so ANY edit here moves every ROM's sha256, which bumps each
