@@ -10,26 +10,60 @@ so a session on another OS can see at a glance what it can pick up.
 
 - [ANY] DELETE THE RELEASE GATE.  ROMWBW_SUPPORTED_RELEASES gates ROM loading on
 the RomWBW release number, which is the HBIOS-to-disk-image axis and none of this
-core's business.  What this core actually depends on is the two ports at
-src/emu_hbios.asm:38-39 and the function set in src/hbios_dispatch.cc - and
-romwbw_disks already versions exactly that, as interface v0.  Because of this
-macro, INTERFACE_V0.md's "Adding RomWBW 3.7.0 is a new release tag and a
-regenerated index - no client change, no interface bump" is false: a 3.7.0 entry
-is discarded by every client, and emu_validate_rom_hcb refuses the ROM at load
-even with the client filters gone.  So publishing 3.7.0 costs a release of
-Windows, macOS, iOS, Android and Linux, which is the coupling romwbw_disks was
-built to remove.  Note also that the release bytes this macro adjudicates are
-written by romwbw_disks' own tools/build_rom.sh, which generates romwbw_ver.inc
-and stamps the HCB at 0x105 - the number is written there and judged here, with
-nothing keeping the two in step but a person editing a macro.
+core's business.  What this core actually depends on is three things and the
+release number is not one of them: the two ports at src/emu_hbios.asm:38-39, the
+function set in src/hbios_dispatch.cc, and the hardcoded 0x0406 in HBX_BNKCALL
+(:336-365).  romwbw_disks already versions the first two as interface v0, and the
+third belongs in the romwbw_ver.inc its build generates.  Because of this macro,
+INTERFACE_V0.md's "Adding RomWBW 3.7.0 is a new release tag and a regenerated
+index - no client change, no interface bump" is false: a 3.7.0 entry is discarded
+by every client, and emu_validate_rom_hcb refuses the ROM at load
+(src/emu_init.cc:194-211) even with the client filters gone.  So publishing 3.7.0
+costs a release of Windows, macOS, iOS, Android and Linux, which is the coupling
+romwbw_disks was built to remove.  Note also that the release bytes this macro
+adjudicates are written by romwbw_disks' own tools/build_rom.sh, which generates
+romwbw_ver.inc and stamps the HCB at 0x105 - the number is written there and
+judged here, with nothing keeping the two in step but a person editing a macro.
   What comes out, in what order, and what it costs is docs/RELEASE_GATE.md.  It
 also takes emu_romwbw_release_supported, emu_romwbw_supported_list,
-emu_set_allow_untested_romwbw, --allow-untested-romwbw, roms/verify_romwbw_pin.sh
-and four flags in tools/romwbw-get.  ROMWBW_DEFAULT_* stays - it is a build input
-and a fallback, not a constraint on loading.
-  BLOCKED on romwbw_disks making tools/boot_test.sh a required publish step
-first.  Cut the compile-time gate before the publish-time one exists and the
-protection moves to nowhere rather than moving.
+emu_set_allow_untested_romwbw / emu_allow_untested_romwbw,
+--allow-untested-romwbw, roms/verify_romwbw_pin.sh and its step in
+.github/workflows/test.yml, and in tools/romwbw-get the _runnable() filter, the
+--allow-untested and --assume-supported flags, and the default of `mirror
+--versions` - three flags and a function, not the "four flags" this item used to
+say.  ROMWBW_DEFAULT_* stays: it is a build input and a fallback, not a
+constraint on loading.
+  IT ALSO TAKES A CROSS-REPOSITORY PROTOCOL, which is what this item and
+docs/RELEASE_GATE.md's "what comes out" both missed.  emu_romwbw_supported_list()
+is printed as the second line of print_version_banner (src/romwbw_emu.cc:806-811),
+and tools/romwbw-get:389-393 calls that line a protocol with three consumers: its
+own RE_RUNS (:395), roms/verify_romwbw_pin.sh, and romwbw_disks'
+tools/boot_test.sh.  `romwbw-get mirror` then copies the answer into
+catalog/manifest.json as emu_supported, which web/romwbw.html-template:948-952
+reads - so the page's release select goes with it, and the [EMSCRIPTEN] item
+below about exporting that same function to the wasm is not separate work, it is
+a fourth consumer this would delete.  Whoever takes either one should read both.
+  THE BLOCKER IS NOT THE ONE THIS ITEM NAMED.  boot_test.sh is already a required
+publish step: romwbw_disks docs/RELEASING.md:825 makes it a checklist item and
+closes the obvious hole itself - "A SKIP line means no emulator was found, which
+is not a pass" - and :441-447 already orders `boot_test.sh 3.7.0` before the X()
+line is added here.  It is required by the written procedure and by no script:
+neither publish_release.sh nor verify.yml runs it.  The real blocker is that
+boot_test.sh CONSUMES THE GATE.  It asks the binary which releases it can run
+(:85-98); with that banner line deleted RUNS is empty, the pre-v1.39 "RomWBW
+compatibility: v..." fallback is empty too, and it die()s - exit 1, not a skip.
+Cut the gate first and the publish-time gate does not lose a fact, it FAILS, and
+every publish is blocked until boot_test.sh is changed to test every published
+version unconditionally and to drop its refusal branch (:210-218), whose failure
+message names emu_validate_rom_hcb.  So step 1 of docs/RELEASE_GATE.md's order of
+work is that change to boot_test.sh, not the checklist line that is already
+there.
+  TWO THINGS IT STILL DOES NOT FIX, both from the note.  v0's pillar 3 covers the
+private 0xE1-0xEA block and two standard functions, not the whole dispatcher
+surface - so a release whose CBIOS calls a standard function this core lacks is
+exactly the risk the allowlist stands in for, and v0 as written does not catch
+it.  And 0x0406 should ride along with the next bank-0 change rather than be cut
+on its own, for the generation cost the emu_hbios.asm item below spells out.
 
 - [ANY] The stored romwbw_version in catalog.json can differ, durably and
 silently, from the release every run actually uses.  save_choice writes it to
@@ -176,11 +210,22 @@ mirror is that re-running it publishes a newly released disk with no wasm
 rebuild.  the moment somebody re-mirrors without rebuilding - which is the
 intended workflow, not an accident - emu_supported is a fact about a binary that
 is no longer the one in the page.  do it the next time emcc is on the machine.
+  BUT READ THE DELETE-THE-RELEASE-GATE ITEM FIRST.  it proposes deleting
+emu_romwbw_supported_list() outright, along with the banner line this mirror
+value is parsed off and the filtering the page does with it.  the two items are
+not independent: if the gate goes, this one does not move to a better source,
+it evaporates - there is no list to export and nothing for the select to grey
+out.  whichever is taken first decides whether the other exists at all.
 
 - [RELEASE] a new RomWBW release needs a tag here, not just a catalog entry:
 the releases a client will offer are filtered by ROMWBW_SUPPORTED_RELEASES,
 which is compiled into this core, so a release nobody has added here is one no
-client can boot however the catalog is cut.
+client can boot however the catalog is cut.  the order is romwbw_disks'
+(RELEASING.md:441-447): boot it with `tools/boot_test.sh <ver>` first, THEN add
+the X() line here, because that line is the claim that somebody booted it.
+  this is the procedure the first item in this file wants abolished - it is the
+cost of the gate, stated as a standing rule.  it is correct today and stays
+correct until the gate goes; see docs/RELEASE_GATE.md.
 
 - [ANY] docs/ROM_ATTESTATION.md is stale in three places and none of them is
 safe to fix unasked.  it lives here rather than in DECISIONS.md because the work
