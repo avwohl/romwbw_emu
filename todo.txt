@@ -8,6 +8,29 @@ makes about every tag in this file.
 Every item carries a tag saying what a machine has to be able to do to take it,
 so a session on another OS can see at a glance what it can pick up.
 
+- [ANY] DELETE THE RELEASE GATE.  ROMWBW_SUPPORTED_RELEASES gates ROM loading on
+the RomWBW release number, which is the HBIOS-to-disk-image axis and none of this
+core's business.  What this core actually depends on is the two ports at
+src/emu_hbios.asm:38-39 and the function set in src/hbios_dispatch.cc - and
+romwbw_disks already versions exactly that, as interface v0.  Because of this
+macro, INTERFACE_V0.md's "Adding RomWBW 3.7.0 is a new release tag and a
+regenerated index - no client change, no interface bump" is false: a 3.7.0 entry
+is discarded by every client, and emu_validate_rom_hcb refuses the ROM at load
+even with the client filters gone.  So publishing 3.7.0 costs a release of
+Windows, macOS, iOS, Android and Linux, which is the coupling romwbw_disks was
+built to remove.  Note also that the release bytes this macro adjudicates are
+written by romwbw_disks' own tools/build_rom.sh, which generates romwbw_ver.inc
+and stamps the HCB at 0x105 - the number is written there and judged here, with
+nothing keeping the two in step but a person editing a macro.
+  What comes out, in what order, and what it costs is docs/RELEASE_GATE.md.  It
+also takes emu_romwbw_release_supported, emu_romwbw_supported_list,
+emu_set_allow_untested_romwbw, --allow-untested-romwbw, roms/verify_romwbw_pin.sh
+and four flags in tools/romwbw-get.  ROMWBW_DEFAULT_* stays - it is a build input
+and a fallback, not a constraint on loading.
+  BLOCKED on romwbw_disks making tools/boot_test.sh a required publish step
+first.  Cut the compile-time gate before the publish-time one exists and the
+protection moves to nowhere rather than moving.
+
 - [ANY] src/emu_hbios.asm is bank 0 of every published ROM, and romwbw_disks
 carries a copy that tools/check_source_drift.sh requires to assemble to the same
 512 KB ROM.  so ANY edit here moves every ROM's sha256, which bumps each
