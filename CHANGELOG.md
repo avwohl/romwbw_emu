@@ -19,6 +19,44 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+### The web Boot box reads NVRAM back, so SYSCONF's choice is not overwritten
+
+The page could only push a boot option in. It called `_romwbw_set_boot_string`
+and `_romwbw_clear_nvram`, and `web/makefile` exported no way to read one back,
+so a target the **guest** configured — SYSCONF, or `W` at the boot menu — was
+invisible to it. That was not only a display problem. The Boot box kept
+whatever had last been typed, `saveSettings` persisted that, and the next Start
+pushed it straight back over what the guest had chosen.
+
+`web/romwbw_web.cc` exports `romwbw_nvram_changed()` and
+`romwbw_get_boot_string()` — `hasNvramChange()` then `getNvramSetting()`, which
+is the pair `DOWNSTREAM.md`'s "Persistence" section has prescribed for ports all
+along, naming `localStorage` for the web. **Nothing in this repository had ever
+called either**; the CLI persists at exit to
+`$XDG_CONFIG_HOME/romwbw_emu/nvram`, which a browser tab never gets to do. So
+the page reads while the guest runs: the poll that already watched for
+manifest-backed disk writes now also asks whether NVRAM moved, and on a change
+puts the value in the Boot box and saves it. A change in the last half-second
+is not dropped — Stop reads once more before clearing the timer. The status
+line says what happened; nothing is written into the terminal, because a line
+injected while CP/M is drawing scrolls the guest's screen out from under
+someone who has just run SYSCONF.
+
+`tests/web_nvram_boot.js` runs the round trip against a built wasm, with no ROM
+(`setNvramSetting`/`getNvramSetting` are byte operations on `nvram_switches`):
+`2.3` keeps its slice, `2` does not come back as `2.0`, a ROM app comes back as
+its letter, clearing reads back as `""`, the change flag rises on a write and
+is cleared by the read, and pushing back what was read is idempotent — which is
+what the next Start does.
+
+Checked in a browser too, which is what the item said it needed. Headless
+Chrome, the real page, a wasm built here: typed `2` and persisted it, then had
+the core change to `3.1` behind the page's back — the Boot box became `3.1`,
+`localStorage` became `3.1`, the status line said so, a reload brought back
+`3.1` rather than the typed `2`, and a guest clearing it emptied the box. Driven
+over the DevTools protocol from plain node with nothing installed; no harness
+was committed.
+
 ### The web page asks the core which RomWBW releases it can boot
 
 It used to ask `catalog/manifest.json`. `romwbw-get mirror` writes

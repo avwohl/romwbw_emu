@@ -190,6 +190,7 @@ test: romwbw_emu $(addprefix test_,$(TESTS))
 	  node $(THIS_DIR)../tests/web_console_output.js || status=1; echo; \
 	  node $(THIS_DIR)../tests/web_manifest.js || status=1; echo; \
 	  node $(THIS_DIR)../tests/web_supported_releases.js || status=1; echo; \
+	  node $(THIS_DIR)../tests/web_nvram_boot.js || status=1; echo; \
 	else \
 	  echo "SKIP  web JS tests (node not on PATH)"; echo; \
 	fi; \

@@ -166,6 +166,37 @@ void romwbw_set_boot_string(const char* str) {
   }
 }
 
+// Has the guest changed the boot option since it was last read?
+//
+// The page pushed a boot string in and never read one back, so a target the
+// GUEST configured - SYSCONF, or 'W' at the boot menu - was invisible to it.
+// Worse than invisible: the Boot box kept whatever the user last typed, and
+// the next Start pushed that stale value back over what the guest had chosen.
+//
+// DOWNSTREAM.md's "Persistence" section prescribes exactly this pair for a
+// port, down to naming localStorage for the web, and nothing in this
+// repository called it until now - the CLI persists on exit instead, which a
+// browser tab does not get to do.
+EMSCRIPTEN_KEEPALIVE
+int romwbw_nvram_changed() {
+  if (!emu) return 0;
+  return emu->hbios.hasNvramChange() ? 1 : 0;
+}
+
+// The current boot option, spelled the way romwbw_set_boot_string accepts it
+// and SYSCONF displays it: "C", "2", "2.3", or "" when NVRAM holds no choice.
+//
+// READING CLEARS THE CHANGE FLAG - that is getNvramSetting's contract, not
+// something added here - so call romwbw_nvram_changed() first if the answer
+// matters. Static storage, like emu_romwbw_supported_list(): the caller gets
+// a pointer good until the next call, which is all ccall's 'string' needs.
+EMSCRIPTEN_KEEPALIVE
+const char* romwbw_get_boot_string() {
+  static std::string setting;
+  setting = emu ? emu->hbios.getNvramSetting() : std::string();
+  return setting.c_str();
+}
+
 // Clear NVRAM boot configuration - forces boot menu to display
 EMSCRIPTEN_KEEPALIVE
 void romwbw_clear_nvram() {

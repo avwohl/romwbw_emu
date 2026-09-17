@@ -169,14 +169,22 @@ checklist in MANUAL_CHECKS.md.  `make -C
 web serve` mirrors emu_avw and hd1k_combo into web/ before starting the server,
 so a local serve has a bootable ROM and disk for the first time - that half is
 worth checking too, because nothing has ever exercised it.
-
-- [EMSCRIPTEN] the web Boot field never reads NVRAM back.  the page pushes the
-string with _romwbw_set_boot_string and clears it with _romwbw_clear_nvram, and
-web/makefile's EXPORTED_FUNCTIONS holds no getter, so a boot target the guest
-itself writes with SYSCONF is lost on reload - the text survives only in
-localStorage.  the CLI has load_nvram_setting/save_nvram_setting under
-$XDG_CONFIG_HOME/romwbw_emu/nvram and the web build has no equivalent read
-path.  needs emcc to build and a browser to check.
+  UPDATE 2026-09-17: "none has been DRAWN" is no longer true of the fourth.
+The RomWBW select was rendered in headless Chrome against a wasm built here,
+served with a manifest that lied in each direction, and it disabled exactly the
+release the core cannot run and left the others alone - see CHANGELOG's
+"asks the core which RomWBW releases it can boot".  The other three are still
+undrawn.
+  AND THE BROWSER IS DRIVABLE FROM HERE, which is what this item kept waiting
+for a person to do.  Chrome's DevTools endpoint is plain HTTP plus a WebSocket,
+node 26 has a global WebSocket, so `--headless=new --remote-debugging-port=N`
+plus Runtime.evaluate drives the real page with NOTHING installed - no
+puppeteer, no npm.  Both browser checks of 2026-09-17 were run that way,
+including the NVRAM one that reloaded the page and read the Boot box back.  A
+harness was not committed; the question of whether one should be is open, and
+it is the real decision hiding behind "needs a person at a browser".  What
+still genuinely needs a human is the checks that turn on a browser DEFAULT
+ACTION - a download, a paste, a zoom - which is most of MANUAL_CHECKS.md.
 
 - [EMSCRIPTEN] R8's "Reading:" line names the file that was really opened on
 the CLI only.  emu_host_file_get_read_name() returns "" in emu_io_wasm.cc on

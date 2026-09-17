@@ -18,7 +18,7 @@ QKZ80_SRC = ../../cpmemu/src
 VERSION := $(shell cat ../VERSION)
 ROMWBW_CFLAGS = -O2 -std=c++11 -I$(QKZ80_SRC) -DEMU_VERSION=\"$(VERSION)\"
 ROMWBW_LDFLAGS = -s WASM=1 \
-          -s EXPORTED_FUNCTIONS='["_main","_romwbw_key_input","_romwbw_set_boot_string","_romwbw_clear_nvram","_romwbw_supported_releases","_romwbw_load_rom","_romwbw_load_disk","_romwbw_get_disk_data","_romwbw_get_disk_size","_romwbw_is_disk_dirty","_romwbw_clear_disk_dirty","_romwbw_set_disk_is_manifest","_romwbw_set_disk_warning_suppressed","_romwbw_poll_manifest_warning","_romwbw_start","_romwbw_stop","_romwbw_is_running","_romwbw_is_waiting","_romwbw_get_instruction_count","_romwbw_get_pc","_romwbw_set_debug","_romwbw_run_batch","_emu_host_file_load","_emu_host_file_cancel","_malloc","_free"]' \
+          -s EXPORTED_FUNCTIONS='["_main","_romwbw_key_input","_romwbw_set_boot_string","_romwbw_nvram_changed","_romwbw_get_boot_string","_romwbw_clear_nvram","_romwbw_supported_releases","_romwbw_load_rom","_romwbw_load_disk","_romwbw_get_disk_data","_romwbw_get_disk_size","_romwbw_is_disk_dirty","_romwbw_clear_disk_dirty","_romwbw_set_disk_is_manifest","_romwbw_set_disk_warning_suppressed","_romwbw_poll_manifest_warning","_romwbw_start","_romwbw_stop","_romwbw_is_running","_romwbw_is_waiting","_romwbw_get_instruction_count","_romwbw_get_pc","_romwbw_set_debug","_romwbw_run_batch","_emu_host_file_load","_emu_host_file_cancel","_malloc","_free"]' \
           -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS","HEAPU8"]' \
           -s ALLOW_MEMORY_GROWTH=1 \
           -s INITIAL_MEMORY=67108864
@@ -40,15 +40,18 @@ all: romwbw.js
 romwbw.js: $(ROMWBW_SRCS)
 	$(EMCC) $(ROMWBW_CFLAGS) $(ROMWBW_LDFLAGS) -o romwbw.js $(ROMWBW_SRCS)
 
-# The page asks the core which RomWBW releases it can load, through the
-# `_romwbw_supported_releases` export above.  Nothing else in this repository
-# builds a wasm, so a rename, a dropped EMSCRIPTEN_KEEPALIVE or a typo in
-# EXPORTED_FUNCTIONS would otherwise surface only when a release is cut - and
-# then as a page that silently falls back to the mirror's stale answer, which
-# is the bug the export exists to fix.  --require, so this cannot pass by
-# skipping the way it does under `make -C src test`.
+# What the page asks the core, asked here.  `_romwbw_supported_releases` is
+# which RomWBW releases this build can load; `_romwbw_nvram_changed` and
+# `_romwbw_get_boot_string` are the boot option the guest may have changed
+# under it.  Nothing else in this repository builds a wasm, so a rename, a
+# dropped EMSCRIPTEN_KEEPALIVE or a typo in EXPORTED_FUNCTIONS would otherwise
+# surface only when a release is cut - and neither failure is loud: the page
+# falls back to a stale mirror answer, or silently stops reading NVRAM back,
+# which is the bug each export exists to fix.  --require, so this cannot pass
+# by skipping the way it does under `make -C src test`.
 check: romwbw.js
 	node ../tests/web_supported_releases.js --require
+	node ../tests/web_nvram_boot.js --require
 
 # RomWBW debug build with DWARF symbols for Chrome DevTools
 romwbw-debug.js: $(ROMWBW_SRCS)

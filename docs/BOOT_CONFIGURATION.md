@@ -171,6 +171,22 @@ $X
 
 ## NVRAM Persistence
 
+### In the browser, it is `localStorage`, not a file
+
+The web build has no exit to save on and no filesystem to save to. It polls
+`hasNvramChange()` twice a second while the guest runs, and when the answer
+changes it puts `getNvramSetting()` into the page's Boot box and saves that
+with the rest of the page's settings — so SYSCONF's choice is what the box
+shows, what survives a reload, and what gets pushed back in on the next Start.
+
+That last part is why reading it back matters at all. The page had only ever
+written NVRAM, so the box kept whatever had last been typed, and the next Start
+pushed that over the guest's choice. The exports are
+`romwbw_nvram_changed` and `romwbw_get_boot_string` (`web/romwbw_web.cc`);
+`tests/web_nvram_boot.js` holds the round trip to the spellings below.
+
+Everything else on this page is the CLI, where the store is a file:
+
 ### File Location
 
 `$XDG_CONFIG_HOME/romwbw_emu/nvram` if `XDG_CONFIG_HOME` is set (it must be an absolute path), otherwise `~/.config/romwbw_emu/nvram`.

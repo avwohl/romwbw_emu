@@ -1275,20 +1275,54 @@
       term.focus();
     });
 
-    // Poll for manifest disk write warning
-    let manifestWarningInterval = null;
-    function startManifestWarningPolling() {
-      if (manifestWarningInterval) return;
-      manifestWarningInterval = setInterval(() => {
+    // Poll the running guest for the two things it changes behind the page's
+    // back: a write to a manifest-backed disk, and the boot option.
+    let guestPollInterval = null;
+
+    function pollNvram() {
+      // The guest can change the boot target while it runs - SYSCONF, or 'W'
+      // at the boot menu - and this is the page NOTICING.  It did not, and
+      // that was not merely a display problem: the Boot box kept whatever had
+      // been typed, saveSettings persisted that, and the next Start pushed it
+      // straight back over what the guest had configured.
+      //
+      // DOWNSTREAM.md's "Persistence" section prescribes this pair -
+      // hasNvramChange() then getNvramSetting() - and names localStorage for
+      // the web. The CLI does the same read at exit and writes
+      // $XDG_CONFIG_HOME/romwbw_emu/nvram; a browser tab does not get an exit,
+      // so the page reads while it runs instead.
+      if (!Module._romwbw_nvram_changed || !Module._romwbw_nvram_changed()) return;
+      const fromCore = Module.ccall('romwbw_get_boot_string', 'string', [], []);
+      const el = document.getElementById('bootString');
+      // Our own push at Start marks NVRAM changed too; that read is not news.
+      if (fromCore === el.value.trim()) return;
+      el.value = fromCore;
+      // The whole point: this is what survives the reload.
+      saveSettings();
+      // Status line, not the terminal.  A line written into xterm while CP/M
+      // is drawing scrolls the guest's screen out from under the user, and
+      // somebody who just ran SYSCONF is looking at that screen.
+      statusDiv.textContent = fromCore
+        ? 'Boot option is now "' + fromCore + '" (set by the guest)'
+        : 'Boot option cleared by the guest - the boot menu will show';
+    }
+
+    function startGuestPolling() {
+      if (guestPollInterval) return;
+      guestPollInterval = setInterval(() => {
         if (Module._romwbw_poll_manifest_warning && Module._romwbw_poll_manifest_warning()) {
           warningModal.classList.add('visible');
         }
+        pollNvram();
       }, 500);
     }
-    function stopManifestWarningPolling() {
-      if (manifestWarningInterval) {
-        clearInterval(manifestWarningInterval);
-        manifestWarningInterval = null;
+    function stopGuestPolling() {
+      // One last read before the timer goes: a change in the final half second
+      // is still the guest's choice, and stopping first would drop it.
+      pollNvram();
+      if (guestPollInterval) {
+        clearInterval(guestPollInterval);
+        guestPollInterval = null;
       }
     }
 
@@ -1558,7 +1592,11 @@
         Module._romwbw_set_disk_warning_suppressed(1, document.getElementById('disk1NoWarn').checked ? 1 : 0);
       }
 
-      // Set boot string if provided
+      // Set boot string if provided.  This is also the "restore on startup"
+      // half of DOWNSTREAM.md's persistence pattern: the box was filled from
+      // localStorage on load, and there is no core to push it into until now.
+      // Writing it through is at worst redundant, because pollNvram keeps it
+      // equal to what the guest last chose.
       const bootStr = document.getElementById('bootString').value.trim();
       if (bootStr && Module._romwbw_set_boot_string) {
         // Pass the string to the emulator (allocate temp buffer)
@@ -1575,7 +1613,7 @@
 
       Module._romwbw_start();
       if (debugCheckbox.checked) startDebugMonitor();  // Start monitoring only if debug enabled
-      startManifestWarningPolling();  // Start polling for manifest disk write warning
+      startGuestPolling();  // manifest disk write warnings, and NVRAM changes
       stopBtn.disabled = false;
       term.focus();
     });
@@ -1584,7 +1622,7 @@
     stopBtn.addEventListener('click', function() {
       Module._romwbw_stop();
       stopDebugMonitor();  // Stop monitoring
-      stopManifestWarningPolling();  // Stop polling for manifest disk write warning
+      stopGuestPolling();  // reads NVRAM one last time before the timer stops
       startBtn.disabled = false;
       stopBtn.disabled = true;
       statusDiv.textContent = 'Stopped';
