@@ -140,6 +140,11 @@ if that is all there is, it is still far closer than v1.38; a release after
 this machine lacks has been corrected in place at the same time: it said "emcc,
 node and every browser are absent", and none of the three is - see the note
 under the header.
+  AND THAT RELEASE IS v1.43, cut 2026-09-17, which carries 6d059ec and both
+web changes of that day.  Once its release.yml run has finished, the deb to
+download is v1.43 and all three checks answer for HEAD again.  Better still on
+this machine: `make -C web` builds the same wasm locally and `make -C web
+serve` puts a ROM and a disk beside it, which no deb does.
 
 - [BROWSER] the wasm's video, DSKY, sound and printer callbacks are wired to
 names nothing implements.  emu_io_wasm.cc emits Module.onVideo*, Module.onDsky*

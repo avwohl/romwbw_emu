@@ -17,7 +17,19 @@ symlinks into `src/`, `z80cpmw`'s vcxproj compiles it in place, and `cpmdroid`'s
 CMakeLists pulls it from a sibling checkout — so a commit here reaches all three
 on their next build, tag or no tag.
 
-## [Unreleased]
+## [1.43] - 2026-09-17
+
+`VERSION` is `1.43`. The `[1.37]` rule applies twice over: `src/emu_io_common.cc`
+changed, so the binary differs from `1.42`, and `web/romwbw.html-template`,
+`web/romwbw_web.cc` and `web/makefile` all changed, so the shipped page and the
+wasm beside it do too. `tools/romwbw-get` is in the package as
+`/usr/bin/romwbw-get` and also changed.
+
+**This is the first release built on a machine that has `emcc`.** Every earlier
+one had the wasm compiled only by `release.yml`, because nothing here could
+build one; two of the four entries below exist because that stopped being true.
+`make -C web check` is new and `release.yml` runs it, so a release can no longer
+ship a page whose exports were never called.
 
 ### The web Boot box reads NVRAM back, so SYSCONF's choice is not overwritten
 

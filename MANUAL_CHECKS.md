@@ -40,16 +40,16 @@ action* - reload, paste, copy, zoom, a download - which a synthetic
 **What you need first.** A built `web/romwbw.js` and `web/romwbw.wasm`. `emcc`
 was not on the machine these were written on; it is now (brew `emscripten`
 6.0.9, installed 2026-09-17), so on this machine the first answer is simply
-`make -C web`, and the v1.42 deb below is the answer for a machine without it.
+`make -C web`, and the deb below is the answer for a machine without it.
 The concrete way to get one:
 
 ```
-gh release download v1.42 -p 'romwbw-emu_*_amd64.deb' && dpkg-deb -x romwbw-emu_*.deb pkg
+gh release download v1.43 -p 'romwbw-emu_*_amd64.deb' && dpkg-deb -x romwbw-emu_*.deb pkg
 # then serve pkg/usr/share/romwbw_emu/web - NOT web/ out of this tree, where a
 # stale gitignored romwbw.wasm can answer every check against an old build
 ```
 
-That page is byte-identical to `sed s/@VERSION@/1.42/ web/romwbw.html-template`
+That page is byte-identical to `sed s/@VERSION@/1.43/ web/romwbw.html-template`
 with a freshly built wasm beside it, and carries no ROM - so run
 `tools/romwbw-get mirror` beside it before it will boot anything. Only
 `release.yml` builds a wasm; `test.yml` does not.
