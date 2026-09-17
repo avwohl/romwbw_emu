@@ -154,6 +154,13 @@ Here:
   `RE_RUNS` (`:395`), `roms/verify_romwbw_pin.sh`, and `romwbw_disks`'
   `tools/boot_test.sh`. Removing the fact removes the line, and removing the
   line is what breaks `boot_test.sh` above.
+- since 2026-09-17, a fourth consumer that is code rather than a parsed line:
+  `romwbw_supported_releases()` (`web/romwbw_web.cc`), its
+  `_romwbw_supported_releases` entry in `web/makefile`'s `EXPORTED_FUNCTIONS`,
+  `applyCoreSupported` in `web/romwbw.html-template`, and
+  `tests/web_supported_releases.js` with `make -C web check` and its step in
+  `release.yml`. The web page's RomWBW select does not fall back to the mirror
+  when this goes — it stops greying anything out at all
 - `emu_set_allow_untested_romwbw()` / `emu_allow_untested_romwbw()` and the
   `--allow-untested-romwbw` argument (`src/romwbw_emu.cc:1046-1047`) — they
   exist only to escape the gate
@@ -170,14 +177,33 @@ Here:
 `ROMWBW_DEFAULT_*` stays. It is a build input for `roms/build_emu_rom.sh` and
 the fallback for a ROM whose HCB cannot be read, not a constraint on loading.
 
+So does everything that reads a release out of ROM content rather than judging
+it: `emu_validate_rom_hcb()` keeps its name and signature (it loses the release
+branch, not the marker check or the `CB_PLATFORM` warning),
+`emu_romwbw_release_of_image()`, `emu_romwbw_release_loaded()`,
+`emu_romwbw_release_str()`, the `emu_romwbw_release` struct and
+`emu_load_rom_from_buffer()`. A downstream caller of any of those needs no
+change. Spelled out because the question came from `ioscpm`, whose bridge calls
+five of them.
+
 In the clients, the per-entry filter and its plumbing:
 
 - `z80cpmw` — `catalogv0::runnableVersions` (`CatalogV0.cpp:452-461`), the
   predicate and empty-set error (`DiskCatalog.cpp:534-562`), the filtered copy
   (`DiskCatalog.cpp:630-632`). `chooseVersion` stays; it stops taking a
   runnable list.
-- `ioscpm` — `RomWBWIndex.offered` (`CatalogDocument.swift:370-377`) and the
-  bridge method (`RomWBWEmulator.mm:119-124`).
+- `ioscpm` — `RomWBWIndex.offered` (`CatalogDocument.swift:370-377`) and **two**
+  bridge methods, not one: `+supportsRomWBWVer:upd:` (`RomWBWEmulator.mm:123`,
+  `NS_SWIFT_NAME supportsRomWBW(ver:upd:)`, whose only Swift caller is
+  `adoptIndex` through `RomWBWIndex.offered`) and `+romWBWReleases` (`:111`,
+  which feeds the About screen's "RomWBW 3.5.1, 3.6.0 core" line and the
+  `noSupportedRelease` failure detail). Also that `noSupportedRelease`
+  `CatalogFailure` stage, `RomWBWIndexEntry.versionBytes`/`hexByte` — which
+  have no other production caller, though "What stays" below keeps `ver_byte`
+  and `upd_byte` in the index for the pairing rule, so that one is a choice
+  rather than a consequence — and the `CatalogDocumentTests` section "Which
+  releases are offered, asked of the core and not assumed" with its
+  `todaysCore` stub. Inventory reported by the ioscpm session, 2026-09-17.
 - `cpmdroid` — `runnableRomwbwVersions` (`RomwbwIndex.kt:145-148`) and the JNI
   call (`emu_io_android.cpp:1146`).
 
@@ -215,9 +241,21 @@ to refuse to mount a 3.5.1 image under a 3.6.0 ROM.
    branch, and say in `INTERFACE_V0.md` that publishing into the v0 index is the
    assertion that it passed.
 2. `romwbw_emu` — delete the gate and the override. One release.
-3. The three GUI clients — delete their filters. These can lag; a client that
-   still filters is not broken, it just misses out, which is what
-   `INTERFACE_V0.md` already says.
+3. The three GUI clients — delete their filters. The user-visible filter can
+   lag: a client that still filters is not broken, it just misses out, which is
+   what `INTERFACE_V0.md` already says. **`ioscpm`'s build cannot lag**, and
+   that is not a judgement about its schedule — `ioscpm/iOSCPM/Core/emu_init.h`
+   is a symlink into `romwbw_emu/src/emu_init.h` (verified here), so deleting
+   the two declarations lands in its tree with no commit of its own, and its
+   `Tests/run_tests.sh` "BridgeCompiles" step fails the same day:
+
+       RomWBWEmulator.mm:111:41: error: use of undeclared identifier 'emu_romwbw_supported_list'
+       RomWBWEmulator.mm:123:10: error: use of undeclared identifier 'emu_romwbw_release_supported'
+
+   Measured by the ioscpm session on 2026-09-17, against a copy of `iOSCPM/Core`
+   with symlinks resolved. So step 3 is same-day for that repository's compile
+   even though its filter is not, and cutting the gate means coordinating with
+   it rather than announcing it.
 4. `0x0406` into `romwbw_ver.inc`, on the next bank-0 change.
 
 Step 2 is what unblocks 3.7.0. Steps 3 and 4 are cleanup.
