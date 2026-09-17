@@ -783,6 +783,102 @@ def _tests(tmp, web, base):
           not os.path.exists(os.path.join(conf, "romwbw_emu", "catalog.json")),
           "use --clear forgets it")
 
+    # 11b. a stored release that stops being usable must SAY so --------------
+    #
+    # The stored value is durable and the world around it is not: an index can
+    # stop publishing a release, and a rebuilt binary can stop running one.
+    # Neither rewrites catalog.json, and until this was fixed neither said
+    # anything either - the file named a release for ever while every run
+    # fetched and booted something else, and the only place it showed was
+    # `versions --json`.  What is asserted here is the SAYING, not a change of
+    # choice: the file is still left exactly as the user left it.
+    #
+    # On its own index and its own cache.  The fixture above has been rewritten
+    # several times by the sections in between, and a test of what is stored
+    # against what is published has to control both.
+    keep = Fixture(os.path.join(tmp, "keep"))
+    os.makedirs(keep.root)
+    s4, b4 = serve(keep.root)
+    kconf = os.path.join(tmp, "keep-conf")
+    kcache = os.path.join(tmp, "keep-cache")
+    try:
+        keep.base = b4
+        k351 = keep.catalog("3.5.1", [keep.rom("emu_avw", "3.5.1", default=True)],
+                            [keep.disk("hd1k_combo", "3.5.1", slot=0)])
+        k360 = keep.catalog("3.6.0", [keep.rom("emu_avw", "3.6.0", default=True)],
+                            [keep.disk("hd1k_combo", "3.6.0", slot=0)])
+        keep.write(b4, [("3.5.1", k351, False, 1), ("3.6.0", k360, True, 1)])
+
+        r = run(kcache, b4, "use", "3.6.0", confdir=kconf)
+        check(r.returncode == EX_OK, "a release is stored")
+
+        # The binary moves: same file, same index, a build that runs 3.5.1 only.
+        r = run(kcache, b4, "list", "--roms", confdir=kconf, supported="3.5.1")
+        check(r.returncode == EX_OK and "RomWBW 3.5.1" in r.stdout,
+              "a stored release this build cannot run does not stop the command")
+        check("3.6.0" in r.stderr and "cannot run" in r.stderr and
+              "3.5.1 is being used instead" in r.stderr,
+              "but it warns, naming the stored release and the one really used")
+        stored = json.load(open(os.path.join(kconf, "romwbw_emu", "catalog.json")))
+        check(stored["romwbw_version"] == "3.6.0",
+              "and leaves the stored choice alone - it becomes usable again "
+              "the moment the binary or the index does")
+
+        r = run(kcache, b4, "versions", confdir=kconf, supported="3.5.1")
+        check("catalog.json selects RomWBW 3.6.0" in r.stdout and
+              "runs use 3.5.1" in r.stdout,
+              "`versions` says it in the listing, where the filtered-out row "
+              "it belongs to is not printed to carry a `selected` mark")
+        r = run(kcache, b4, "versions", "--json", confdir=kconf, supported="3.5.1")
+        doc = json.loads(r.stdout)
+        check(doc["selected"] == "3.6.0" and doc["in_use"] == "3.5.1",
+              "and --json reports both: `selected` is the file, `in_use` is "
+              "what a run gets")
+
+        r = run(kcache, b4, "versions", confdir=kconf)
+        check("catalog.json selects" not in r.stdout,
+              "and says none of it when the stored release IS the one in use")
+        r = run(kcache, b4, "list", "--roms", confdir=kconf)
+        check("being used instead" not in r.stderr,
+              "nor on the commands that resolve - no warning without a "
+              "divergence")
+
+        # The other way in: the index moves.  A second one that has never heard
+        # of 3.6.0, reached with the same config file.
+        gone = Fixture(os.path.join(tmp, "gone"))
+        os.makedirs(gone.root)
+        s5, b5 = serve(gone.root)
+        try:
+            gone.base = b5
+            g351 = gone.catalog("3.5.1",
+                                [gone.rom("emu_avw", "3.5.1", default=True)],
+                                [gone.disk("hd1k_combo", "3.5.1", slot=0)])
+            gone.write(b5, [("3.5.1", g351, True, 1)])
+            gcache = os.path.join(tmp, "gone-cache")
+            r = run(gcache, b5, "list", "--roms", confdir=kconf)
+            check(r.returncode == EX_OK and "does not publish" in r.stderr and
+                  "3.6.0" in r.stderr,
+                  "a stored release the index has dropped warns too, and says "
+                  "which of the two reasons it is")
+            r = run(gcache, b5, "versions", confdir=kconf)
+            check("this index does not publish it" in r.stdout,
+                  "and `versions` distinguishes that from a release this "
+                  "build cannot run")
+
+            # `use --index-url URL` with no version stores the URL and
+            # resolves nothing against it, which is the easiest way to arrive
+            # at the state above.
+            r = run(gcache, b5, "use", confdir=kconf)
+            check(r.returncode == EX_OK and
+                  "does not publish RomWBW 3.6.0" in r.stderr,
+                  "and `use --index-url` says so at the moment the index is "
+                  "pointed somewhere that has never heard of the stored "
+                  "release")
+        finally:
+            s5.shutdown()
+    finally:
+        s4.shutdown()
+
     # 12. an index this client does not speak ----------------------------------
     fut = Fixture(os.path.join(tmp, "fut"))
     os.makedirs(fut.root)

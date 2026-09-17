@@ -103,6 +103,45 @@ is not:
 up to 30 days if the network is unreachable. So a newly published disk may not
 appear immediately: `--refresh` is what skips the wait.
 
+## Which release a run uses
+
+One release is resolved per run, and it feeds everything: the ROM, both disks
+and every cache path. The precedence, first one set wins:
+
+| | |
+|---|---|
+| `--romwbw VER` | this run only (`default` means "whatever the index nominates") |
+| `$ROMWBW_VERSION` | every run in that shell |
+| `romwbw-get use VER` | remembered in `$XDG_CONFIG_HOME/romwbw_emu/catalog.json` |
+| the index's `default: true` entry | when nothing is chosen |
+
+Releases this build cannot run are filtered out **before** the index default is
+honoured, so a newly published default this binary would refuse is never picked
+and 51 MB is never downloaded for it.
+
+**A remembered choice can stop being usable, and it is never rewritten for
+you.** The index can stop publishing that release, or a rebuilt binary can stop
+running it — and `catalog.json` still names it. Every command that resolves a
+release says so, on stderr, and names what it used instead:
+
+    romwbw-get: ~/.config/romwbw_emu/catalog.json selects RomWBW 3.4.0,
+                which this index does not publish (it publishes 3.5.1, 3.6.0).
+                RomWBW 3.6.0 is being used instead, and the file is left alone:
+                `romwbw-get use <version>` chooses another, `use --clear` forgets it.
+
+`romwbw-get versions` says the same thing in its listing — which matters,
+because a release that is filtered out has no row there to carry a `selected`
+mark, and one the index has dropped has no row at all. In `versions --json`,
+`selected` is what the file says and `in_use` is what a run gets; equal until
+something diverges.
+
+Leaving the file alone is deliberate. A release can become selectable again —
+an index is regenerated, a binary is rebuilt — and overwriting the choice would
+throw away a preference that is about to be satisfiable. The bug this replaced
+was not the pairing, which cannot go wrong here: one resolved release feeds the
+ROM and both disks, so this client cannot assemble a mixed pair the way a GUI
+port can. It was the silence.
+
 ## Fetching from a fork, or from anywhere else
 
 Nothing about the catalog is specific to `avwohl/romwbw_disks` except the

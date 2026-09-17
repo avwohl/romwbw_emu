@@ -185,6 +185,38 @@ def save_choice(d):
     os.replace(tmp, p)
 
 
+_warned_stored = [False]
+
+
+def warn_stored_ignored(stored, chosen, published, runnable):
+    """Say, once, that catalog.json names a release no run is going to use.
+
+    THE FILE IS NOT REWRITTEN, and that is deliberate.  A stored choice is the
+    user's, and a release can become selectable again - an index is
+    regenerated, a binary is rebuilt with another X() line - so overwriting it
+    here would throw away a preference that is about to be satisfiable.  What
+    was wrong was never the pairing, which cannot go wrong: one resolved
+    version feeds the ROM and both disks.  It was the silence.  The value sat
+    in the file for ever while every run fetched and booted something else,
+    and the only place it showed was `versions --json`.
+    """
+    if _warned_stored[0]:
+        return
+    _warned_stored[0] = True
+    if stored not in published:
+        why = ("which this index does not publish (it publishes %s)"
+               % ", ".join(published))
+    else:
+        why = ("which this build cannot run (it runs %s)"
+               % (", ".join(runnable) if runnable else "nothing"))
+    warn("\n            ".join([
+        "%s selects RomWBW %s," % (config_path(), stored),
+        "%s." % why,
+        "RomWBW %s is being used instead, and the file is left alone:" % chosen,
+        "`romwbw-get use <version>` chooses another, `use --clear` forgets it.",
+    ]))
+
+
 # --- transport ----------------------------------------------------------------
 
 def http_get(url, max_bytes, timeout, retries=1, no_cache=False,
@@ -583,6 +615,19 @@ class Catalog(object):
             "the index does not publish RomWBW %s.  It publishes: %s"
             % (version, ", ".join(e["romwbw_version"] for e in self.entries())))
 
+    def pool(self, runnable):
+        """The published releases this build is allowed to choose from."""
+        return [e for e in self.entries()
+                if runnable is None or e["romwbw_version"] in runnable]
+
+    @staticmethod
+    def fallback(pool):
+        """Where a run lands when nothing usable has been chosen."""
+        for e in pool:
+            if e.get("default"):
+                return e["romwbw_version"]
+        return pool[0]["romwbw_version"]
+
     def resolve_version(self, args, runnable):
         """Precedence, matching what the three GUI clients converged on."""
         if getattr(args, "romwbw", None):
@@ -598,8 +643,7 @@ class Catalog(object):
         # Filter to runnable BEFORE honouring `default`.  Otherwise a newly
         # published release carrying default:true that this build cannot boot
         # would be selected, and 51 MB downloaded for a ROM the binary refuses.
-        pool = [e for e in self.entries()
-                if runnable is None or e["romwbw_version"] in runnable]
+        pool = self.pool(runnable)
         if not pool:
             raise Contradiction(
                 "this build can run %s, and the index publishes %s - no "
@@ -613,10 +657,14 @@ class Catalog(object):
         stored = load_choice().get("romwbw_version")
         if stored and any(e["romwbw_version"] == stored for e in pool):
             return stored
-        for e in pool:
-            if e.get("default"):
-                return e["romwbw_version"]
-        return pool[0]["romwbw_version"]
+        chosen = self.fallback(pool)
+        if stored:
+            # The stored release is not in the pool, so it is about to be
+            # ignored for the whole of this run.  Nothing used to say so.
+            warn_stored_ignored(stored, chosen,
+                                [e["romwbw_version"] for e in self.entries()],
+                                runnable)
+        return chosen
 
     # -- per-version catalog --------------------------------------------------
     def catalog(self, version):
@@ -994,6 +1042,14 @@ def cmd_versions(cat, args):
     runnable = _runnable(args)
     entries = cat.entries()
     stored = load_choice().get("romwbw_version")
+    # `selected` is what the file says; `in_use` is what a run actually gets,
+    # with no --romwbw and no ROMWBW_VERSION in front of it.  They are the same
+    # value until the stored release stops being published or stops being
+    # runnable, and this command is where that has to be visible - it is the
+    # one a user runs to ask what is going on.
+    pool = cat.pool(None if args.allow_untested else runnable)
+    stored_ok = bool(stored) and any(e["romwbw_version"] == stored for e in pool)
+    in_use = stored if stored_ok else (cat.fallback(pool) if pool else None)
     if args.json:
         out = []
         for e in entries:
@@ -1001,7 +1057,8 @@ def cmd_versions(cat, args):
             d["runnable"] = (runnable is None or e["romwbw_version"] in runnable)
             out.append(d)
         json.dump({"index_url": cat.index_url, "emu_supported": runnable,
-                   "selected": stored, "romwbw_versions": out},
+                   "selected": stored, "in_use": in_use,
+                   "romwbw_versions": out},
                   sys.stdout, indent=2)
         sys.stdout.write("\n")
         return EX_OK
@@ -1028,6 +1085,18 @@ def cmd_versions(cat, args):
     # No warning here: _runnable() already said so once, for every subcommand.
     if runnable is not None:
         print("\n  this build runs: %s" % ", ".join(runnable))
+    # A stored release that is filtered out is marked on no row, because the
+    # row is not printed - and one the index has dropped has no row at all.
+    # Either way the listing used to show nothing, which is how a stale choice
+    # survives unnoticed.
+    if stored and not stored_ok:
+        why = ("this index does not publish it"
+               if not any(e["romwbw_version"] == stored for e in entries)
+               else "this build cannot run it")
+        print("\n  catalog.json selects RomWBW %s, but %s, so runs use %s."
+              % (stored, why, in_use or "nothing"))
+        print("  The file is left alone: `romwbw-get use <version>` chooses "
+              "another, `use --clear` forgets it.")
     return EX_OK
 
 
@@ -1109,6 +1178,24 @@ def cmd_use(cat, args):
     for k in sorted(choice):
         if k not in ("version", "interface"):
             print("  %-16s %s" % (k, choice[k]))
+    # `use --index-url URL` with no version argument stores the URL and checks
+    # nothing against it, which is the easiest way to end up pointing at an
+    # index that has never heard of the release still named in the file.  Say
+    # it here, while the user is still looking at the command that did it.  An
+    # index that cannot be read says nothing: that is not this command's
+    # failure to report, and the next run that resolves will report it.
+    if args.index_url and not args.version and choice.get("romwbw_version"):
+        try:
+            published = [e["romwbw_version"] for e in cat.entries()]
+        except (Contradiction, Unverified):
+            published = None
+        if published is not None and choice["romwbw_version"] not in published:
+            warn("\n            ".join([
+                "this index does not publish RomWBW %s, the release stored "
+                "above." % choice["romwbw_version"],
+                "It publishes %s, and runs will use one of those."
+                % ", ".join(published),
+            ]))
     return EX_OK
 
 

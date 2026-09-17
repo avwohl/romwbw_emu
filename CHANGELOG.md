@@ -19,6 +19,38 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+### A remembered RomWBW release could stop being used without saying so
+
+`romwbw-get use 3.5.1` writes `romwbw_version` into
+`$XDG_CONFIG_HOME/romwbw_emu/catalog.json`, and `resolve_version()` fell back to
+the index default whenever that release was not in the runnable, published pool
+— without rewriting the file and without a word. So an index that stopped
+offering 3.5.1, or a binary rebuilt without it in `ROMWBW_SUPPORTED_RELEASES`,
+left the file naming 3.5.1 for ever while every run fetched and booted something
+else. It showed in `versions --json` as `selected` and nowhere else: the plain
+listing marks `selected` only on rows it prints, and a filtered-out release has
+no row — one the index has dropped has none at all.
+
+Every command that resolves a release now says it on stderr, names which of the
+two reasons it is, and names what was used instead. `versions` says it in the
+listing, and `versions --json` gained `in_use` beside `selected` — the file, and
+what a run actually gets. `use --index-url URL` with no version argument used to
+store a new index and check nothing against it, which is the shortest path into
+this state; it now says when the index it was just pointed at has never heard of
+the release still stored.
+
+**The file is not rewritten, deliberately.** A release becomes selectable again
+when an index is regenerated or a binary is rebuilt, so overwriting the choice
+would throw away a preference that is about to be satisfiable. What was wrong
+was never the pairing — one resolved release feeds the ROM and both disks here,
+so unlike a GUI port this client cannot assemble a mixed pair. It was the
+silence.
+
+Eleven checks in `tests/catalog_client_test.py`, on their own index and their
+own cache, including the two that would make this noise rather than a fix: no
+warning when the stored release is the one in use, and none from a command that
+resolves without a divergence.
+
 ### Verified
 
 **Four of the web manual checks were settled in a real browser, with no wasm.**
