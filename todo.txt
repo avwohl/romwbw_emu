@@ -8,6 +8,21 @@ makes about every tag in this file.
 Every item carries a tag saying what a machine has to be able to do to take it,
 so a session on another OS can see at a glance what it can pick up.
 
+EVERY ITEM IS WORK IN THIS REPOSITORY.  An item whose work would be done in
+romwbw_disks, z80cpmw, ioscpm or cpmdroid belongs in THAT repository's
+todo.txt, where the session that can close it will read it - filing it here
+makes a list nobody can act on and that nobody closes, because the person
+finishing the work is not looking at this file.  That is what 342ac22
+("refile two items into the repos that would close them") established, and
+two entries were filed here against it on 2026-09-17 and removed the same
+day: one about the three GUI clients dropping the release gate, and one about
+romwbw_disks' documentation of it.  Both were real work; neither was this
+repository's.
+
+A cross-repository CONSEQUENCE is different from a cross-repository TASK, and
+belongs in DOWNSTREAM.md - which is exactly where "what a port must change"
+already lives.
+
 WHAT THIS MACHINE ACTUALLY HAS, measured 2026-09-17 and not inferred:
 
   node        YES, v26.8.2 (brew, installed 2026-09-17 to run the web JS tests)
@@ -167,25 +182,3 @@ that came of it: RomWBW has no native MIDI in HBIOS, and MIDI on RC2014/Z80
 hardware is an external module.  Read it before treating MIDI as a second
 feature - it is a different question from rendering the SND channels, and only
 this one has a driver interface already sitting in handleSND.
-
-- [ANY] THE THREE GUI CLIENTS DO NOT COMPILE against this tree until they drop
-the release gate.  v1.44 deleted src/romwbw_pin.h and four functions, and all
-three clients call them from source they compile out of a sibling checkout -
-z80cpmw and cpmdroid compile src/emu_init.cc IN PLACE, ioscpm symlinks ten
-files out of src/ including emu_init.cc and romwbw_pin.h.  This is not a filter
-that can lag; it is a build break on the day they pull.
-  What each one has to delete is enumerated in docs/RELEASE_GATE.md's "What
-downstream must do", and what to do instead is in DOWNSTREAM.md's "RomWBW
-releases are not this core's business".  Not started in any of the three.
-
-- [ANY] romwbw_disks still documents the gate in six files - INTERFACE_V0.md,
-CATALOG_SCHEMA.md, CLIENT_MIGRATION.md, ROMWBW_VERSIONS.md, RELEASING.md and
-README.md - and its todo.txt carries the step-1 item that v1.44 has now done.
-Its two SCRIPTS were changed with v1.44 and are green: tools/boot_test.sh tests
-every published release unconditionally and has no refusal branch, and
-tools/check_source_drift.sh asserts the two emu_hbios.asm copies are identical.
-Only the prose is left.
-  INTERFACE_V0.md is the one that matters: its "Adding RomWBW 3.7.0 is a new
-release tag and a regenerated index - no client change, no interface bump" was
-FALSE while the gate existed and is TRUE now, and its "The one thing v0 could
-not fix on its own" section is about a thing that is fixed.
