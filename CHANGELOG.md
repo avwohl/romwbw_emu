@@ -17,6 +17,30 @@ symlinks into `src/`, `z80cpmw`'s vcxproj compiles it in place, and `cpmdroid`'s
 CMakeLists pulls it from a sibling checkout — so a commit here reaches all three
 on their next build, tag or no tag.
 
+## [1.45] - 2026-09-17
+
+Housekeeping. Nothing in the emulator, the catalog client or the web page
+changed; the `.deb` and `.rpm` differ from v1.44's only in their version
+string. Said plainly because a release whose notes imply more than it carries
+is how a changelog stops being worth reading.
+
+### `WIP.md` is gone
+
+It was a tracked scratch file whose own first paragraph said "Delete it when
+the one open thing below is done". That thing was cutting a GitHub release for
+v1.43 — committed on 2026-09-17, tagged nowhere, blocked on an expired PAT.
+v1.44 released it, carrying both 1.43 and 1.44.
+
+One fact from it is worth keeping, because it is about this environment rather
+than about that task: `GH_TOKEN` is dead here, but a second and working
+credential sits in the keyring, and `GH_TOKEN` takes precedence over it. So
+`env -u GH_TOKEN gh …` reaches the good one without editing `~/.zshrc`. That
+is how v1.44 and this release were cut.
+
+Everything else it held now lives where it belongs — what shipped in this
+file, what is open in `todo.txt`, and the release-gate record in
+`docs/RELEASE_GATE.md`.
+
 ## [1.44] - 2026-09-17
 
 ### The RomWBW release is not this core's business
