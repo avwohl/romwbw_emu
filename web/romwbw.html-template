@@ -451,10 +451,30 @@
       // the script: this handler is only ever CALLED after the body has run, so
       // the binding exists by then, but a bare reference would throw for the
       // whole handler if that ever stopped being true.
+      setStatus(msg);
+    };
+
+    // ONE WRITER FOR THE PRECEDENCE, because the guard above was not enough.
+    //
+    // It lived inside Module.onStatus, which only sees messages the WASM sends.
+    // Module.onRuntimeInitialized writes statusDiv.textContent DIRECTLY - a
+    // different racer, with a different string - so on an unmirrored page it
+    // still overwrote the notice with "Ready - Load a ROM or click Start".
+    // CI caught it on the first push that ran the browser job: 16 of 17 checks
+    // passed and this one read back the wrong line. Guarding one caller and
+    // leaving the other is why it survived being "fixed".
+    //
+    // So the rule lives here and both callers go through it, and a third one
+    // cannot reintroduce the bug by writing textContent itself - there is
+    // nothing left to write.
+    function setStatus(msg) {
+      // typeof, because `noMirrorNotice` is declared with `let` further down
+      // the script; every caller runs after the body, but a bare reference
+      // would throw if that stopped being true.
       if (typeof noMirrorNotice === 'string' && noMirrorNotice
           && /ready/i.test(msg)) return;
       statusDiv.textContent = msg;
-    };
+    }
 
     // emu_error() has always called this (src/emu_io_wasm.cc) and nothing ever
     // implemented it, so every error the core reported went nowhere at all.
@@ -1695,7 +1715,10 @@
 
     // Wait for WASM to load
     Module.onRuntimeInitialized = function() {
-      statusDiv.textContent = 'Ready - Load a ROM or click Start';
+      // Through setStatus, not textContent: on an unmirrored page the notice
+      // outranks this, and writing directly is exactly what defeated the first
+      // attempt at that rule.
+      setStatus('Ready - Load a ROM or click Start');
       startBtn.disabled = false;
       term.writeln('RomWBW Emulator v' + EMU_VERSION + ' ready.');
       term.writeln('Load a ROM image or click Start to boot.');

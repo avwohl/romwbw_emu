@@ -38,11 +38,11 @@ WHAT THIS MACHINE ACTUALLY HAS, measured 2026-09-17 and not inferred:
   um80/ul80   YES, ~/Library/Python/3.14/bin
   Chrome      YES, and headless Chrome is drivable with nothing installed -
               see the [BROWSER] note below.
-  Windows     NO, and no `cl` anywhere. [WINDOWS] means the two portable tests
-              could be compiled and run directly on such a machine, which would
-              settle the msvc job's new step without waiting on CI.
-  CI results  NOT VISIBLE from here: `gh run list` answers 401, the dead PAT
-              WIP.md records. A session here cannot tell whether a job is green.
+  Windows     NO, and no `cl` anywhere - but CI has one, and the msvc job runs
+              the two portable tests there. [WINDOWS] no longer means unmeasured.
+  CI results  VISIBLE. `gh run list` works: the 401s were a stale GH_TOKEN in
+              ~/.zshrc shadowing a valid keyring login, commented out
+              2026-09-18. Check a job rather than assuming.
   newest tag  v1.42.  There is NO v1.43 tag: WIP.md records that v1.43 was
               committed and the GitHub release never cut, blocked on a dead PAT.
 
@@ -53,9 +53,6 @@ WHAT THIS MACHINE ACTUALLY HAS, measured 2026-09-17 and not inferred:
   [BROWSER] means "needs a person, or the headless-Chrome trick" - not "needs
   a machine this is not".
 
-- [WINDOWS] the msvc job now RUNS tests/vda_keyboard and tests/hbios_hostname,
-added 2026-09-18 and never compiled by cl anywhere. The browser job beside it
-is measured: `node tests/web_browser.js` passes 17/17 here on a fresh wasm.
 
 - [ANY] the index may now carry prerelease:true entries (RomWBW dev snapshots).
 romwbw-get lists them like any other version; add an opt-in so they are hidden

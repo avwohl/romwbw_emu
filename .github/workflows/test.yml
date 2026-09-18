@@ -58,28 +58,27 @@ name: Tests
 # found by that port's own CI, days later and in somebody else's tree. Both are
 # written to be as small as they can be.
 #
-# WHAT HAS ACTUALLY BEEN OBSERVED, and what has not. The three jobs in their
-# EARLIER shape have run, and the macos one went red on its first push on a
-# real portability defect in tests/cli_hostfile.cc. That is the sentence this
-# comment used to end with, and it was written before the two steps below
-# existed, so it covered neither of them.
+# WHAT HAS ACTUALLY BEEN OBSERVED. All four jobs have now run, and the two
+# added on 2026-09-18 are measured rather than hoped for:
 #
-#   - the msvc job's RUN step (below) and the whole browser job were added
-#     2026-09-18 on a machine with no Windows and no CI. Neither has been
-#     observed anywhere. The next push is the first measurement.
-#   - the browser job's payload HAS been run, just not by CI: on 2026-09-18
-#     `node tests/web_browser.js` passed all 17 checks on macOS against a wasm
-#     rebuilt from the current core, which is the same script the job runs. So
-#     what is unmeasured about it is the ubuntu runner and the emsdk action,
-#     not the checks themselves.
-#   - the msvc run step is unmeasured in both halves. Nothing here can compile
-#     with cl, and the two tests it runs carry _WIN32 branches for <strings.h>
-#     that no compiler in this tree has ever read.
+#   - msvc's RUN step went GREEN on its first push (run 35353523620). Windows
+#     has now executed this repository's code: tests/vda_keyboard and
+#     tests/hbios_hostname both compile with cl and pass.
+#   - the browser job went RED on that same push, and it was a real defect, not
+#     a runner problem: 16 of 17 checks passed and "with no mirror the status
+#     line says so" read back "Ready - Load a ROM or click Start". The page has
+#     two racers against that notice - emu_status() through Module.onStatus,
+#     and Module.onRuntimeInitialized writing statusDiv.textContent directly -
+#     and only the first was guarded. Both go through setStatus() now. Green on
+#     the next push (35354274637).
 #
-# Do not replace this with "green" until a run says so. `gh run list` answers
-# 401 from this machine - the PAT WIP.md records as dead - so a session here
-# cannot check, and "it should work" is how the sentence above came to outlive
-# what it described.
+# That is the job doing exactly what it was built for: the flake had been seen
+# locally about one run in eight, "fixed" by guarding one caller, and it took a
+# real runner to show the fix was half of one.
+#
+# `gh run list` works here again - the 401s were a stale GH_TOKEN in ~/.zshrc
+# shadowing a valid keyring login, not a dead account - so a session CAN check
+# whether a job is green. Check before writing that one is.
 
 on:
   push:
