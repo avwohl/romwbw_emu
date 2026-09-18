@@ -458,7 +458,7 @@ against the hash the index carries, before a byte of either is parsed.
   new release cost a rebuild of all five front ends.
 - **The packaged `.deb` and `.rpm` contain no ROM.** They install
   `/usr/bin/romwbw-get` beside `/usr/bin/romwbw_emu`, plus
-  `/usr/share/doc/romwbw_emu/CATALOG.md`. `romwbw_emu` started with no ROM now
+  `/usr/share/doc/romwbw-emu/CATALOG.md` (a HYPHEN since v1.46 - the directory is named for the package, and was `romwbw_emu` before). `romwbw_emu` started with no ROM now
   answers `Error: no ROM given` with the two `romwbw-get` commands that get
   one - since v1.40 that is the normal state of a fresh install, not a typo.
 - **A verified download and the file a guest writes to must be different

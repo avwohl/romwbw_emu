@@ -166,7 +166,16 @@ jobs:
       - name: Create staging directory
         run: |
           mkdir -p staging/usr/bin
-          mkdir -p staging/usr/share/doc/romwbw_emu
+          # romwbw-emu, with a HYPHEN: the doc directory has to be named for
+          # the PACKAGE, which fpm is given as -n romwbw-emu.  It was
+          # romwbw_emu, so every package shipped TWO doc directories - fpm put
+          # its own changelog.gz in usr/share/doc/romwbw-emu/ and these three
+          # files landed in an underscore-named sibling nobody would look in.
+          # Debian policy 12.3 wants one, named for the package.  The DATA
+          # directory below keeps its underscore: usr/share/romwbw_emu/web is
+          # a documented path (README.md, `romwbw-get mirror ...`) and is not
+          # a doc directory.
+          mkdir -p staging/usr/share/doc/romwbw-emu
           mkdir -p staging/usr/share/romwbw_emu/web
           mkdir -p staging/usr/share/romwbw_emu/web/vendor
           cp src/romwbw_emu staging/usr/bin/
@@ -203,9 +212,9 @@ jobs:
           #     romwbw-get mirror /usr/share/romwbw_emu/web
           #
           # The file pickers work with no mirror at all.
-          cp README.md staging/usr/share/doc/romwbw_emu/
-          cp LICENSE staging/usr/share/doc/romwbw_emu/
-          cp docs/CATALOG.md staging/usr/share/doc/romwbw_emu/
+          cp README.md staging/usr/share/doc/romwbw-emu/
+          cp LICENSE staging/usr/share/doc/romwbw-emu/
+          cp docs/CATALOG.md staging/usr/share/doc/romwbw-emu/
 
       - name: No artifact slipped into the package
         run: |
@@ -224,7 +233,27 @@ jobs:
             echo "message tells users to run it"
             exit 1
           }
+          # One doc directory, named for the package.  This drifted for as
+          # long as the package existed, and silently: a split doc directory
+          # breaks nothing, it just means half the documentation is somewhere
+          # no convention points at.
+          # Newline-separated and compared whole: joining with spaces left a
+          # trailing one, and stripping it with an unquoted $(echo $x) is a
+          # word-splitting trick that works in bash and silently does nothing
+          # in zsh, so the check would depend on which shell ran it.
+          docdirs=$(cd staging/usr/share/doc && ls -d */ 2>/dev/null | tr -d '/' | sort)
+          if [ "$docdirs" != "romwbw-emu" ]; then
+            echo "usr/share/doc should hold exactly romwbw-emu/, the package name."
+            echo "It holds:"
+            echo "$docdirs" | sed 's/^/  /'
+            exit 1
+          fi
+          for d in README.md LICENSE CATALOG.md; do
+            test -f "staging/usr/share/doc/romwbw-emu/$d" || {
+              echo "$d is not in the package's doc directory"; exit 1; }
+          done
           echo "no .rom or .img staged; romwbw-get is installed"
+          echo "docs are in usr/share/doc/romwbw-emu/, named for the package"
 
       - name: Build DEB package
         run: |

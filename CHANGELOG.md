@@ -17,6 +17,36 @@ symlinks into `src/`, `z80cpmw`'s vcxproj compiles it in place, and `cpmdroid`'s
 CMakeLists pulls it from a sibling checkout — so a commit here reaches all three
 on their next build, tag or no tag.
 
+## [1.46] - 2026-09-17
+
+### The package shipped two documentation directories
+
+`fpm -n romwbw-emu` puts its own `changelog.gz` in
+`/usr/share/doc/romwbw-emu/`, and the staging step put `README.md`, `LICENSE`
+and `CATALOG.md` in `/usr/share/doc/romwbw_emu/` — an underscore-named sibling.
+So every `.deb` and `.rpm` this project has ever published split its
+documentation across two directories, and three of the four files sat where no
+convention points. Debian policy 12.3 wants one directory, named for the
+package.
+
+They are now all in `/usr/share/doc/romwbw-emu/`. The **data** directory keeps
+its underscore: `/usr/share/romwbw_emu/web` is a documented path — `README.md`
+tells a user to run `romwbw-get mirror /usr/share/romwbw_emu/web` — and it is
+not a documentation directory.
+
+This drifted for as long as the package existed and never broke anything,
+which is why nothing caught it: a split doc directory installs cleanly and
+only means half the documentation is somewhere nobody looks. The packaging
+step now asserts that `usr/share/doc` holds exactly one directory, named for
+the package, and that all three files are in it. The comparison is
+newline-separated and quoted, because the obvious way to write it — joining
+with spaces and stripping the trailing one with an unquoted `$(echo $x)` —
+works in bash and silently does nothing in zsh, so the check would have
+depended on which shell ran it. Tested in bash, zsh and dash, both the passing
+and the regressing case.
+
+Found by an independent verification pass over the published v1.45 packages.
+
 ## [1.45] - 2026-09-17
 
 Housekeeping. Nothing in the emulator, the catalog client or the web page
