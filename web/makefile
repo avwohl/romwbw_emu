@@ -51,8 +51,19 @@ romwbw.js: $(ROMWBW_SRCS)
 #
 # `_romwbw_supported_releases` was checked here too, until the core stopped
 # having an opinion about which RomWBW releases it can boot.
+#
+# NODE, and not a bare `node`.  emsdk_env.sh puts the emsdk ROOT on PATH, and
+# `emsdk/node` is a DIRECTORY holding the interpreter several levels down
+# ($EMSDK_NODE names it).  So under a sourced emsdk environment a bare `node`
+# resolves to that directory and the shell answers "node: Permission denied",
+# which make reports as error 127 - "command not found" - for a node that is
+# installed and works.  That is exactly how this target failed the first time
+# CI ever ran it, cutting v1.44.  Prefer $EMSDK_NODE when the environment sets
+# it, which is precisely when the hazard exists.
+NODE ?= $(if $(EMSDK_NODE),$(EMSDK_NODE),node)
+
 check: romwbw.js
-	node ../tests/web_nvram_boot.js --require
+	$(NODE) ../tests/web_nvram_boot.js --require
 
 # RomWBW debug build with DWARF symbols for Chrome DevTools
 romwbw-debug.js: $(ROMWBW_SRCS)

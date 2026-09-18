@@ -145,6 +145,23 @@ business" says what to delete and what to do instead;
 `docs/RELEASE_GATE.md` enumerates every call site in each client. `cpmemu` is
 unaffected.
 
+### `make -C web check` could not find node in CI
+
+`release.yml` gained a `make -C web check` step before this release and had
+never run it — v1.42 predates it. Cutting v1.44 ran it for the first time and
+it failed on both architectures with `make: node: Permission denied`, reported
+as error 127, for a node that is installed and works.
+
+`emsdk_env.sh` puts the emsdk **root** on `PATH`, and `emsdk/node` is a
+directory holding the interpreter several levels down — `$EMSDK_NODE` names
+it. So a bare `node` resolves to that directory. The target now takes
+`NODE ?= $(if $(EMSDK_NODE),$(EMSDK_NODE),node)`, which prefers emsdk's own
+interpreter exactly when the hazard exists and changes nothing locally.
+
+The wasm itself built clean on both architectures, `_romwbw_supported_releases`
+correctly absent from `EXPORTED_FUNCTIONS` — the failure was the check step,
+not the thing it checks.
+
 ### todo.txt said things about this machine that were not true
 
 Its header claimed emcc had been installed here and node upgraded beside it.
