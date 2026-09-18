@@ -263,10 +263,33 @@ risk; it is bandwidth and a release.
 is fixed by upstream's own comment and by the UNA/RomWBW ROM-directory
 convention, but nothing measured here observes it today.
 
-**The question.** Take the correctness fix at the cost of a re-cut of both
-releases, or leave it and let it ride along with the next change that already
-moves bank 0? The second costs nothing now and leaves a published address
-wrong for as long as no other bank-0 change happens.
+**ANSWERED IN PART, BY MEASUREMENT, 2026-09-18.** The fix was taken: the `db 0`
+filler was deleted, both trees rebuilt, and the ROM opened `F3 C3 00 02 70 00` -
+two bytes changed in 512K, exactly as intended. Then
+`romwbw_disks/tools/publish_release.sh` refused it:
+
+    FATAL: v0-romwbw-3.5.1 already carries different bytes for:
+           emu_avw-v0-3.5.1.rom ... catalog-v0-3.5.1.json
+
+and that is the guard working. It also killed the second arm of the question.
+"Let it ride along with the next bank-0 change" is not reachable:
+`build_all.sh` rebuilds EVERY carried version from this one source, so there is
+no bank-0 change that touches only new versions. Any such change re-cuts 3.5.1
+and 3.6.0, whose tags are immutable and whose assets are already served
+(`docs/RELEASING.md` section 5).
+
+So the fix was reverted, with the reasoning left in `src/emu_hbios.asm` at the
+site.
+
+**What is left to decide.** Only two routes exist, and both are large:
+
+1. Carry it when 3.5.1 and 3.6.0 stop being carried - i.e. when the index no
+   longer offers them - at which point a re-cut affects nothing published.
+2. A `v1` interface bump, which re-cuts everything by design and publishes
+   `index-v1.json` beside `index-v0.json`.
+
+Neither is worth doing for this alone: no shipped program was found that reads
+the address. The value of the entry now is that nobody re-derives any of it.
 
 **Why this is not in `todo.txt`.** It is not a check to run or a capability to
 have - both arms are a few minutes' work. It is a judgement about what to spend

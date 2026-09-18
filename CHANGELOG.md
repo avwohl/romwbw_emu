@@ -75,9 +75,13 @@ and then measured:
   images are cut with `wbw_hd1k` diskdefs but carry a type-06 partition entry,
   so upstream's own rule would misread them too.
 
-One finding is open - the ROM signature pointer at `0x0005` - and it is the only
-one whose fix moves every published ROM's sha256, so it is a release-channel
-call and is filed as `DECISIONS.md` #8 rather than left in `todo.txt`.
+One finding is open - the ROM signature pointer at `0x0005`. It was fixed,
+measured (`F3 C3 00 02 70 00`, two bytes in 512K), and **reverted**: every
+published ROM's sha256 moves with it, `romwbw_disks`' `build_all.sh` rebuilds
+every carried version from this one source, and its `publish_release.sh` refused
+the re-cut of two immutable tags by name. There is therefore no bank-0 change
+that touches only new versions, which is what "let it ride along" assumed.
+`DECISIONS.md` #8 has the two routes that remain.
 
 `romwbw_disks/tools/boot_test.sh` - six operating systems across both published
 releases - was the gate on every one of these, and is what caught the hd1k one.

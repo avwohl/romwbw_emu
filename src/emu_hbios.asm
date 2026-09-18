@@ -71,21 +71,29 @@ RST00:
 	di
 	jp	HB_START		; Cold boot
 ;
-; NO FILLER BYTE HERE, and that is the whole point.  RomWBW publishes the
-; address of ROM_SIG as the word at 0x0004 - hbios.asm:428-431 is
+; THE SIGNATURE POINTER IS AT 0x0005 HERE, AND RomWBW PUBLISHES IT AT 0x0004.
+; That is a real divergence - hbios.asm:428-431 is "JP HB_START / .DB 0 ; SIG
+; PTR STARTS AT $0004 / .DW ROM_SIG", where the filler pads a 3-byte JP out to
+; four.  The `di` above already fills that byte, so KEEPING the filler pushes
+; the pointer one place along: a reader taking the word at 0x0004 gets 0x7000,
+; finds no 76 B5 signature and calls the ROM unidentifiable.
 ;
-;	JP	HB_START		; 3 bytes, 0x0000-0x0002
-;	.DB	0			; SIG PTR STARTS AT $0004
-;	.DW	ROM_SIG			; 0x0004-0x0005
+; IT IS DELIBERATELY NOT FIXED, and the reason is not the ROM - it is the
+; release channel.  Deleting the filler moves every published ROM's sha256, and
+; tools/build_all.sh in romwbw_disks rebuilds EVERY carried version from this
+; one source.  So the change cannot touch only new versions: it re-cuts 3.5.1
+; and 3.6.0 too, whose per-version tags are immutable and whose assets are
+; already served (docs/RELEASING.md section 5, "Every v0-romwbw-* asset is
+; immutable, without exception").  It was applied on 2026-09-18, rebuilt, and
+; reverted when publish_release.sh refused the re-cut by name - which is the
+; guard working, not a bug.
 ;
-; where the .DB pads a 3-byte JP out to four.  The `di` above already does
-; that: di (1) + jp (3) fills 0x0000-0x0003 exactly, so the pointer lands on
-; 0x0004 with no filler.  Keeping BOTH pushed it to 0x0005, and a reader
-; following the ROM-directory convention took the word at 0x0004, got 0x7000,
-; found no 76 B5 signature there and called the ROM unidentifiable.  The
-; shipped v3.6.0 ROM opened F3 C3 00 02 00 70 00; it now opens F3 C3 00 02 70 00.
+; So it lands only when 3.5.1 and 3.6.0 stop being carried, or with a v1
+; interface bump that re-cuts everything by design.  romwbw_emu DECISIONS.md #8
+; carries the decision.  No shipped program was found that reads the address.
 ;
-	dw	ROM_SIG			; 0x0004 - the published address
+	db	0			; filler; the pointer sits at 0x0005
+	dw	ROM_SIG
 
 	org	0008h
 RST08:
