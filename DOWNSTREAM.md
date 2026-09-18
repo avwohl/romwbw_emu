@@ -31,7 +31,32 @@ the upstream citation behind each.
 That was always the HBIOS contract; nothing here had ever passed a negative,
 because `BF_VDASCR` was reading `E` unsigned.
 
-**2026-09-18: four-voice sound, and this one does NOT break your build.**
+**2026-09-18: four-voice sound, and IT DID BREAK TWO OF THE THREE BUILDS.**
+This entry said "this one does NOT break your build" when it was written. That
+was wrong, in bold, and both z80cpmw and cpmdroid paid for it.
+
+`hbios_dispatch.cc` - which EVERY port compiles - calls `emu_snd_emit_tone()`.
+The core defines it, and `emu_snd_set_tone_handler()`, in `emu_io_common.cc`
+**which this very document tells z80cpmw and cpmdroid not to take** (see the
+`emu_io_common.cc` paragraph further down). So for those two the symbols arrived
+undefined: z80cpmw reproduced three LNK2019s on 2026-09-18 and defined the pair
+in `emu_io_windows.cpp`; cpmdroid's native build was broken the same way and
+nobody had noticed, because nobody had built it - fixed in its
+`emu_io_android.cpp` on 2026-09-18.
+
+**The rule this should have followed, and the one to follow next time:** a new
+`emu_io.h` function that `hbios_dispatch.cc` CALLS must be defined somewhere
+every port compiles, or it is a link break for every port that does not take
+`emu_io_common.cc`. "Do nothing and nothing changes" is only true for a port
+that links that file, and only ioscpm does. Check the three source lists -
+`z80cpmw.vcxproj`, cpmdroid's `app/src/main/cpp/CMakeLists.txt`, ioscpm's
+`iOSCPM/Core/` symlinks - before claiming an addition is free.
+
+Both ports now define the pair themselves, so the core must NOT move these
+definitions into a shared source: that would be a duplicate symbol for two
+builds. What follows is the design, which is still right; only the claim about
+its cost was wrong.
+
 `BF_SNDPLAY` used to look at channel 0 and call `emu_dsky_beep(duration)`, so a
 guest playing a four-voice tune got one fixed beep. The dispatcher now renders
 every channel the guest set up, through a new hook in `emu_io.h`:
