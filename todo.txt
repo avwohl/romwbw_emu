@@ -26,123 +26,37 @@ already lives.
 WHAT THIS MACHINE ACTUALLY HAS, measured 2026-09-17 and not inferred:
 
   node        YES, v26.8.2 (brew, installed 2026-09-17 to run the web JS tests)
-  emcc        NO.  Not in `brew list`, not on PATH.  So `make -C web` and
-              `make -C web check` do NOT run here, and web/ holds no .wasm.
+  emcc        YES - 6.0.6, from an emsdk checkout at ~/esrc/emsdk.  It is NOT on
+              PATH and never has been; `. ~/esrc/emsdk/emsdk_env.sh` puts it
+              there, and then `make -C web` builds romwbw.wasm cleanly.  This
+              header said "NO. Not in `brew list`, not on PATH" until
+              2026-09-18: `brew list` was the wrong place to look and "not on
+              PATH" was read as "not installed".  [EMSCRIPTEN] does NOT mean
+              "not on this machine" any more.
   python3     Apple 3.9.6 at /usr/bin/python3.  There is NO ~/bin shim, so
               plain `python3` is 3.9.6; /opt/homebrew/bin/python3.14 for 3.14.
   um80/ul80   YES, ~/Library/Python/3.14/bin
   Chrome      YES, and headless Chrome is drivable with nothing installed -
               see the [BROWSER] note below.
+  Windows     NO, and no `cl` anywhere. [WINDOWS] means the two portable tests
+              could be compiled and run directly on such a machine, which would
+              settle the msvc job's new step without waiting on CI.
+  CI results  NOT VISIBLE from here: `gh run list` answers 401, the dead PAT
+              WIP.md records. A session here cannot tell whether a job is green.
   newest tag  v1.42.  There is NO v1.43 tag: WIP.md records that v1.43 was
               committed and the GitHub release never cut, blocked on a dead PAT.
 
   A previous revision of this header said emcc had been installed here on
-  2026-09-17 and that node had been upgraded as its dependency.  Both were
-  false when written; the emcc half still is.  [EMSCRIPTEN] means "not on this
-  machine".  [BROWSER] means "needs a person, or the headless-Chrome trick".
+  2026-09-17 and that node had been upgraded as its dependency.  The node half
+  was false when written and the emcc half was measured wrongly in both
+  directions; what is above was measured on 2026-09-18 by running the tools.
+  [BROWSER] means "needs a person, or the headless-Chrome trick" - not "needs
+  a machine this is not".
 
-- [BROWSER] no browser has drawn the page since a zero-byte export started
-downloading and since the download name became the lowercased last component of
-the typed path.  the checklist is in MANUAL_CHECKS.md.
-  WHAT IS ALREADY SETTLED, so nobody re-does it: the xterm viewport WAS drawn
-headless on 2026-09-15 (MANUAL_CHECKS.md records it), and the RomWBW release
-select was drawn headless on 2026-09-17 - and that select has since been
-DELETED along with the release gate, so that check is gone rather than passed.
-  WHAT TO SERVE.  `make -C web serve` is the best answer and does not work on
-this machine: no emcc, so no wasm.  Failing that, the newest deb is v1.42
-(2026-09-13); its web/romwbw.html is byte-identical to
-`sed s/@VERSION@/1.42/ web/romwbw.html-template` at tag v1.42, it carries a
-freshly built wasm and vendor/, and it carries NO ROM - so `romwbw-get mirror`
-has to be run beside it.  It is now several commits behind HEAD, including the
-whole v1.44 release-gate change, so it answers for the two download checks and
-for nothing about the release select.
+- [WINDOWS] the msvc job now RUNS tests/vda_keyboard and tests/hbios_hostname,
+added 2026-09-18 and never compiled by cl anywhere. The browser job beside it
+is measured: `node tests/web_browser.js` passes 17/17 here on a fresh wasm.
 
-- [BROWSER] the wasm's video, DSKY, sound and printer callbacks are wired to
-names nothing implements.  MEASURED 2026-09-17, and the numbers this item used
-to carry were all wrong:
-  emu_io_wasm.cc emits 14 Module.on* names; romwbw.html-template assigns 19;
-exactly 6 appear on both sides (onConsoleOutput, onStatus, onLog, onError,
-onHostFileRequestRead, onHostFileDownload).
-  8 emitted names reach no handler: onPrinterOutput, onDskyHex, onDskySegments,
-onDskyLeds, onDskyBeep, onVideoClear, onVideoSetCursor, onVideoWriteChar.
-  12 assigned handlers are never called: eight onVda*, four onSnd*.
-  renaming does not switch it on.  onVideoClear->onVdaClear and
-onVideoSetCursor->onVdaSetCursor are arity-identical and WOULD work;
-onVideoWriteChar->onVdaWriteChar draws invisibly, because the page reads an
-attribute byte the emitter never sends and `undefined & 0x0F` is 0; and five
-onVda* and all four onSnd* have no emitter at all.
-  "there is no sound emitter in the core" was WRONG: hbios_dispatch.cc's
-HBF_SNDPLAY and HBF_SNDBEEP both call emu_dsky_beep(), which emits
-Module.onDskyBeep(ms).  It carries a duration and no frequency, which is the
-[SOUND] item below, not this one.
-  the real sizes are 114 lines on the core side and 150 on the page, not "about
-200 each" - AND there is a SECOND dead copy: web/romwbw-debug.html carries the
-same onVda*/onSnd* block, 152 more lines.  deleting one side means deleting it
-twice.  wire it properly behind a browser, or delete it.
-
-- [BROWSER] three of the four things that were new in the page are still
-undrawn: the manifest-built ROM/disk selects, the crypto.subtle size+sha256
-check (which needs a secure context and says so rather than claiming a pass it
-did not perform), and the no-mirror directory case with its explanatory status
-line and working file pickers.  all three are covered by tests/web_manifest.js
-under node, which RUNS here now, and none has been DRAWN.
-  the fourth - the RomWBW select that greyed out a release the core could not
-boot - was drawn headless on 2026-09-17 and then deleted in v1.44.  the core
-has no opinion about releases any more, so there is nothing to grey out.
-  THE BROWSER IS DRIVABLE FROM HERE with nothing installed: Chrome's DevTools
-endpoint is plain HTTP plus a WebSocket, node has a global WebSocket, so
-`--headless=new --remote-debugging-port=N` plus Runtime.evaluate drives the real
-page - no puppeteer, no npm.  Both checks of 2026-09-17 were run that way.  A
-harness was not committed; whether one should be is the real decision hiding
-behind "needs a person at a browser", and it is open.  What still genuinely
-needs a human is the checks that turn on a browser DEFAULT ACTION - a download,
-a paste, a zoom - which is most of MANUAL_CHECKS.md.
-  ALL OF IT NEEDS emcc, which this machine does not have.
-
-- [EMSCRIPTEN] R8's "Reading:" line names the file that was really opened on
-the CLI only.  emu_host_file_get_read_name() returns "" in emu_io_wasm.cc on
-purpose - a browser read is a file PICKER, so the guest's string is a hint the
-user is free to ignore - and the comment there carries the whole argument.
-changing it needs a name parameter on emu_host_file_provide_data() and a change
-to the page's picker callback.  until then the browser answers 0xFF and R8
-prints what was typed, which is what it always did.
-
-- [WINDOWS] nothing on Windows is RUN, only compiled.  the msvc job builds the
-three core .cc files z80cpmw pulls straight out of src/ and stops there: there
-is no MSVC build of the emulator to link and no test program that would run.
-the only thing that executes Windows code is z80cpmw built and run by hand on a
-Windows box (build.bat, run_test.bat, tests/): that port has no CI at all.
-cpmemu is no longer in that position: 43bff79 added .github/workflows/ci.yml on
-2026-09-03, whose ubuntu and macos jobs run tests/run_tests.sh --require and
-whose windows-latest job builds with MSVC and then runs tests\win_console.bat
-under CPMEMU_REQUIRE_MSVC=1 - so those cases are finally executed by a machine.
-what is still only compiled and never run is this repository's own core.
-
-- [SOUND] the SND handler stores four channels and plays one beep.  handleSND
-in src/hbios_dispatch.cc keeps snd_period[4] and snd_volume[4], and
-BF_SNDQUERY/SNDQ_CHCNT answers "4 tone channels, 0 noise" - but nothing reads
-those arrays back out.  BF_SNDPLAY looks at channel 0 only and calls
-emu_dsky_beep(duration), which is a fixed beep of that length: the period is
-not a pitch and the other three channels are inaudible.  a guest playing a
-four-voice tune hears four identical beeps in sequence.  SNDQ_DEV already
-declines to name a chip for exactly this reason.
-  WHAT WOULD CLOSE IT is rendering the channels the handler already records:
-period -> frequency, volume -> amplitude, mixed across the four.  that is one
-AY-3-8910/YM2149 worth of square-wave generation and it belongs here, in the
-shared core, not in any one front end - all four ports would get it from the
-same change, and only the output side (AudioTrack, AVAudioEngine, WASAPI, Web
-Audio) is per-client.
-  IT NEEDS A NEW emu_io ENTRY POINT.  src/emu_io.h declares exactly one audio
-hook, `void emu_dsky_beep(int duration_ms)`, and a duration is the whole of its
-vocabulary - there is no way to hand a front end samples or a pitch through it.
-so this is a DOWNSTREAM.md-sized change, not a local one: adding the hook is
-the easy half and four ports implementing it is the rest.  a front end that
-does not want it must keep working, so the new hook needs a default the way the
-optional ones already here do.
-  requested by a user on a physical tablet against cpmdroid, where it sat in
-docs/bug1.txt until 2026-09-15.  cpmdroid cannot close it alone.
-  THE SAME REPORT ASKED ABOUT MIDI and cpmdroid/docs/midi.md is the research
-that came of it: RomWBW has no native MIDI in HBIOS, and MIDI on RC2014/Z80
-hardware is an external module.  Read it before treating MIDI as a second
-feature - it is a different question from rendering the SND channels, and only
-this one has a driver interface already sitting in handleSND.
+- [ANY] the index may now carry prerelease:true entries (RomWBW dev snapshots).
+romwbw-get lists them like any other version; add an opt-in so they are hidden
+unless asked for. docs/CATALOG_SCHEMA.md 2.3.1 in romwbw_disks is the contract.

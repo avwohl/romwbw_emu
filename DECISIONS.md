@@ -232,3 +232,46 @@ signed document, which is exactly this file's subject. Moved 2026-09-18.
 **Who is blocked.** Nobody is blocked from shipping. The filing is stale in
 its date and duplicated across two repositories, which is a correctness
 problem in a legal document rather than a defect in the software.
+
+## 8. The ROM signature pointer: fix a one-byte address and re-cut every ROM?
+
+**The defect.** RomWBW publishes the address of `ROM_SIG` as the word at
+`0x0004` - `hbios.asm:428-431` is `JP HB_START`, then `.DB 0 ; SIG PTR STARTS AT
+$0004`, then `.DW ROM_SIG`. `src/emu_hbios.asm:70-74` adds a `di` ahead of the
+jump and keeps the filler byte, so everything shifts one place:
+
+    RST00:  di          ; 0x0000
+            jp HB_START ; 0x0001-0x0003
+            db 0        ; 0x0004   <- the filler lands where the pointer goes
+            dw ROM_SIG  ; 0x0005-0x0006
+
+The shipped binary agrees: `emu_avw-v0-3.6.0.rom` opens `F3 C3 00 02 00 70 00`.
+A reader following the convention takes the word at `0x0004` and gets `0x7000`,
+finds no `76 B5` there, and reports the ROM as unidentifiable. The signature
+block at `0x0070` is itself correct.
+
+**Why it is not simply fixed.** The fix is one byte - drop the `db 0`, since
+`di` + `jp` already fill four - and it changes every published ROM's sha256.
+That means re-cutting both releases in `romwbw_disks`, advancing each
+`generation`, and every installed client re-downloading both ROMs on its next
+fetch. The catalog machinery is built for exactly that, so the cost is not
+risk; it is bandwidth and a release.
+
+**What is known about who reads it.** All of `Source/HBIOS` was grepped and
+`hbios.asm` only ever *writes* the pointer - no in-tree consumer. No shipped
+`.COM` on the published images was found that reads it either. So the address
+is fixed by upstream's own comment and by the UNA/RomWBW ROM-directory
+convention, but nothing measured here observes it today.
+
+**The question.** Take the correctness fix at the cost of a re-cut of both
+releases, or leave it and let it ride along with the next change that already
+moves bank 0? The second costs nothing now and leaves a published address
+wrong for as long as no other bank-0 change happens.
+
+**Why this is not in `todo.txt`.** It is not a check to run or a capability to
+have - both arms are a few minutes' work. It is a judgement about what to spend
+the release channel on, which is this file's subject. Filed 2026-09-18, as the
+last open item of `docs/HBIOS_AUDIT_2026-09-18.md`.
+
+**Who is blocked.** Nobody. The emulator boots, and the audit's other 46
+confirmed findings are settled: 44 fixed, 2 kept with the measurement recorded.

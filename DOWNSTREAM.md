@@ -2,6 +2,69 @@
 
 This document explains how to integrate the RomWBW emulator core into downstream projects (iOS, macOS, Windows, etc.).
 
+**2026-09-18: a dispatcher audit changed guest-visible behaviour in a dozen
+places, and needs nothing from you.** Every port compiles `hbios_dispatch.cc` in
+place, so all of this arrives on your next build. None of it changes a signature
+and none of it needs a port to act - it is listed here because the behaviour your
+users see changes, and because two of them may show up as a *different* symptom
+rather than a fixed one:
+
+- `BF_DIOSEEK` now honours CHS addressing (bit 7 of `D` clear). A guest that
+  seeked by CHS previously landed somewhere arbitrary and now lands where it
+  asked - so a program that appeared to work by accident may behave differently.
+- `BF_SYSGET` and `BF_SYSSET` now return `ERR_NOFUNC` for subfunctions they do
+  not implement, instead of success. A guest that was silently getting "0,
+  successfully" now gets an error it can see. `BF_SYSINT` likewise returns
+  `ERR_NOTIMPL`.
+
+The rest are straightforward corrections: `BF_DIOGEOM`'s register layout and
+geometry, `BF_CIODEVICE` answering all five of its registers, `BOOTINFO`
+carrying the boot bank id, `BF_VDASCR` reading its line count as signed,
+`SYSBNKCPY` advancing `HL`/`DE`, `BF_RTCSETTIM` actually taking, the tick and
+seconds counters becoming independent, a partial sector no longer being handed
+over as data, and the whole `BF_SND*` group moving to the register conventions
+`Source/Doc/SystemGuide.md` documents. See `CHANGELOG.md` for the reasoning and
+the upstream citation behind each.
+
+**If your port draws a screen**, note one interface clarification: `emu_io.h`'s
+`emu_video_scroll_up(int lines)` takes a NEGATIVE count to mean scroll back.
+That was always the HBIOS contract; nothing here had ever passed a negative,
+because `BF_VDASCR` was reading `E` unsigned.
+
+**2026-09-18: four-voice sound, and this one does NOT break your build.**
+`BF_SNDPLAY` used to look at channel 0 and call `emu_dsky_beep(duration)`, so a
+guest playing a four-voice tune got one fixed beep. The dispatcher now renders
+every channel the guest set up, through a new hook in `emu_io.h`:
+
+```c
+typedef void (*emu_snd_tone_fn)(int channel, int freq_hz, int volume,
+                                int duration_ms);
+void emu_snd_set_tone_handler(emu_snd_tone_fn fn);
+```
+
+**It is a pointer, not a symbol, and that is deliberate.** Every other addition
+to `emu_io.h` has been a declaration the core does not define, so a port that
+has not been updated fails to link - the right signal when the core would
+otherwise assert a guarantee on your behalf. It is the wrong signal here: only
+the output side of sound is per-port (AudioTrack, AVAudioEngine, WASAPI, Web
+Audio), and a port that does nothing must keep making the beep it makes today.
+So **do nothing and nothing changes**: with no handler installed the core falls
+back to one `emu_dsky_beep()` on channel 0, exactly as before.
+
+To opt in, install a renderer at start-up - `web/` does it in `emu_io_init()`
+and `web/romwbw.html-template` renders it with Web Audio, which is the worked
+example. `freq_hz` is the pitch, `volume` is 0..255 as the guest set it, and one
+call arrives per channel the guest plays.
+
+**The rest of the SND group was corrected in the same change**, so a port that
+reads this dispatcher for its own conventions should re-read it: `C` is the
+sound UNIT everywhere and never a channel, `BF_SNDPLAY` takes the channel in
+`D`, volume and pitch are one pending pair applied at play time, and
+`BF_SNDNOTE` takes a **16-bit** note in `HL` on a scale whose zero is A#0 (C4 =
+152, A4 = 188, so `freq = 440 * 2^((note - 188) / 48)`).
+`tests/snd_channels.cc` pins every one of those against the published note
+table in `Source/Doc/SystemGuide.md`.
+
 Dated migration notices for specific core releases live in docs/ - most
 recently [docs/DOWNSTREAM_2026-08-26.md](docs/DOWNSTREAM_2026-08-26.md), the
 R8 read-name sync. **It changes the build contract the same way the one before

@@ -42,15 +42,44 @@ name: Tests
 #   macos   macos-latest, builds the CLI with Apple clang and runs the four
 #           compiled test programs. Not `make test`: see the job.
 #   msvc    windows-latest, compiles the three core .cc files z80cpmw pulls
-#           straight out of src/ with cl. Compile only, nothing is run.
+#           straight out of src/ with cl, and since 2026-09-18 builds and RUNS
+#           the two portable test programs. Nothing of this repository had ever
+#           been executed by a Windows machine before that.
+#   browser ubuntu-latest, builds the wasm with emsdk, mirrors a ROM and a disk,
+#           and drives the real page in headless Chrome with
+#           tests/web_browser.js. It is the only job that runs the wasm at all,
+#           and the only place the page is ever DRAWN: the suite's other web
+#           tests lift functions out of the template and run them against a stub
+#           document, which cannot see a fetch, a select, or a guest booting.
 #
 # What the last two are for: the core in src/ is compiled in place by three
 # downstream ports - z80cpmw with MSVC, ioscpm with Apple clang, cpmdroid with
 # the NDK - and until now a change here that broke any of those compilers was
 # found by that port's own CI, days later and in somebody else's tree. Both are
-# written to be as small as they can be, and both have run: the macos job went
-# red on its first push, on a real portability defect in tests/cli_hostfile.cc,
-# and all three jobs are green since.
+# written to be as small as they can be.
+#
+# WHAT HAS ACTUALLY BEEN OBSERVED, and what has not. The three jobs in their
+# EARLIER shape have run, and the macos one went red on its first push on a
+# real portability defect in tests/cli_hostfile.cc. That is the sentence this
+# comment used to end with, and it was written before the two steps below
+# existed, so it covered neither of them.
+#
+#   - the msvc job's RUN step (below) and the whole browser job were added
+#     2026-09-18 on a machine with no Windows and no CI. Neither has been
+#     observed anywhere. The next push is the first measurement.
+#   - the browser job's payload HAS been run, just not by CI: on 2026-09-18
+#     `node tests/web_browser.js` passed all 17 checks on macOS against a wasm
+#     rebuilt from the current core, which is the same script the job runs. So
+#     what is unmeasured about it is the ubuntu runner and the emsdk action,
+#     not the checks themselves.
+#   - the msvc run step is unmeasured in both halves. Nothing here can compile
+#     with cl, and the two tests it runs carry _WIN32 branches for <strings.h>
+#     that no compiler in this tree has ever read.
+#
+# Do not replace this with "green" until a run says so. `gh run list` answers
+# 401 from this machine - the PAT WIP.md records as dead - so a session here
+# cannot check, and "it should work" is how the sentence above came to outlive
+# what it described.
 
 on:
   push:
@@ -384,6 +413,66 @@ jobs:
   # files, and this job exists to answer "does the shared core still compile
   # with cl", not to make a dependency's warnings red. Flags and defines are
   # copied from that .vcxproj so the two see the same source.
+  browser:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Check out cpmemu for the Z80 core
+        run: git clone https://github.com/avwohl/cpmemu.git
+
+      # Unpinned, for the reasons the top of release.yml gives at length.
+      - name: Install Emscripten
+        run: |
+          git clone https://github.com/emscripten-core/emsdk.git
+          cd emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+
+      - name: Build the wasm and render the page
+        run: |
+          source emsdk/emsdk_env.sh
+          make -C web QKZ80_SRC=../cpmemu/src
+          make -C web romwbw.html
+
+      - name: Mirror a ROM and a disk beside the page
+        run: |
+          # The page offers nothing without this: the repository tracks no ROM
+          # and no disk image. Both releases, because one of the checks boots a
+          # 3.5.1 ROM under a 3.6.0 image and needs both to exist.
+          #
+          # No src/romwbw_emu is built first. The mirror used to ask the binary
+          # which releases it could boot and mirror only those; v1.44 deleted
+          # that allowlist, so there is nothing left to ask and nothing here
+          # needs the native build.
+          tools/romwbw-get mirror web --versions=all --only=emu_avw,hd1k_combo
+
+      - name: Drive the page in headless Chrome
+        run: |
+          # ubuntu-latest ships Chrome. If that ever stops being true the script
+          # SKIPS, so the step after this one is what makes the skip fail.
+          node tests/web_browser.js 2>&1 | tee /tmp/browser.log
+
+      - name: Assert it really ran
+        run: |
+          # Every skip in that script exits 0 - right on a developer's machine
+          # with no web build, wrong here, where it would turn "the page was
+          # never drawn" into a green job. That is the whole reason this job
+          # exists, so assert the opposite.
+          if grep -q '^SKIP:' /tmp/browser.log; then
+            echo "the browser checks skipped:"
+            grep '^SKIP:' /tmp/browser.log
+            exit 1
+          fi
+          grep -q '^all [0-9]* checks passed' /tmp/browser.log || {
+            echo "the browser checks did not report a pass"; exit 1; }
+          # And that the expensive one happened. A page that draws its selects
+          # but never boots would pass everything else.
+          grep -q 'boots RomWBW to a CP/M 2.2 prompt' /tmp/browser.log || {
+            echo "the wasm never booted the guest"; exit 1; }
+
   msvc:
     runs-on: windows-latest
 
@@ -415,3 +504,44 @@ jobs:
              /D_CRT_SECURE_NO_WARNINGS /DQKZ80_NO_TRACE /DNDEBUG /D_WINDOWS ^
              /I cpmemu\src /I src ^
              src\emu_init.cc src\hbios_cpu.cc src\hbios_dispatch.cc || exit /b 1
+
+      # AND RUN SOMETHING.  Until 2026-09-18 this job stopped at the /c above:
+      # nothing of this repository's code had ever been EXECUTED by a Windows
+      # machine, in CI or anywhere else, and the only thing that ran Windows
+      # code at all was z80cpmw built by hand on somebody's PC. cpmemu stopped
+      # being in that position on 2026-09-03 and this is the same move.
+      #
+      # Two of the four tests are portable: vda_keyboard and hbios_hostname
+      # drive the dispatcher through a stub CPU and touch no POSIX beyond
+      # strncasecmp, which they now spell through EMU_TEST_STRNCASECMP. The
+      # other two are not and are not meant to be - cli_console drives a pty and
+      # cli_hostfile a POSIX filesystem.
+      #
+      # qkz80 is compiled from the cpmemu checkout the same way web/Makefile
+      # does it, rather than linked: there is no prebuilt qkz80 for this runner.
+      - name: Build and run the portable tests with cl
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSDIR=%%i"
+          if not defined VSDIR (
+            echo could not locate a Visual Studio with the C++ tools
+            exit /b 1
+          )
+          call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          setlocal enabledelayedexpansion
+          for %%T in (vda_keyboard hbios_hostname) do (
+            echo === %%T ===
+            cl /nologo /EHsc /W3 /std:c++17 ^
+               /D_CRT_SECURE_NO_WARNINGS /DQKZ80_NO_TRACE /DNDEBUG /D_WINDOWS ^
+               /DEMU_VERSION=\"ci\" ^
+               /I cpmemu\src /I src ^
+               /Fe:%%T.exe ^
+               tests\%%T.cc ^
+               src\emu_init.cc src\hbios_cpu.cc src\hbios_dispatch.cc ^
+               src\emu_io_common.cc ^
+               cpmemu\src\qkz80.cc cpmemu\src\qkz80_mem.cc ^
+               cpmemu\src\qkz80_reg_set.cc cpmemu\src\qkz80_errors.cc || exit /b 1
+            rem The exit code is the assertion. Both print a summary line and
+            rem return non-zero on any failure, the same as under `make test`.
+            %%T.exe || exit /b 1
+          )

@@ -84,7 +84,8 @@ void HBIOSDispatch::reset() {
   vda_cols = 80;
   vda_cursor_row = 0;
   vda_cursor_col = 0;
-  vda_attr = 0x07;
+  vda_color = 0x07;
+  vda_rub = 0x00;
 
   for (int i = 0; i < 4; i++) {
     snd_volume[i] = 0;
@@ -249,6 +250,12 @@ void HBIOSDispatch::closeDisk(int unit) {
   disks[unit].current_lba = 0;
   disks[unit].partition_probed = false;
   disks[unit].partition_base_lba = 0;
+  // ...and the SIZE, which was left behind.  RomWBW zeroes its whole working
+  // block at the top of every EXT_SLICE call, so a partition size from a
+  // previous medium cannot survive into the next one's bounds check.  Here it
+  // did: swap a partitioned image for a bare one and the bare one was bounded
+  // against the old image's partition.
+  disks[unit].partition_sectors = 0;
   disks[unit].slice_size = 16640;  // Default hd512
   disks[unit].is_hd1k = false;
 }
@@ -622,9 +629,15 @@ bool HBIOSDispatch::handleMainEntry() {
     case 6: handleDSKY(); return true;
     case 7: handleEXT(); return true;
     default:
-      // Unknown function - return error and RET
+      // $60-$DF is the reserved gap between BF_SND and BF_EXT, and RomWBW has a
+      // name for what it answers there: hbios.asm:4525-4530 is
+      // "CP BF_EXT / JR C,HB_DISPERR" and "HB_DISPERR: SYSCHKERR(ERR_NOFUNC)".
+      // This answered HBR_FAILED ($FF = ERR_UNDEF, "undefined error"), which is
+      // a different code with a different meaning - a caller probing for a
+      // function cannot tell "there is no such function" from "something went
+      // wrong".
       emu_log("[HBIOS] Unknown function 0x%02X (trap_type=%d)\n", func, trap_type);
-      setResult(HBR_FAILED);
+      setResult(HBR_NOFUNC);
       doRet();
       return true;
   }
@@ -684,14 +697,35 @@ void HBIOSDispatch::handlePortDispatch() {
 //=============================================================================
 
 void HBIOSDispatch::setResult(uint8_t result) {
-  // Set A register and Z flag for HBIOS return
-  // HBIOS convention: Z flag SET means success (A=0)
+  // EVERY HBIOS RETURN IS `OR A` OR `XOR A`, so the flags are not just Z.
+  //
+  // A success return is `XOR A` (A=0, Z set, S clear, C clear, P/V set for even
+  // parity) and an error return is `SYSCHKERR` ending in `LD A,HB_ERR / OR A`
+  // (hbios.asm:229-232), which sets S from bit 7 - set for every negative error
+  // code - clears C, clears N and H, and sets P/V from the parity of A.
+  //
+  // This set Z and left the rest of F as the guest had it. A caller doing the
+  // idiomatic `CALL HBIOS / JP M,error` - test the SIGN, which is the natural
+  // test when every error is negative - read its own stale sign flag, and one
+  // doing `JR C,error` read its own stale carry. Both are things an assembler
+  // programmer writes without thinking, because on real hardware `OR A` has
+  // just made them true.
   cpu->regs.AF.set_high(result);
-  if (result == 0) {
-    cpu->regs.set_flag_bits(qkz80_cpu_flags::Z);
-  } else {
-    cpu->regs.clear_flag_bits(qkz80_cpu_flags::Z);
-  }
+
+  uint8_t f = cpu->regs.AF.get_low();
+  // OR A clears carry, N and H.
+  f &= (uint8_t)~(qkz80_cpu_flags::CY | qkz80_cpu_flags::N | qkz80_cpu_flags::H);
+  // Z from the value, S from its bit 7.
+  if (result == 0) f |= qkz80_cpu_flags::Z; else f &= (uint8_t)~qkz80_cpu_flags::Z;
+  if (result & 0x80) f |= qkz80_cpu_flags::S; else f &= (uint8_t)~qkz80_cpu_flags::S;
+  // P/V is parity for a logical operation: set when the number of set bits is
+  // even, which is what OR A leaves behind.
+  uint8_t bits = result;
+  bits ^= (uint8_t)(bits >> 4);
+  bits ^= (uint8_t)(bits >> 2);
+  bits ^= (uint8_t)(bits >> 1);
+  if (bits & 1) f &= (uint8_t)~qkz80_cpu_flags::P; else f |= qkz80_cpu_flags::P;
+  cpu->regs.AF.set_low(f);
 }
 
 void HBIOSDispatch::recalcNvramChecksum() {
@@ -825,6 +859,28 @@ void HBIOSDispatch::handleCIO() {
   uint8_t unit = cpu->regs.BC.get_low();   // C = unit
   uint8_t result = HBR_SUCCESS;
 
+  // THE UNIT NUMBER IN C IS CHECKED FIRST, and against a count.
+  //
+  // Every group in RomWBW reaches its driver through HB_DISPCALC, whose first
+  // act is "LD A,C / CP (IY-1) / JR NC,HB_UNITERR" (hbios.asm:7448-7452) -
+  // compare the unit against the count, and answer ERR_NOUNIT if it is not
+  // there.  Nothing here checked it at all, so every unit 0-255 was served by
+  // the one device this emulator has and told it had succeeded: writing to a
+  // second serial port printed on the console, reading from one ate the user's
+  // keystrokes, and a program enumerating units until ERR_NOUNIT never stopped.
+  //
+  // The count is the one BF_SYSGET reports for the group; see hbios_dispatch.h.
+  // CIO alone has a substitution before the check: CIO_DISPATCH does
+  // "BIT 7,C / CALL NZ,CIO_SPECIAL" (hbios.asm:4541-4542), and CIO_SPECIAL
+  // swaps in the active console - so $80-$FF are always valid and always mean
+  // "the console".  There is one console here, so they mean unit 0.
+  if (unit & 0x80) unit = 0;
+  if (unit >= CIO_UNIT_COUNT) {
+    setResult(HBR_NOUNIT);
+    doRet();
+    return;
+  }
+
   switch (func) {
     case HBF_CIOIN: {
       // Read character - behavior depends on dispatch mode and platform
@@ -954,9 +1010,32 @@ void HBIOSDispatch::handleCIO() {
     }
 
     case HBF_CIODEVICE: {
-      // Device info
-      // DE = device attributes
-      cpu->regs.DE.set_pair16(0x0000);
+      // FIVE registers, not two.  SystemGuide.md, Function 0x06:
+      //
+      //     C: Device Attributes     D: Device Type
+      //     E: Device Number         H: Device Mode
+      //     L: Device I/O Base Address
+      //
+      // This set DE to zero and touched nothing else, so C, H and L came back
+      // holding whatever the caller passed in - and C is the one the guest
+      // asked WITH, the unit number, handed straight back as though it were
+      // the attribute byte.  D = 0 is also a claim: CIODEV_UART (hbios.inc:384).
+      //
+      // The console here is not a UART and not an ASCI; it is the host's
+      // terminal, which is what CIODEV_TERM ($02) means, and tty.asm:138-145 is
+      // the driver that answers for one:
+      //
+      //     LD D,CIODEV_TERM / LD E,<devnum> / LD A,<vda unit> / SET 7,A / LD C,A
+      //
+      // Bit 7 of C is the "terminal" attribute the guide describes ("the two
+      // high bits ... 01 = Terminal"), and the low bits are the VDA unit.  H is
+      // the device mode and L the I/O base; there is neither here, so H := 0
+      // the way hdsk.asm answers "DRIVER HAS NO MODES", and L := 0 because
+      // there is no port.
+      cpu->regs.BC.set_low(0x80);   // C := attributes: terminal, VDA unit 0
+      cpu->regs.DE.set_high(0x02);  // D := CIODEV_TERM
+      cpu->regs.DE.set_low(0x00);   // E := device number
+      cpu->regs.HL.set_pair16(0);   // H := no modes, L := no I/O base
       break;
     }
 
@@ -980,36 +1059,32 @@ void HBIOSDispatch::handleCIO() {
 // Disk I/O (DIO)
 //=============================================================================
 
-// Map RomWBW unit numbers to memory disk index (0=MD0, 1=MD1, 0xFF=not MD)
-// RomWBW uses multiple unit encoding schemes:
-// - Units 0-1: Direct MD0/MD1
-// - Units 0x80-0x8F: MD units (low nibble 0-1 = MD0/MD1)
-// - Units 0xC0-0xCF: Boot-related, map to MD1 (ROM disk)
+// THE DISK UNIT NUMBER IS A PLAIN INDEX.  There is no high-bit, nibble or
+// boot-related encoding of unit numbers anywhere in HBIOS: C is an index into
+// DIO_TBL, bounds-checked against the live entry count before any driver is
+// reached (hbios.asm:7448-7452, HB_DISPCALC - "LD A,C / CP (IY-1) ; COMPARE TO
+// COUNT / JR NC,HB_UNITERR"), and DIO_MAX is 16.  Anything at or above the
+// count is ERR_NOUNIT from the dispatcher.
+//
+// These two mappers used to accept three invented ranges as well - 0x80-0x8F
+// and 0xC0-0xCF for memory disks, 0x90-0x9F for hard disks - so unit 0x80 read
+// MD0, 0xC3 read MD1 and 0x92 read hard disk 2, each answering A = 0.  They
+// also ALIASED: a write to unit 0x92 and a write to unit 4 landed on the same
+// image.  The direction that matters is that a guest walking unit numbers past
+// the count DIOCNT reported found phantom disks that answered successfully
+// where real RomWBW would have stopped it.
+
+// Map a RomWBW unit number to a memory disk index (0=MD0, 1=MD1, 0xFF=not MD)
 static uint8_t map_md_unit(uint8_t unit) {
-  // Direct MD units
   if (unit < 2) return unit;
-  // 0x80-0x8F: MD units encoded with high bit
-  if (unit >= 0x80 && unit <= 0x8F) {
-    uint8_t idx = unit & 0x0F;
-    return (idx < 2) ? idx : 1;  // Cap at MD1
-  }
-  // 0xC0-0xCF: Boot-related units, map to MD1 (ROM disk)
-  if (unit >= 0xC0 && unit <= 0xCF) {
-    return 1;  // MD1
-  }
   return 0xFF;  // Not a memory disk
 }
 
-// Map RomWBW HD unit numbers to disk array indices
-// RomWBW convention: Units 2+ = HD (hard disk)
+// Map a RomWBW unit number to a hard disk array index.
+// Units 0-1 are the memory disks; 2..17 are the sixteen hard disks.
 static uint8_t map_hd_unit(uint8_t unit) {
-  // Units 0-1 are memory disks - handled separately
   if (unit < 2) return 0xFF;
-  // Units 2-17 are hard disks, map to 0-15
-  if (unit >= 2 && unit < 18) return unit - 2;
-  // Special units (0x90-0x9F = HDSK) - map to disk 0+
-  if (unit >= 0x90 && unit <= 0x9F) return unit & 0x0F;
-  // Other special units - return invalid
+  if (unit < 18) return unit - 2;
   return 0xFF;
 }
 
@@ -1049,12 +1124,10 @@ void HBIOSDispatch::handleDIO() {
 
   switch (func) {
     case HBF_DIOSTATUS: {
-      // Get status
-      if (is_memdisk || is_harddisk) {
-        cpu->regs.DE.set_low(0x00);  // Ready
-      } else {
-        // No device at this unit - return not ready
-        cpu->regs.DE.set_low(0xFF);
+      // The answer is A and only A.  Neither md.asm nor hdsk.asm touches D or
+      // E on this call (md.asm:186-194, hdsk.asm:152-160), and writing E here
+      // destroyed a register the caller is entitled to keep across the call.
+      if (!is_memdisk && !is_harddisk) {
         result = HBR_NOUNIT;
       }
       break;
@@ -1072,12 +1145,34 @@ void HBIOSDispatch::handleDIO() {
       break;
 
     case HBF_DIOSEEK: {
-      // Seek to LBA
-      // Input: BC=Function/Unit, DE:HL=LBA (32-bit: DE=high16, HL=low16)
-      // Bit 31 (0x80 in high byte of DE) = LBA mode flag, mask it off
+      // Seek.  DE:HL is EITHER an LBA or a CHS address, and bit 7 of D says
+      // which - set means LBA.  This masked the bit off and always treated the
+      // rest as an LBA, so a guest seeking by CHS landed on a sector computed
+      // from its cylinder/head/sector as though they were one number.
+      //
+      // Every driver opens the same way (hdsk.asm:208-217, md.asm:259-268):
+      //
+      //     BIT 7,D              ; CHECK FOR LBA FLAG
+      //     CALL Z,HB_CHS2LBA    ; CLEAR MEANS CHS, CONVERT TO LBA
+      //     RES 7,D              ; CLEAR FLAG REGARDLESS
+      //
+      // and HB_CHS2LBA (hbios.asm:7223-7236) is head<<4 | sector into the low
+      // byte, with the cylinder shifted up a byte:
+      //
+      //     LBA = (cylinder << 8) | (head << 4) | sector
+      //
+      // which is exactly 16 heads by 16 sectors - the same geometry DIOGEOM
+      // reports, and the reason cylinders there are blocks/256.
       uint16_t de_reg = cpu->regs.DE.get_pair16();
       uint16_t hl_reg = cpu->regs.HL.get_pair16();
-      uint32_t lba = (((uint32_t)(de_reg & 0x7FFF) << 16) | hl_reg);
+      uint32_t lba;
+      if (de_reg & 0x8000) {
+        lba = (((uint32_t)(de_reg & 0x7FFF) << 16) | hl_reg);
+      } else {
+        uint8_t head = cpu->regs.DE.get_high() & 0x0F;
+        uint8_t sect = cpu->regs.DE.get_low() & 0x0F;
+        lba = ((uint32_t)hl_reg << 8) | (uint32_t)((head << 4) | sect);
+      }
 
       if (is_memdisk) {
         md_disks[md_unit].current_lba = lba;
@@ -1183,7 +1278,15 @@ void HBIOSDispatch::handleDIO() {
             uint64_t offset = ((uint64_t)lba + s) * 512;
             size_t read = emu_disk_read((emu_disk_handle)disks[hd_unit].handle,
                                         (size_t)offset, sector_buf, 512);
-            if (read == 0) {
+            // A PARTIAL SECTOR IS NOT A SECTOR.  This tested `read == 0`, so a
+            // short read of 1..511 bytes - a truncated image, or a final
+            // partial sector - fell through, copied all 512 bytes of
+            // sector_buf, and counted the block as transferred.  The bytes past
+            // `read` are whatever was on the stack, handed to the guest as
+            // data, with A = 0 and E saying it arrived.  The loop below already
+            // turns a short TRANSFER into ERR_IO; this is the same rule one
+            // level down, on a short SECTOR.
+            if (read != 512) {
               break;
             }
             for (size_t i = 0; i < 512; i++) {
@@ -1314,6 +1417,26 @@ void HBIOSDispatch::handleDIO() {
           uint8_t sector_buf[512];
           for (int s = 0; s < count; s++) {
             uint64_t offset = ((uint64_t)lba + s) * 512;
+            // THE MEDIUM DOES NOT GROW.  A write past the end of the disk is an
+            // I/O error on real hardware - md.asm range-checks against the
+            // media size (MD_IOSETUP, "CP RAMD_BNKS" -> "OR $FF ; SIGNAL
+            // ERROR"), and the hardware drivers pass the device's out-of-range
+            // answer back as ERR_IO.
+            //
+            // This had no bound at all on the file-backed path: emu_disk_write
+            // is an fseek-and-write, so a guest seeking past the end and
+            // writing EXTENDED THE HOST FILE, quietly turning a 49MB image into
+            // whatever the guest asked for and reporting success. The in-memory
+            // path a few lines below has always had the check; this is the same
+            // one.
+            if ((offset + 512) > (uint64_t)disks[hd_unit].total_sectors() * 512) {
+              emu_error("[HBIOS DIOWRITE] HD%d: write past end of medium "
+                        "(LBA %llu, %u sectors)\n", hd_unit,
+                        (unsigned long long)(lba + s),
+                        disks[hd_unit].total_sectors());
+              result = HBR_IO;
+              break;
+            }
             for (size_t i = 0; i < 512; i++) {
               sector_buf[i] = read_from_bank((uint16_t)(buffer + s * 512 + i));
             }
@@ -1409,6 +1532,11 @@ void HBIOSDispatch::handleDIO() {
         // so ASSIGN /B= silently rebuilt the drive map without them. Use the
         // driver's constants and neither half can be got wrong on its own.
         dev_attr = md_disks[md_unit].is_rom ? 0x14 : 0x15;
+        // H := 0 "DRIVER HAS NO MODES", L := 0 "NO BASE I/O ADDRESS"
+        // (md.asm:244-245).  Both drivers write these on every call; neither
+        // leaves them, which is what this did - so a caller printing the I/O
+        // base printed whatever it happened to have in HL.
+        cpu->regs.HL.set_pair16(0x0000);
       } else if (is_harddisk) {
         cpu->regs.DE.set_high(0x09);  // DIODEV_HDSK (hard disk)
         cpu->regs.DE.set_low(hd_unit); // Device number within type
@@ -1416,6 +1544,10 @@ void HBIOSDispatch::handleDIO() {
         // Source/HBIOS/hdsk.asm:192 "LD C,%00110000 ; C := ATTRIBUTES,
         // NON-REMOVABLE HARD DISK". Bit 4 was missing here too.
         dev_attr = 0x30;
+        // H := 0 (no modes), L := HDSK_IO.  hdsk.asm:193-194 is
+        // "LD H,0 ; DRIVER HAS NO MODES / LD L,HDSK_IO", and HDSK_IO is $FD
+        // (hdsk.asm:8) - the port the emulator's own disk device answers on.
+        cpu->regs.HL.set_pair16(0x00FD);
       } else {
         // No device at this unit - return error, don't crash
         cpu->regs.DE.set_high(0xFF);  // No device
@@ -1503,15 +1635,45 @@ void HBIOSDispatch::handleDIO() {
         result = HBR_NOUNIT;
         break;
       }
-      uint32_t sectors = is_memdisk ? md_disks[md_unit].total_sectors()
-                                    : disks[hd_unit].total_sectors();
-      uint32_t cyls = sectors / (16 * 63);
+      // The synthetic CHS is 16 HEADS BY 16 SECTORS, not 16 by 63, and each
+      // value has its own register.  hdsk.asm:176-185 is the whole of it:
+      //
+      //     CALL HDSK_CAP      ; TOTAL BLOCKS IN DE:HL, BLOCK SIZE TO BC
+      //     LD   L,H           ; DIVIDE BY 256 FOR # TRACKS
+      //     LD   H,E           ; ... HIGH BYTE DISCARDED, RESULT IN HL
+      //     LD   D,$80 | 16    ; HEADS / CYL = 16, SET LBA BIT
+      //     LD   E,16          ; SECTORS / TRACK = 16
+      //
+      // So HL := cylinders = blocks / 256, D := heads with bit 7 SET to say the
+      // device is LBA-capable, E := sectors per track, and BC is left holding
+      // the 512 that HDSK_CAP put there - the block size, not a sector count.
+      //
+      // This put 63 in C, 16 in D with no LBA bit, and the low byte of the
+      // cylinder count in E.  A guest reading E as sectors-per-track got a
+      // number that changed with the size of the disk, and one testing bit 7 of
+      // D concluded the device could not do LBA.
+      // A MEMORY DISK HAS A DIFFERENT SHAPE.  md.asm:222-236 says so in its own
+      // comment - "RAM/ROM DISKS ALLOW CHS STYLE ACCESS BY EMULATING A DISK
+      // DEVICE WITH 1 HEAD AND 16 SECTORS / TRACK" - and divides the capacity
+      // by 16 rather than by 256.  The two geometries are each self-consistent:
+      // heads * sectors * cylinders comes back out as the capacity, which is
+      // the property a caller doing CHS arithmetic depends on.
+      uint32_t sectors;
+      uint8_t heads;
+      if (is_memdisk) {
+        sectors = md_disks[md_unit].total_sectors();
+        heads = 1;
+      } else {
+        sectors = disks[hd_unit].total_sectors();
+        heads = 16;
+      }
+      uint32_t cyls = sectors / (16u * heads);
       if (cyls == 0) cyls = 1;
       if (cyls > 0xFFFF) cyls = 0xFFFF;
-      cpu->regs.BC.set_low(63);                        // sectors per track
-      cpu->regs.DE.set_high(16);                       // heads
-      cpu->regs.DE.set_low((uint8_t)(cyls & 0xFF));    // cylinders, low
-      cpu->regs.HL.set_pair16((uint16_t)cyls);         // and the full count
+      cpu->regs.BC.set_pair16(512);                    // BC := block size
+      cpu->regs.DE.set_high((uint8_t)(0x80 | heads));  // D  := heads, LBA bit
+      cpu->regs.DE.set_low(16);                        // E  := sectors / track
+      cpu->regs.HL.set_pair16((uint16_t)cyls);         // HL := cylinders
       break;
     }
 
@@ -1536,6 +1698,60 @@ void HBIOSDispatch::handleDIO() {
 // Real-Time Clock (RTC)
 //=============================================================================
 
+// Days since 1970-03-01, by the civil-from-days algorithm.  Plain arithmetic
+// rather than mktime(), which is local-time and DST-dependent: what is wanted
+// here is the difference between two calendar readings, not between two
+// instants in somebody's timezone.
+static long days_from_civil(int y, int m, int d) {
+  y -= m <= 2;
+  const long era = (y >= 0 ? y : y - 399) / 400;
+  const unsigned yoe = (unsigned)(y - era * 400);
+  const unsigned doy = (unsigned)((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1);
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097L + (long)doe - 719468L;
+}
+
+static long civil_seconds(const emu_time& t) {
+  return days_from_civil(t.year, t.month, t.day) * 86400L
+       + (long)t.hour * 3600L + (long)t.minute * 60L + (long)t.second;
+}
+
+long HBIOSDispatch::secondsBetween(const emu_time& a, const emu_time& b) {
+  return civil_seconds(b) - civil_seconds(a);
+}
+
+void HBIOSDispatch::applyRtcOffset(emu_time* t) const {
+  if (!t || rtc_offset_seconds == 0) return;
+
+  long secs = civil_seconds(*t) + rtc_offset_seconds;
+  long days = secs / 86400L;
+  long rem = secs % 86400L;
+  if (rem < 0) { rem += 86400L; days -= 1; }
+
+  t->hour = (int)(rem / 3600);
+  t->minute = (int)((rem % 3600) / 60);
+  t->second = (int)(rem % 60);
+
+  // civil_from_days, the inverse of the above.
+  long z = days + 719468L;
+  const long era = (z >= 0 ? z : z - 146096) / 146097;
+  const unsigned doe = (unsigned)(z - era * 146097);
+  const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  long y = (long)yoe + era * 400;
+  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  const unsigned mp = (5 * doy + 2) / 153;
+  const unsigned d = doy - (153 * mp + 2) / 5 + 1;
+  const unsigned m = mp + (mp < 10 ? 3 : -9);
+  t->year = (int)(y + (m <= 2));
+  t->month = (int)m;
+  t->day = (int)d;
+  // 1970-01-01 was a Thursday.
+  long wd = (days + 4) % 7;
+  if (wd < 0) wd += 7;
+  t->weekday = (int)wd;
+}
+
+
 void HBIOSDispatch::handleRTC() {
   if (!cpu || !memory) return;
 
@@ -1548,6 +1764,7 @@ void HBIOSDispatch::handleRTC() {
       uint16_t buffer = cpu->regs.HL.get_pair16();
       emu_time t;
       emu_get_time(&t);
+      applyRtcOffset(&t);
 
       // RomWBW format: YY MM DD HH MM SS (BCD)
       auto to_bcd = [](int v) -> uint8_t {
@@ -1563,9 +1780,57 @@ void HBIOSDispatch::handleRTC() {
       break;
     }
 
-    case HBF_RTCSETTIM:
-      // Set time - ignored in emulator
+    case HBF_RTCSETTIM: {
+      // Set time from the buffer at HL, same BCD layout GETTIM writes.
+      //
+      // This was a comment and a break: it answered HBR_SUCCESS and threw the
+      // time away, so a guest running DATE SET watched it take and then read
+      // the host clock back.  There is no chip to write, so what is stored is
+      // the OFFSET from the host clock, which keeps the clock running forward
+      // afterwards instead of freezing it at the moment it was set.
+      //
+      // A value that is not valid BCD, or not a real date, is rejected with
+      // ERR_NOTIMPL's neighbour ERR_INVALID rather than accepted - every
+      // RomWBW driver returns non-zero if the write did not take
+      // (Source/HBIOS/dsrtc.asm, DSRTC_SETTIM).
+      uint16_t buffer = cpu->regs.HL.get_pair16();
+      auto from_bcd = [](uint8_t v) -> int {
+        return ((v >> 4) & 0x0F) * 10 + (v & 0x0F);
+      };
+      auto bcd_ok = [](uint8_t v) -> bool {
+        return ((v >> 4) & 0x0F) <= 9 && (v & 0x0F) <= 9;
+      };
+      uint8_t raw[6];
+      bool ok = true;
+      for (int i = 0; i < 6; i++) {
+        raw[i] = memory->fetch_mem((uint16_t)(buffer + i));
+        if (!bcd_ok(raw[i])) ok = false;
+      }
+      if (ok) {
+        emu_time want;
+        want.year = 2000 + from_bcd(raw[0]);
+        want.month = from_bcd(raw[1]);
+        want.day = from_bcd(raw[2]);
+        want.hour = from_bcd(raw[3]);
+        want.minute = from_bcd(raw[4]);
+        want.second = from_bcd(raw[5]);
+        want.weekday = 0;
+        if (want.month < 1 || want.month > 12 || want.day < 1 || want.day > 31 ||
+            want.hour > 23 || want.minute > 59 || want.second > 59) {
+          ok = false;
+        } else {
+          emu_time now;
+          emu_get_time(&now);
+          rtc_offset_seconds = secondsBetween(now, want);
+        }
+      }
+      // ERR_RANGE, not a generic failure: the buffer held something that is not
+      // a date. RomWBW's own drivers return non-zero when the write does not
+      // take; which non-zero is driver-specific, and this is the closest of
+      // hbios.inc's codes to "that is not a time".
+      if (!ok) result = HBR_RANGE;
       break;
+    }
 
     case HBF_RTCGETBYT: {
       // Get NVRAM byte by index
@@ -1591,11 +1856,22 @@ void HBIOSDispatch::handleRTC() {
       uint8_t idx = cpu->regs.BC.get_low();
       uint8_t value = cpu->regs.DE.get_low();
       if (idx < NVRAM_SIZE) {
+        // STORE EXACTLY WHAT WAS GIVEN, and nothing else.
+        //
+        // This recomputed the checksum into index 4 whenever index 0-3 was
+        // written, which is a side effect the device does not have: a write to
+        // NVRAM index 1 changes index 1.  HBIOS recomputes the checksum in
+        // NVSW_UPDATE and writes it as a FIFTH, SEPARATE RTCSETBYT call
+        // (hbios.asm:8156-8174), so a guest writing the block byte by byte sees
+        // an inconsistent checksum until it writes the last one - which is
+        // exactly how SYSCONF detects a half-written block after a reset.
+        // Recomputing it here hid that state and made every partial write look
+        // complete.
+        //
+        // The places that own the switch block do the recompute instead: the
+        // BF_SYSSET/SWITCH handler, which is this dispatcher's NVSW_UPDATE, and
+        // the --boot/persistence path.
         nvram_switches[idx] = value;
-        // Recalculate checksum if data bytes were modified (not checksum itself)
-        if (idx < 4) {
-          recalcNvramChecksum();
-        }
         if (debug_log) {
           emu_log("[RTC SETBYT] idx=%d <- value=0x%02X ('%c')\n",
                   idx, value, (value >= 0x20 && value < 0x7F) ? value : '.');
@@ -1608,53 +1884,58 @@ void HBIOSDispatch::handleRTC() {
       break;
     }
 
-    case HBF_RTCGETBLK: {
-      // Get NVRAM data block
-      // Input: HL = buffer address
-      // Output: buffer filled with NVRAM data (5 bytes)
-      settleNvramChecksum();
-      uint16_t buffer = cpu->regs.HL.get_pair16();
-      for (int i = 0; i < NVRAM_SIZE; i++) {
-        memory->store_mem((uint16_t)(buffer + i), nvram_switches[i]);
-      }
-      if (debug_log) {
-        emu_log("[RTC GETBLK] -> buffer at 0x%04X: %02X %02X %02X %02X %02X\n",
-                buffer, nvram_switches[0], nvram_switches[1],
-                nvram_switches[2], nvram_switches[3], nvram_switches[4]);
-      }
+    case HBF_RTCGETBLK:
+    case HBF_RTCSETBLK:
+      // DECLINED, because the clock this claims to be declines.
+      //
+      // Eleven of the twelve 3.6.0 RTC drivers answer both with
+      // SYSCHKERR(ERR_NOTIMPL) and touch nothing - simrtc.asm:86 among them,
+      // and simrtc is the driver BF_RTCDEVICE now names.  The twelfth,
+      // ds1501rtc.asm:326-350, moves the whole 256-byte NVRAM with LD B,0/INIR.
+      //
+      // This moved FIVE bytes - the switch block - and reported success, which
+      // is neither: a guest asking for the NVRAM block got the four switch
+      // bytes and a checksum, in a call whose contract is the whole device's
+      // memory. If block access is ever wanted here, the thing to model is the
+      // whole NVRAM, not the part that happens to be modelled already.
+      result = HBR_NOTIMPL;
       break;
-    }
-
-    case HBF_RTCSETBLK: {
-      // Set NVRAM data block
-      // Input: HL = buffer address with 5 bytes of NVRAM data
-      uint16_t buffer = cpu->regs.HL.get_pair16();
-      for (int i = 0; i < NVRAM_SIZE; i++) {
-        nvram_switches[i] = memory->fetch_mem((uint16_t)(buffer + i));
-      }
-      // Recalculate checksum to ensure consistency
-      recalcNvramChecksum();
-      if (debug_log) {
-        emu_log("[RTC SETBLK] <- buffer at 0x%04X: %02X %02X %02X %02X %02X\n",
-                buffer, nvram_switches[0], nvram_switches[1],
-                nvram_switches[2], nvram_switches[3], nvram_switches[4]);
-      }
-      break;
-    }
 
     case HBF_RTCDEVICE: {
-      // RTC device info report
-      // Output: C = device type (0x40 = emulated), DE = device data address
-      cpu->regs.BC.set_low(0x40);  // Emulated RTC
-      cpu->regs.DE.set_pair16(0x0000);  // No device data
+      // D := device type, E := physical device number, H := unit mode,
+      // L := base I/O address, and C is left alone - every driver writes those
+      // four and none of them touches C.  dsrtc.asm:413-419 is the shape:
+      //
+      //     LD D,RTCDEV_DS / LD E,0 / LD H,DSRTCMODE / LD L,DSRTC_IO / XOR A
+      //
+      // This put a device type in C - which is the attribute byte, not the type
+      // - and zeroed DE, so the type read as 0 (RTCDEV_DS, a DS1302) and H and
+      // L came back holding the caller's own register.  $40 is not in the
+      // RTCDEV_* table at all (hbios.inc:435-442 runs $00 to $07).
+      //
+      // RTCDEV_SIMH ($02) is the honest entry: it is the simulator's clock, and
+      // it is what a guest can act on.  No modes and no I/O port, so H = L = 0.
+      cpu->regs.DE.set_high(0x02);   // D := RTCDEV_SIMH
+      cpu->regs.DE.set_low(0x00);    // E := device number
+      cpu->regs.HL.set_pair16(0x0000);  // H := no modes, L := no I/O base
       break;
     }
 
+    case HBF_RTCGETALM:
+    case HBF_RTCSETALM:
+      // DEFINED, AND DECLINED - which is a different answer from "no such
+      // function".  Every 3.6.0 driver answers these two with
+      // SYSCHKERR(ERR_NOTIMPL) = -2 (dsrtc.asm:299-302 and its ten siblings),
+      // and keeps ERR_NOFUNC = -3 for a subfunction outside 0-8.  They were
+      // reaching the default arm below and answering -3, so a guest probing for
+      // alarm support could not tell "this clock has no alarm" from "that is
+      // not a function".
+      result = HBR_NOTIMPL;
+      break;
+
     default:
-      // As for VDA and SND: report it rather than returning the caller's own
-      // registers with a success status. BF_RTCGETALM and BF_RTCSETALM land
-      // here, and an alarm call that "succeeds" and sets nothing is worse than
-      // one that says it is not implemented.
+      // Report it rather than returning the caller's own registers with a
+      // success status.
       emu_log("[HBIOS RTC] Unhandled function 0x%02X\n", func);
       result = HBR_NOFUNC;
       break;
@@ -1705,7 +1986,19 @@ void HBIOSDispatch::handleSYS() {
           return;
         }
       }
-      // Other reset types or no callback - just return success
+      // C MUST BE 0, 1, 2 OR 3.  SYS_RESET compares against the four
+      // BF_SYSRES_* codes and falls through to ERR_NOFUNC for anything else
+      // (hbios.asm:5721-5732, hbios.inc:108-111).  Every value 4-255 was
+      // reported as a successful reset here.
+      //
+      // $03 is the user reset: RomWBW resets the active video display through
+      // TERM_RESET and returns with HL still holding the vector the caller
+      // passed.  There is no addressable display here - the video is the host
+      // terminal - so it is accepted and does nothing to the screen, which is
+      // what a driver with no adjustable display does.
+      if (reset_type > 0x03) {
+        result = HBR_NOFUNC;
+      }
       break;
     }
 
@@ -1802,6 +2095,22 @@ void HBIOSDispatch::handleSYS() {
           memory->write_bank(actual_dst_bank, actual_dst_addr, byte);
         }
       }
+
+      // HL and DE come back ADVANCED PAST THE BLOCK, and that is the whole
+      // point of the function's documented usage:
+      //
+      //   "it is not necessary to call SYSSETCPY prior to subsequent calls to
+      //    SYSBNKCPY if the source/destination banks and copy length do not
+      //    [change]"   - Source/Doc/SystemGuide.md, Function 0xF5
+      //
+      // whose table reads "HL: New Source Address" and "DE: New Destination
+      // Address". A caller walking a large region with one SYSSETCPY and a run
+      // of SYSBNKCPYs is the intended shape, and this returned HL and DE
+      // unchanged - so every call after the first copied the SAME block again,
+      // for ever, and the region past the first `count` bytes was never
+      // written. Found 2026-09-18 by reading the manual against this loop.
+      cpu->regs.HL.set_pair16((uint16_t)(src_addr + count));
+      cpu->regs.DE.set_pair16((uint16_t)(dst_addr + count));
       break;
     }
 
@@ -1820,9 +2129,25 @@ void HBIOSDispatch::handleSYS() {
                 alloc_count, size, size, heap_ptr, heap_end - heap_ptr);
       }
 
-      if (heap_ptr + size <= heap_end) {
-        uint16_t addr = heap_ptr;
-        heap_ptr += size;
+      // EVERY ALLOCATION COSTS size + 4.  HB_ALLOC puts a four-byte header in
+      // front of the block - "A 4 BYTE HEADER IS PLACED IN FRONT OF THE
+      // ALLOCATED MEMORY" (hbios.asm:7536-7541) - holding the requested size
+      // and the caller's return address, and hands back a pointer PAST it.
+      // Charging only `size` meant this reported more free heap than RomWBW
+      // has, so a guest sizing its allocations against BF_SYSGET/MEMINFO could
+      // fit things here that will not fit on real hardware.
+      const uint16_t ALLOC_HDR = 4;
+      if ((uint32_t)heap_ptr + size + ALLOC_HDR <= heap_end) {
+        uint16_t addr = (uint16_t)(heap_ptr + ALLOC_HDR);
+        // The header itself: the size word, then the reference address, which
+        // has no meaningful value here.
+        if (memory) {
+          memory->write_bank(0x80, heap_ptr, (uint8_t)(size & 0xFF));
+          memory->write_bank(0x80, (uint16_t)(heap_ptr + 1), (uint8_t)(size >> 8));
+          memory->write_bank(0x80, (uint16_t)(heap_ptr + 2), 0);
+          memory->write_bank(0x80, (uint16_t)(heap_ptr + 3), 0);
+        }
+        heap_ptr = (uint16_t)(heap_ptr + size + ALLOC_HDR);
         cpu->regs.HL.set_pair16(addr);
         // Set flags: Z=1 (success), C=0 (no error)
         cpu->regs.AF.set_low(qkz80_cpu_flags::Z);
@@ -1859,7 +2184,7 @@ void HBIOSDispatch::handleSYS() {
       switch (subfunc) {
         case SYSGET_CIOCNT:
           // Number of CIO devices
-          cpu->regs.DE.set_low(1);  // 1 console
+          cpu->regs.DE.set_low(CIO_UNIT_COUNT);
           break;
 
         case SYSGET_DIOCNT: {
@@ -1883,15 +2208,15 @@ void HBIOSDispatch::handleSYS() {
         }
 
         case SYSGET_VDACNT:
-          cpu->regs.DE.set_low(1);  // 1 VDA
+          cpu->regs.DE.set_low(VDA_UNIT_COUNT);
           break;
 
         case SYSGET_SNDCNT:
-          cpu->regs.DE.set_low(1);  // 1 sound device
+          cpu->regs.DE.set_low(SND_UNIT_COUNT);
           break;
 
         case SYSGET_RTCCNT:
-          cpu->regs.DE.set_low(1);  // 1 RTC device
+          cpu->regs.DE.set_low(RTC_UNIT_COUNT);
           break;
 
         case SYSGET_DSKYCNT:
@@ -1899,9 +2224,15 @@ void HBIOSDispatch::handleSYS() {
           break;
 
         case SYSGET_BOOTINFO:
-          // Boot info: D = boot unit, E = boot slice (saved during SYSBOOT)
+          // D = boot unit, E = boot slice, AND L = boot bank id.  L was never
+          // written, so a caller reading it got back whatever it had passed in
+          // - and upstream's answer is three registers:
+          //
+          //     LD A,(CB_BOOTBID) / LD L,A / LD DE,(CB_BOOTVOL)
+          //                                   - hbios.asm:6253-6258
           cpu->regs.DE.set_high((uint8_t)saved_boot_unit);
           cpu->regs.DE.set_low((uint8_t)saved_boot_slice);
+          cpu->regs.HL.set_low((uint8_t)saved_boot_bank);
           if (debug_log) {
             emu_log("[SYSGET BOOTINFO] Returning D=%d (unit), E=%d (slice)\n",
                     saved_boot_unit, saved_boot_slice);
@@ -1940,36 +2271,38 @@ void HBIOSDispatch::handleSYS() {
             }
             doRet();
             return;  // Return early to preserve A register
-          } else if (switch_num == NVSW_BOOTOPTS) {
-            // Boot options: L=app char or slice, H=flags+unit
-            cpu->regs.HL.set_low(nvram_switches[1]);   // L = app char or slice
-            cpu->regs.HL.set_high(nvram_switches[2]);  // H = BOPTS_ROM | unit
+          }
+
+          // SWITCH_RES is the whole of the rule, and it is a TABLE (hbios.asm:
+          // 6490-6521).  SWITCH_TAB is {0, 2, 0, 1, 0} and SWITCH_LEN is
+          // `$ - SWITCH_TAB - 2` = 3, so:
+          //
+          //   D = 0   the 'W' signature byte      1 byte read, table says 0
+          //   D = 1   boot options                2 bytes: L := [1], H := [2]
+          //   D = 2   the second boot-options byte 1 byte
+          //   D = 3   autoboot                    1 byte
+          //   D >= 4  SWITCH_RES1: A := $FF, NZ   (byte 4 is the checksum)
+          //
+          // and the read itself is "C := (HL); if E > 1 then HL++, B := (HL)",
+          // so the table entry decides the width and everything else comes back
+          // with a zero high byte.
+          //
+          // This handled 1 and 3 only and answered every other key with HL = 0
+          // and SUCCESS - so 0 and 2, which are real, read as zero, and 4-254,
+          // which RomWBW rejects, read as zero too.  A caller could not tell a
+          // switch that is off from one that does not exist.
+          if (switch_num > SWITCH_LEN) {
+            result = HBR_UNDEF;   // SWITCH_RES1: OR $FF
+            break;
+          }
+          {
+            static const uint8_t SWITCH_TAB[SWITCH_LEN + 2] = {0, 2, 0, 1, 0};
+            uint8_t width = SWITCH_TAB[switch_num];
+            cpu->regs.HL.set_low(nvram_switches[switch_num]);
+            cpu->regs.HL.set_high(width > 1 ? nvram_switches[switch_num + 1] : 0);
             if (debug_log) {
-              bool is_rom = (nvram_switches[2] & BOPTS_ROM) != 0;
-              if (is_rom) {
-                emu_log("[SYSGET_SWITCH] BOOTOPTS: ROM app '%c' (H=0x%02X L=0x%02X)\n",
-                        nvram_switches[1], nvram_switches[2], nvram_switches[1]);
-              } else {
-                emu_log("[SYSGET_SWITCH] BOOTOPTS: Disk unit=%d slice=%d (H=0x%02X L=0x%02X)\n",
-                        nvram_switches[2] & BOPTS_UNIT, nvram_switches[1],
-                        nvram_switches[2], nvram_switches[1]);
-              }
-            }
-          } else if (switch_num == NVSW_AUTOBOOT) {
-            // Autoboot settings: L=flags+timeout
-            cpu->regs.HL.set_low(nvram_switches[3]);
-            cpu->regs.HL.set_high(0);
-            if (debug_log) {
-              bool auto_enabled = (nvram_switches[3] & ABOOT_AUTO) != 0;
-              int timeout = nvram_switches[3] & ABOOT_TIMEOUT;
-              emu_log("[SYSGET_SWITCH] AUTOBOOT: %s, timeout=%d sec (L=0x%02X)\n",
-                      auto_enabled ? "ENABLED" : "DISABLED", timeout, nvram_switches[3]);
-            }
-          } else {
-            // Unknown switch number - return 0
-            cpu->regs.HL.set_pair16(0);
-            if (debug_log) {
-              emu_log("[SYSGET_SWITCH] Unknown switch %d, returning 0\n", switch_num);
+              emu_log("[SYSGET_SWITCH] switch %u -> HL=0x%04X\n",
+                      switch_num, cpu->regs.HL.get_pair16());
             }
           }
           break;
@@ -2000,7 +2333,7 @@ void HBIOSDispatch::handleSYS() {
         case SYSGET_SECS: {
           // DE:HL := seconds, C := ticks elapsed within the current second.
           uint32_t ticks = currentTicks();
-          uint32_t secs = ticks / TICKFREQ;
+          uint32_t secs = currentSecs();
           cpu->regs.DE.set_pair16((uint16_t)(secs >> 16));
           cpu->regs.HL.set_pair16((uint16_t)(secs & 0xFFFF));
           cpu->regs.BC.set_low((uint8_t)(ticks % TICKFREQ));
@@ -2030,12 +2363,15 @@ void HBIOSDispatch::handleSYS() {
           break;
 
         case SYSGET_CPUSPD:
-          // L = speed (1 = full), DE = wait states. RomWBW's SBC path ends
-          // "LD DE,$FFFF ; UNKNOWN WAIT STATES" and DE was not being set at all,
-          // so the caller read back its own input as a wait-state count.
-          cpu->regs.HL.set_high(0);
-          cpu->regs.HL.set_low(1);          // Full speed
-          cpu->regs.DE.set_pair16(0xFFFF);  // Wait states unknown
+          // THE STOCK ROMS DO NOT ANSWER THIS.  SYS_GETCPUSPD (hbios.asm:6310)
+          // has three conditional arms - a platform with switchable speed, the
+          // Heath, and a Z180 - and the two ROMs this emulator is built over,
+          // SBC_simh_std and RCZ80_std, match none of them, so it falls past
+          // every one and returns A = $FF with NZ, leaving HL and DE alone.
+          //
+          // Reporting "full speed, wait states unknown" with SUCCESS was an
+          // answer real hardware running this ROM does not give.
+          result = HBR_UNDEF;   // OR $FF
           break;
 
         case SYSGET_PANEL:
@@ -2088,12 +2424,48 @@ void HBIOSDispatch::handleSYS() {
           break;
         }
 
+        case 0x12: {
+          // THE LEGACY SLICE CALL, AND OS BOOT LOADERS DEPEND ON IT.
+          //
+          // The slice calculation moved to the top level as BF_EXTSLICE ($E0) -
+          // hbios.inc still records where from: "BF_EXTSLICE .EQU BF_EXT + 0 ;
+          // SLICE CALCULATION (WAS BF_SYSGET_DIOMED)" - and upstream kept the
+          // old spelling routed, saying why at hbios.asm:5987-5991:
+          //
+          //     CP  $12         ; LEFT FOR BACKWRD COMPATABILITY
+          //     JP  Z,EXT_SLICE ; FUNCTION MOVED TO TOP LEVEL $E0
+          //     ; REMOVING THE ABOVE CAUSED UPGRADE ISSUES FOR EARLY ADOPTERS
+          //     ; SINCE OS BOOT LOADERS DEPEND ON IT. WITHOUT CAN LEAVE OS
+          //     ; UNBOOTABLE AND MIGRATION HARDER - Oct 2024
+          //
+          // This dispatcher had no case for it and it fell to the default arm.
+          // While that arm answered success with E = 0 the symptom was a loader
+          // computing a slice offset of zero; now that the arm is an honest
+          // ERR_NOFUNC it would be a loader that fails outright. Upstream's fix
+          // is the right one either way: send it to the same code.
+          //
+          // Delegated by rewriting B rather than by lifting the body out of
+          // handleEXT: the inputs are the same registers on both paths, so this
+          // is exactly upstream's `JP EXT_SLICE`, and handleEXT does its own
+          // setResult() and doRet().
+          cpu->regs.BC.set_high(HBF_EXTSLICE);
+          handleEXT();
+          return;
+        }
+
         default:
-          // Always log unhandled SYSGET calls to help debug
+          // AN UNKNOWN SUBFUNCTION IS AN ERROR.  This answered E=0 and left the
+          // status at HBR_SUCCESS, on the reasoning that zero is a "safe
+          // default for count-type queries".  It is the opposite of safe: a
+          // caller asking how many of something there are, and being told
+          // "none, successfully", cannot tell that from a real zero and has no
+          // way to discover the function is missing.  It is the same failure
+          // this dispatcher has been bitten by in the VDA, SND and CIO groups,
+          // and RomWBW's own dispatcher returns ERR_NOFUNC for a subfunction
+          // it does not have.
           emu_log("[HBIOS SYSGET] Unhandled subfunction 0x%02X (DE=0x%04X HL=0x%04X)\n",
                   subfunc, cpu->regs.DE.get_pair16(), cpu->regs.HL.get_pair16());
-          // Return E=0 as safe default for count-type queries
-          cpu->regs.DE.set_low(0);
+          result = HBR_NOFUNC;
           break;
       }
       break;
@@ -2139,14 +2511,19 @@ void HBIOSDispatch::handleSYS() {
           // keeping a counter - the clock stays monotonic either way.
           uint32_t want = ((uint32_t)cpu->regs.DE.get_pair16() << 16) |
                           cpu->regs.HL.get_pair16();
+          // Setting the ticks must not move the seconds: they are two counters
+          // upstream, coupled only by the ISR.  See setSecs() in the header.
+          uint32_t secs_before = currentSecs();
           setTicks(want);
+          setSecs(secs_before);
           break;
         }
 
         case SYSSET_SECS: {
           uint32_t want = ((uint32_t)cpu->regs.DE.get_pair16() << 16) |
                           cpu->regs.HL.get_pair16();
-          setTicks(want * TICKFREQ);
+          // No multiply, so no overflow, and the tick count is left alone.
+          setSecs(want);
           break;
         }
 
@@ -2167,46 +2544,75 @@ void HBIOSDispatch::handleSYS() {
             if (debug_log) {
               emu_log("[SYSSET_SWITCH] RESET to defaults\n");
             }
-          } else if (switch_num == NVSW_BOOTOPTS) {
-            // Set boot options: L=app char/slice, H=flags+unit
-            nvram_switches[0] = 'W';  // Ensure initialized
-            nvram_switches[1] = cpu->regs.HL.get_low();   // App char or slice
-            nvram_switches[2] = cpu->regs.HL.get_high();  // BOPTS_ROM | unit
-            recalcNvramChecksum();
-            if (debug_log) {
-              bool is_rom = (nvram_switches[2] & BOPTS_ROM) != 0;
-              if (is_rom) {
-                emu_log("[SYSSET_SWITCH] BOOTOPTS: ROM app '%c' (H=0x%02X L=0x%02X)\n",
-                        nvram_switches[1], nvram_switches[2], nvram_switches[1]);
-              } else {
-                emu_log("[SYSSET_SWITCH] BOOTOPTS: Disk unit=%d slice=%d (H=0x%02X L=0x%02X)\n",
-                        nvram_switches[2] & BOPTS_UNIT, nvram_switches[1],
-                        nvram_switches[2], nvram_switches[1]);
-              }
-            }
-          } else if (switch_num == NVSW_AUTOBOOT) {
-            // Set autoboot: L=flags+timeout
-            nvram_switches[0] = 'W';  // Ensure initialized
-            nvram_switches[3] = cpu->regs.HL.get_low();
-            recalcNvramChecksum();
-            if (debug_log) {
-              bool auto_enabled = (nvram_switches[3] & ABOOT_AUTO) != 0;
-              int timeout = nvram_switches[3] & ABOOT_TIMEOUT;
-              emu_log("[SYSSET_SWITCH] AUTOBOOT: %s, timeout=%d sec (L=0x%02X)\n",
-                      auto_enabled ? "ENABLED" : "DISABLED", timeout, nvram_switches[3]);
-            }
           } else {
+            // THREE PRECONDITIONS, and none of them was here.  SYS_SETSWITCH
+            // (hbios.asm:6457-6482) is, in order:
+            //
+            //   1. CB_SWITCHES == 0 -> SWITCH_RES1, A := $FF.  No NVRAM at all.
+            //      There is always NVRAM here, so this cannot fire.
+            //   2. D == $FF -> NVSW_RESET.  Handled above; it is the ONLY path
+            //      that may run against an uninitialised block.
+            //   3. CALL SYS_GETSWITCH3 / RET NZ - the block must already read
+            //      'W'.  A set before a reset is refused, and the caller has to
+            //      reset first.
+            //   4. CALL SWITCH_RES / RET NZ - the switch number must be in the
+            //      table, so 4 and up are refused.
+            //
+            // Both arms below instead assigned `nvram_switches[0] = 'W'` with
+            // the comment "Ensure initialized", so the first set of any switch
+            // quietly initialised the block - the one thing RomWBW refuses -
+            // and every unknown switch number reported success having written
+            // nothing.
+            if (nvram_switches[0] != 'W') {
+              // SYS_GETSWITCH3 returns the status byte and the NZ flag, and
+              // upstream's two failing values are $FF (CB_SWITCHES == 0, no
+              // NVRAM at all) and 1 (present, not configured).
+              //
+              // Answer 1, NOT the raw byte.  This emulator stores "not
+              // configured" as a zero byte, and zero through setResult() is
+              // A = 0 with Z set - which reads as SUCCESS.  The SYSGET $FF arm
+              // above already translates the same state to 1 for the same
+              // reason, and says so: "A=0 means no NVRAM hardware, A=1 means
+              // present but uninitialized". There is always NVRAM here, so 1 is
+              // the only honest answer.
+              result = 1;
+              break;
+            }
+            if (switch_num > SWITCH_LEN) {
+              result = HBR_UNDEF;   // SWITCH_RES1: OR $FF
+              break;
+            }
+            static const uint8_t SWITCH_TAB[SWITCH_LEN + 2] = {0, 2, 0, 1, 0};
+            uint8_t width = SWITCH_TAB[switch_num];
+            nvram_switches[switch_num] = cpu->regs.HL.get_low();
+            if (width > 1) {
+              nvram_switches[switch_num + 1] = cpu->regs.HL.get_high();
+            }
+            // NVSW_UPDATE: the checksum is recomputed by the CALLER of the
+            // driver's write, not by the write itself (hbios.asm:8156-8174).
+            recalcNvramChecksum();
             if (debug_log) {
-              emu_log("[SYSSET_SWITCH] Unknown switch %d, ignoring\n", switch_num);
+              emu_log("[SYSSET_SWITCH] switch %u := 0x%04X (%u byte(s))\n",
+                      switch_num, cpu->regs.HL.get_pair16(), width ? width : 1);
             }
           }
           break;
         }
+
         case SYSSET_BOOTINFO: {
           // Set boot volume info (called by romldr/CPMLDR before loading OS)
           // D = boot unit, E = boot slice, L = bank (always 0)
           saved_boot_unit = cpu->regs.DE.get_high();
           saved_boot_slice = cpu->regs.DE.get_low();
+          // L is the BOOT BANK ID and it was being dropped on the floor, even
+          // though the comment beside it named the register.  Upstream
+          // (hbios.asm:6528-6533) is three stores, not two:
+          //
+          //     LD A,L / LD (CB_BOOTBID),A / LD (CB_BOOTVOL),DE
+          //
+          // CB_BOOTBID is HCB offset $0F (emu_hbios.asm:143 has the field), so
+          // 0x010F beside the CB_BOOTVOL pair written below.
+          saved_boot_bank = cpu->regs.HL.get_low();
           // Update CB_BOOTVOL in HCB at 0x010D. CBIOS may read this from ROM bank 0
           // (which uses shadow RAM) or from RAM bank 0x80. Write via ROM bank 0 mode
           // to set shadow bits, ensuring reads from either path get the updated value.
@@ -2214,6 +2620,7 @@ void HBIOSDispatch::handleSYS() {
           memory->select_bank(0x00);  // ROM bank 0 - writes go to shadow RAM + set shadow bit
           memory->store_mem(0x010D, (uint8_t)saved_boot_slice);  // CB_BOOTVOL low byte
           memory->store_mem(0x010E, (uint8_t)saved_boot_unit);   // CB_BOOTVOL high byte
+          memory->store_mem(0x010F, (uint8_t)saved_boot_bank);   // CB_BOOTBID
           memory->select_bank(saved_bank);  // Restore previous bank
           if (debug_log) {
             emu_log("[SYSSET BOOTINFO] unit=%d slice=%d -> CB_BOOTVOL=0x%02X%02X\n",
@@ -2222,16 +2629,38 @@ void HBIOSDispatch::handleSYS() {
           break;
         }
         default:
+          // As with SYSGET above: a set that did not happen must not report
+          // success.  SETCPUSPD and SETPANEL both landed here, so a guest that
+          // asked for a speed change or a front-panel write was told it took.
           if (debug_log) {
             emu_log("[HBIOS SYSSET] Unhandled subfunction 0x%02X\n", subfunc);
           }
+          result = HBR_NOFUNC;
           break;
       }
       break;
     }
 
     case HBF_SYSINT: {
-      // Interrupt management - just return success
+      // Interrupt management.  This was "just return success" with no registers
+      // written at all, for every subfunction.
+      //
+      // INTINFO ($00) and INTGET ($10) are QUERIES - the caller reads an answer
+      // out of registers this never set, so it got its own inputs back and was
+      // told they were data.  INTSET ($20) is documented to return the PREVIOUS
+      // vector in HL (SystemGuide.md, SYSINT), which a caller needs in order to
+      // chain to it; answering success without it loses the old handler.
+      //
+      // There is no interrupt vector table to hand out here: the periodic tick
+      // is driven by the emulator, not by a guest-installed ISR, so there is no
+      // honest value for any of the three.  Decline by name instead of
+      // pretending, which is what every other unimplemented function in this
+      // file now does.
+      if (debug_log) {
+        emu_log("[HBIOS SYSINT] subfunction 0x%02X declined\n",
+                cpu->regs.DE.get_low());
+      }
+      result = HBR_NOTIMPL;
       break;
     }
 
@@ -2286,6 +2715,25 @@ void HBIOSDispatch::handleVDA() {
   uint8_t func = cpu->regs.BC.get_high();
   uint8_t result = HBR_SUCCESS;
 
+  // THE UNIT NUMBER IN C IS CHECKED FIRST, and against a count.
+  //
+  // Every group in RomWBW reaches its driver through HB_DISPCALC, whose first
+  // act is "LD A,C / CP (IY-1) / JR NC,HB_UNITERR" (hbios.asm:7448-7452) -
+  // compare the unit against the count, and answer ERR_NOUNIT if it is not
+  // there.  Nothing here checked it at all, so every unit 0-255 was served by
+  // the one device this emulator has and told it had succeeded: writing to a
+  // second serial port printed on the console, reading from one ate the user's
+  // keystrokes, and a program enumerating units until ERR_NOUNIT never stopped.
+  //
+  // The count is the one BF_SYSGET reports for the group; see hbios_dispatch.h.
+  // No substitution for this group: VDA_DISPATCH (hbios.asm:5086) goes straight
+  // to HB_DISPCALL with no special unit codes.
+  if (cpu->regs.BC.get_low() >= VDA_UNIT_COUNT) {
+    setResult(HBR_NOUNIT);
+    doRet();
+    return;
+  }
+
   switch (func) {
     case HBF_VDARES:
       // Reset is not initialise. vdu.asm puts the clear-and-home on VDAINI and
@@ -2296,7 +2744,8 @@ void HBIOSDispatch::handleVDA() {
     case HBF_VDAINI:
       vda_cursor_row = 0;
       vda_cursor_col = 0;
-      vda_attr = 0x07;
+      vda_color = 0x07;
+  vda_rub = 0x00;
       emu_video_clear();
       emu_video_set_cursor(0, 0);  // Sync Swift cursor
       break;
@@ -2351,20 +2800,26 @@ void HBIOSDispatch::handleVDA() {
       break;
     }
 
+    // ATTRIBUTE AND COLOUR ARE TWO PIECES OF STATE, not one.
+    //
+    // VDASAT's E is a reverse/underline/blink bitmap and VDASCO's D and E are
+    // foreground and background.  Both used to assign the same `vda_attr`, so
+    // setting the colour cleared reverse-video and setting reverse-video
+    // replaced the colours with a bitmap read as a colour pair.  A guest that
+    // does the documented thing - pick colours once, then turn reverse on and
+    // off around a highlighted field - lost its colours on the first toggle.
     case HBF_VDASAT: {
-      // Set attribute
-      vda_attr = cpu->regs.DE.get_low();
-      emu_video_set_attr(vda_attr);
+      vda_rub = cpu->regs.DE.get_low();
+      emu_video_set_attr(vdaAttrByte());
       break;
     }
 
     case HBF_VDASCO: {
-      // Set color
       // D = foreground, E = background (CGA 16-color)
       uint8_t fg = cpu->regs.DE.get_high();
       uint8_t bg = cpu->regs.DE.get_low();
-      vda_attr = (uint8_t)((bg << 4) | (fg & 0x0F));
-      emu_video_set_attr(vda_attr);
+      vda_color = (uint8_t)((bg << 4) | (fg & 0x0F));
+      emu_video_set_attr(vdaAttrByte());
       break;
     }
 
@@ -2427,8 +2882,14 @@ void HBIOSDispatch::handleVDA() {
     }
 
     case HBF_VDASCR: {
-      // Scroll
-      int lines = cpu->regs.DE.get_low();
+      // E IS SIGNED.  SystemGuide.md, Function 0x4B: "If Lines (E) is positive,
+      // then a forward scroll is performed.  If Lines (E) contains a negative
+      // number, then a reverse scroll will be performed."
+      //
+      // get_low() is an unsigned byte, so E = $FF - a one-line reverse scroll,
+      // which is how a full-screen editor scrolls back - arrived here as 255
+      // and asked for 255 lines of forward scroll.
+      int lines = (int)(int8_t)cpu->regs.DE.get_low();
       emu_video_scroll_up(lines);
       break;
     }
@@ -2482,14 +2943,55 @@ void HBIOSDispatch::handleVDA() {
       // ^Z, the same end-of-file marker CIOIN hands back.
       if (ch < 0) ch = 0x1A;
       cpu->regs.DE.set_low(ch & 0xFF);
+      // Three values, not one: E is the keycode, D the keystate bitmap (shift,
+      // ctrl, alt, the lock keys) and C the scancode.  A driver with no
+      // scancode support returns ZERO in C rather than leaving it, and the same
+      // for D - leaving them hands the caller its own registers back as though
+      // they were modifier state.  There is no scancode and no modifier
+      // information behind a host terminal, so zero is the honest answer.
+      cpu->regs.DE.set_high(0x00);   // D := no keystate
+      cpu->regs.BC.set_low(0x00);    // C := no scancode
       waiting_for_input = false;
       idle_poll_count = 0;
       break;
     }
 
+    case HBF_VDASCS:
+      // Set cursor style, from the two nibbles of D.  A device with no
+      // adjustable cursor still SUCCEEDS - tvga.asm is the precedent - so this
+      // accepts it and does nothing.  It had no case, and an unhandled VDA
+      // function is the failure mode the VDADEV comment above describes at
+      // length: success with the caller's own registers.
+      break;
+
+    case HBF_VDAKFL:
+      // Flush the keyboard buffer.  Real, cheap, and it was answering
+      // ERR_NOFUNC for a function every driver implements.
+      while (emu_console_has_input()) {
+        (void)emu_console_read_char();
+      }
+      break;
+
+    case HBF_VDACPY:
+      // Copy Count (L) cells from the row/col in D/E to the cursor position,
+      // without moving the cursor.  It needs to READ cells back, and emu_io.h
+      // has emu_video_write_char_at() with no read twin - the video here is the
+      // host terminal, which this process cannot interrogate.  Decline by name
+      // rather than silently copy nothing.
+      result = HBR_NOTIMPL;
+      break;
+
     case HBF_VDARDC: {
-      // Read character at cursor - return space (not implemented)
-      cpu->regs.DE.set_low(' ');
+      // Read the character AT the cursor.  This answered a hard-coded space
+      // with SUCCESS and set neither B (colour) nor C (attribute), so a guest
+      // reading the screen back got a blank display it was told was real, and
+      // two registers of its own.
+      //
+      // There is nothing to read from: emu_io.h has emu_video_write_char_at()
+      // and no read-back, and the video here is the host terminal, which this
+      // process cannot interrogate.  So decline, the way every other function
+      // without an answer now does, rather than invent one.
+      result = HBR_NOTIMPL;
       break;
     }
 
@@ -2517,54 +3019,83 @@ void HBIOSDispatch::handleSND() {
   if (!cpu) return;
 
   uint8_t func = cpu->regs.BC.get_high();
-  uint8_t channel = cpu->regs.BC.get_low();
+  // C IS THE SOUND UNIT, NOT A CHANNEL.  Every function in this group takes it
+  // and this dispatcher used it as a channel index for the three setters and
+  // for play.  SystemGuide.md is unambiguous - "C: Sound Unit" on all eight
+  // tables - and its worked example is the clearest statement of the model:
+  //
+  //     HBIOS B=51 C=00 L=80      ; Set volume to half level
+  //     HBIOS B=53 C=00 HL=152    ; Select Middle C (C4)
+  //     HBIOS B=54 C=00 D=01      ; Play note on Channel 1
+  //
+  // One unit, one pending volume and pitch, and the CHANNEL named at play time
+  // in D.
   uint8_t result = HBR_SUCCESS;
+
+  // THE UNIT NUMBER IN C IS CHECKED FIRST, and against a count.
+  //
+  // Every group in RomWBW reaches its driver through HB_DISPCALC, whose first
+  // act is "LD A,C / CP (IY-1) / JR NC,HB_UNITERR" (hbios.asm:7448-7452) -
+  // compare the unit against the count, and answer ERR_NOUNIT if it is not
+  // there.  Nothing here checked it at all, so every unit 0-255 was served by
+  // the one device this emulator has and told it had succeeded: writing to a
+  // second serial port printed on the console, reading from one ate the user's
+  // keystrokes, and a program enumerating units until ERR_NOUNIT never stopped.
+  //
+  // The count is the one BF_SYSGET reports for the group; see hbios_dispatch.h.
+  if (cpu->regs.BC.get_low() >= SND_UNIT_COUNT) {
+    setResult(HBR_NOUNIT);
+    doRet();
+    return;
+  }
 
   switch (func) {
     case HBF_SNDRESET:
+      // Silence what is sounding, not merely forget it.  Zeroing the arrays
+      // left a tone already handed to the front end playing on, because
+      // nothing told the front end anything had changed.
       for (int i = 0; i < 4; i++) {
         snd_volume[i] = 0;
         snd_period[i] = 0;
+        emu_snd_emit_tone(i, 0, 0, 0);
       }
+      snd_pending_volume = 0;
+      snd_pending_period = 0;
       snd_duration = 0;
       break;
 
-    // The three setters below all read the WRONG REGISTER. hbios.inc is
-    // explicit about each - "BF_SNDVOL ... L CONTAINS VOLUME", "BF_SNDPRD ...
-    // HL CONTAINS DRIVER SPECIFIC VALUE", "BF_SNDNOTE ... L CONTAINS NOTE" -
-    // and all three were reading E or DE, so a guest setting a note set
-    // nothing and a guest setting a volume set whatever happened to be in E.
-    //
-    // Nothing is audible either way: snd_volume and snd_period are stored and
-    // never read outside this file, because there is no emitter. That is why
-    // this went unnoticed, and it is exactly the reason to fix it now rather
-    // than when one is added.
+    // The three setters preset the UNIT's pending sound.  hbios.inc is explicit
+    // about which register each reads - "BF_SNDVOL ... L CONTAINS VOLUME",
+    // "BF_SNDPRD ... HL CONTAINS DRIVER SPECIFIC VALUE", "BF_SNDNOTE ...
+    // CONTAINS NOTE" - and all three were reading E or DE before 2026-09.
     case HBF_SNDVOL:
-      if (channel < 4) {
-        snd_volume[channel] = cpu->regs.HL.get_low();
-      }
+      snd_pending_volume = cpu->regs.HL.get_low();
       break;
 
     case HBF_SNDPRD:
-      if (channel < 4) {
-        snd_period[channel] = cpu->regs.HL.get_pair16();
-      }
+      snd_pending_period = cpu->regs.HL.get_pair16();
       break;
 
     case HBF_SNDNOTE: {
-      // L is a note index in EIGHTH TONES - 48 steps to the octave, four to a
-      // semitone. It is NOT a MIDI note number, which is what the equal
-      // tempered 440 * 2^((n-69)/12) here assumed, and which would have put
-      // every note in the wrong place by a growing margin.
-      uint8_t note = cpu->regs.HL.get_low();
-      if (channel < 4) {
-        int octave = note / 48;
-        int step = note % 48;
-        // A4 = 440Hz sits at step 9 of octave 4 in this scale.
-        double semitones = (octave - 4) * 12.0 + (step / 4.0) - 9.0;
-        double freq = 440.0 * pow(2.0, semitones / 12.0);
-        snd_period[channel] = freq > 0 ? (uint16_t)(1000000.0 / freq) : 0;
-      }
+      // HL, not L: SystemGuide.md's table is "HL: Note" and its own note table
+      // runs to 340 for B7, which does not fit in a byte.  hbios.inc's older
+      // comment says L and is the looser of the two.
+      //
+      // The scale is eighth tones - 8 to a whole tone, 48 to an octave, so 4 to
+      // a semitone - and ITS ZERO IS A#0/Bb0, which the table states outright
+      // ("The value 0 corresponds to Bb/A# in octave 0") and which its columns
+      // confirm: C4 = 152, A4 = 188.  This assumed A4 sat at step 9 of octave
+      // 4 under a plain note/48 split, which put A4 at 246Hz and everything
+      // else wrong by a growing margin.
+      //
+      // A4 = 188 is the anchor, so freq = 440 * 2^((note - 188) / 48).
+      uint16_t note = cpu->regs.HL.get_pair16();
+      double freq = 440.0 * pow(2.0, ((double)note - 188.0) / 48.0);
+      // Stored as a period in microseconds, which is what BF_SNDPLAY converts
+      // back to a frequency.  Clamped so a very low note cannot overflow it.
+      double period_us = freq > 0 ? (1000000.0 / freq) : 0;
+      snd_pending_period = period_us > 65535.0 ? 65535
+                         : (uint16_t)period_us;
       break;
     }
 
@@ -2572,17 +3103,55 @@ void HBIOSDispatch::handleSND() {
       snd_duration = cpu->regs.HL.get_pair16();
       break;
 
-    case HBF_SNDPLAY:
-      // Play sound - use channel 0's period and duration
-      if (snd_period[0] > 0 && snd_volume[0] > 0) {
-        int duration_ms = snd_duration;
-        emu_dsky_beep(duration_ms);
+    case HBF_SNDPLAY: {
+      // D is the channel; C was the unit.  This read C and so every guest that
+      // followed the documented sequence played on channel 0 whatever channel
+      // it asked for.
+      uint8_t ch = cpu->regs.DE.get_high();
+      if (ch >= 4) {
+        result = HBR_RANGE;
+        break;
       }
+      // Apply the pending pair to that channel, which is what "programming the
+      // sound chip" means here, then hand it to the front end.
+      snd_volume[ch] = snd_pending_volume;
+      snd_period[ch] = snd_pending_period;
+
+      int freq_hz = snd_period[ch] > 0 ? (int)(1000000 / snd_period[ch]) : 0;
+      // Volume 0 is silence and is a real instruction, not a no-op: it is how a
+      // guest stops a channel it started.
+      emu_snd_emit_tone(ch, freq_hz, snd_volume[ch], snd_duration);
+      break;
+    }
+
+    case HBF_SNDDEVICE:
+      // The sound-side twin of BF_VDADEV, and it had no case at all - so it
+      // reached the default arm and answered ERR_NOFUNC for a function every
+      // RomWBW sound driver implements.
+      //
+      // C := attributes, D := device type, E := device number, H := unit mode,
+      // L := base I/O address.  The same SNDDEV_BITMODE the SNDQ_DEV
+      // subfunction reports, for the same reason: it is the one code in
+      // hbios.inc:470-473 that does not name a chip this does not emulate.
+      cpu->regs.BC.set_low(0x00);    // C := no attributes
+      cpu->regs.DE.set_high(0x02);   // D := SNDDEV_BITMODE
+      cpu->regs.DE.set_low(0x00);    // E := device number
+      cpu->regs.HL.set_pair16(0);    // H := no modes, L := no I/O base
       break;
 
     case HBF_SNDBEEP:
-      // Simple beep
-      emu_dsky_beep(100);
+      // RomWBW's beep is a real note: roughly 333ms of ~987Hz on channel 0,
+      // then silence (SystemGuide.md 0x58 and the drivers behind it).  This was
+      // emu_dsky_beep(100) - a front end's fixed beep, a third of the length.
+      //
+      // Through emu_snd_emit_tone, so a port that has installed a renderer gets
+      // the pitch and the duration, and one that has not still gets its beep -
+      // for 333ms now rather than 100.
+      //
+      // It does NOT block the guest.  Upstream's does, and nothing here can:
+      // the web front end runs the Z80 on the browser's main loop, so sleeping
+      // in a dispatch handler stops the page.
+      emu_snd_emit_tone(0, 987, 255, 333);
       break;
 
     case HBF_SNDQUERY: {
@@ -2598,12 +3167,38 @@ void HBIOSDispatch::handleSND() {
           cpu->regs.BC.set_high(4);
           cpu->regs.BC.set_low(0);
           break;
+        case SNDQ_VOLUME:
+          // "L: Volume" - the UNIT's pending volume, the one a following
+          // SNDPLAY would apply. Answered ERR_NOFUNC until 2026-09-18, because
+          // the state was per-channel and there was no unit value to give.
+          cpu->regs.HL.set_low(snd_pending_volume);
+          break;
+
+        case SNDQ_PERIOD:
+          // "HL: Period", 16 bit. Same story as volume above.
+          cpu->regs.HL.set_pair16(snd_pending_period);
+          break;
+
         case SNDQ_DEV:
-          // B := device type code, DE and HL := I/O ports. There is no sound
-          // chip here - nothing reads snd_period or snd_volume back out - so
-          // report the driver as software with no ports rather than naming a
-          // chip that is not being emulated.
-          cpu->regs.BC.set_high(0);
+          // B := device type code, DE and HL := I/O ports.
+          //
+          // AN ERROR IS NOT AVAILABLE HERE, and that is worth knowing before
+          // changing it. Source/HBIOS/invntdev.asm:412-418 calls this, then
+          // does `LD A,B` and indexes a four-entry name table with it - it
+          // never looks at A. Return a failure and B still holds BF_SNDQUERY
+          // ($55), which the ROM prints as index 85 of a table with four
+          // entries. That is the same shape as the "85+0 CHANNELS" bug fixed
+          // earlier in this file, and it is why this answers a code at all.
+          //
+          // Of the four, $00 SN76489 and $01 AY38910 name real chips this does
+          // not emulate, and $03 YM2612 likewise. $02 SNDDEV_BITMODE, "Bit-bang
+          // Speaker", is the one that claims no chip - the host makes the
+          // noise - so it is the least wrong valid answer. It answered $00
+          // until 2026-09-18 on the belief that 0 meant "none"; hbios.inc:470
+          // says $00 is SN76489.
+          //
+          // No I/O ports, because there are none to report.
+          cpu->regs.BC.set_high(0x02);  // SNDDEV_BITMODE
           cpu->regs.DE.set_pair16(0);
           cpu->regs.HL.set_pair16(0);
           break;
@@ -2686,7 +3281,16 @@ void HBIOSDispatch::handleEXT() {
       uint8_t disk_unit = cpu->regs.DE.get_high();  // D = disk unit
       uint8_t slice = cpu->regs.DE.get_low();       // E = slice number
 
-      uint8_t dev_attrs = 0x00;  // LBA mode (bit 7 clear)
+      // B IS THE UNIT'S DEVICE ATTRIBUTES, the same byte BF_DIODEVICE reports.
+      // EXT_SLICE opens by calling BF_DIODEVICE and storing the attribute byte
+      // in SLICE_DEVATT (hbios.asm:5413-5414), and hands it back in B on every
+      // exit - the success path and the ERR_RANGE path alike (5642, 5697).
+      //
+      // This returned 0 always, which is a claim: bit 4 clear says the unit is
+      // not LBA capable, and CBIOS requires that bit before it will put a unit
+      // in the drive map.  The value is set below, from the same expressions
+      // HBF_DIODEVICE uses, once the unit is known.
+      uint8_t dev_attrs = 0x00;
       uint8_t media_id = 0x04;   // MID_HD (default)
       uint32_t slice_lba = 0;
 
@@ -2696,6 +3300,12 @@ void HBIOSDispatch::handleEXT() {
       uint8_t hd_idx = map_hd_unit(disk_unit);
 
       if (is_memdisk) {
+        // The attribute byte BF_DIODEVICE reports for this unit: md.asm's own
+        // MD_AROM/MD_ARAM constants, bit 4 LBA capable, low nibble the media
+        // class.
+        uint8_t md_idx = map_md_unit(disk_unit);
+        dev_attrs = (md_idx < 2 && md_disks[md_idx].is_rom) ? 0x14 : 0x15;
+
         // Memory disks have no slices. RomWBW answers a non-zero slice on one
         // with ERR_RANGE rather than quietly handing back slice 0's LBA, which
         // would give a guest the same data under two different names.
@@ -2716,10 +3326,16 @@ void HBIOSDispatch::handleEXT() {
       } else if (hd_idx != 0xFF && hd_idx < 16 && disks[hd_idx].is_open) {
         HBDisk& disk = disks[hd_idx];
 
+        // %00110000, the same byte BF_DIODEVICE reports for a hard disk:
+        // hdsk.asm:192 "LD C,%00110000 ; C := ATTRIBUTES, NON-REMOVABLE HARD
+        // DISK".  Bit 4 is LBA capable and CBIOS requires it.
+        dev_attrs = 0x30;
+
         // Probe MBR if not yet done
         if (!disk.partition_probed) {
           disk.partition_probed = true;
           disk.partition_base_lba = 0;
+          disk.partition_sectors = 0;   // see closeDisk: the pair resets together
           disk.slice_size = 16640;  // Default: hd512 format
           disk.is_hd1k = false;
 
@@ -2778,7 +3394,28 @@ void HBIOSDispatch::handleEXT() {
               }
             }
 
-            // If no 0x2E partition, check if single-slice hd1k image (exactly 8MB)
+            // A SIZE HEURISTIC RomWBW DOES NOT HAVE, KEPT DELIBERATELY, and
+            // measured before and after.
+            //
+            // Upstream reaches hd1k only through a $2E partition entry:
+            // EXT_SLICE3B is the only path that sets SPS_HD1K, and the
+            // no-partition fallback EXT_SLICE3C (hbios.asm:5565-5573) is
+            // unconditional - "LD BC,SPS_HD512" - with nothing in between that
+            // looks at the medium's size.  An audit on 2026-09-18 raised that
+            // as a divergence, correctly.
+            //
+            // It was removed, and the published single-slice images stopped
+            // booting: tools/boot_test.sh in romwbw_disks went red on Z3PLUS
+            // for BOTH releases, because is_hd1k also chooses the MEDIA ID, and
+            // MID_HD makes CBIOS read an hd1k filesystem - 1024 directory
+            // entries - with hd512 parameters.
+            //
+            // The reason is how those images are built: romwbw_disks cuts them
+            // with the wbw_hd1k diskdefs and gives them a type-06 partition
+            // entry rather than a $2E one, so upstream's own rule would call
+            // them hd512 too.  The heuristic is what makes them work here.  It
+            // is wrong about RomWBW and right about the artifacts this emulator
+            // exists to run, and the boot test is what says so.
             if (!detected_format && disk_size == 8388608) {
               disk.partition_base_lba = 0;
               disk.slice_size = 16384;
@@ -2816,7 +3453,21 @@ void HBIOSDispatch::handleEXT() {
           if (part_end < limit) limit = part_end;
         }
 
-        if (slice_end_sector > limit) {
+        // SLICE 0 ON AN UNPARTITIONED MEDIUM IS NOT BOUND-CHECKED AT ALL.
+        //
+        // EXT_SLICE3C is the no-partition fallback, and for slice 0 it jumps
+        // straight to EXT_SLICE5Z - "JR Z,EXT_SLICE5Z" - skipping the fit
+        // check entirely and returning A=0, C=MID_HD, DE:HL=0 whatever the
+        // medium's size.  That is deliberate upstream: slice 0 starts at sector
+        // 0, so there is nothing for it to run off the end of, and a medium
+        // smaller than one slice is still bootable from its first sector.
+        //
+        // Checking it here refused slice 0 on any bare image smaller than
+        // 16640 sectors (8.3MB) - which is every small test image, and every
+        // hd1k image read before the format is known.
+        bool unbounded_slice0 = (slice == 0 && disk.partition_sectors == 0);
+
+        if (slice_end_sector > limit && !unbounded_slice0) {
           // Slice runs past the end of its partition, or of the medium
           media_id = 0;  // MID_NONE - signals no valid media
           // ERR_RANGE, which is what EXT_SLICE returns for a slice past the

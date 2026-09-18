@@ -34,7 +34,17 @@
 #include <cstdlib>
 #include <deque>
 #include <string>
+// strings.h is POSIX and MSVC has no such header; _strnicmp is its spelling of
+// strncasecmp.  This matters because these two are the only tests in the suite
+// that Windows can run: the other two drive a pty and a POSIX filesystem, so
+// they are not portable and are not meant to be.  See .github/workflows/test.yml.
+#ifdef _WIN32
+#include <string.h>
+#define EMU_TEST_STRNCASECMP _strnicmp
+#else
 #include <strings.h>
+#define EMU_TEST_STRNCASECMP strncasecmp
+#endif
 
 //=============================================================================
 // Console stub - the one piece of emu_io the test steers
@@ -76,7 +86,7 @@ void emu_fatal(const char* fmt, ...) {
 }
 
 int emu_strncasecmp(const char* a, const char* b, size_t n) {
-  return strncasecmp(a, b, n);
+  return EMU_TEST_STRNCASECMP(a, b, n);
 }
 
 // Declared in emu_io.h but implemented per backend rather than in

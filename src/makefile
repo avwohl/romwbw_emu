@@ -158,7 +158,7 @@ romwbw_emu.o: $(wildcard $(THIS_DIR)../VERSION)
 #                 BSDs and macOS.
 #   cli_hostfile  is also a test of emu_io_cli.o, plus emu_io_common.o for the
 #                 shared path helper the sandboxed backends reduce a path with.
-TESTS = vda_keyboard hbios_hostname cli_console cli_hostfile
+TESTS = vda_keyboard hbios_hostname snd_channels sys_bnkcpy rtc_settim sys_switch dio_units cli_console cli_hostfile
 
 DISPATCH_OBJS = emu_io_common.o hbios_dispatch.o hbios_cpu.o emu_init.o
 
@@ -191,6 +191,7 @@ test: romwbw_emu $(addprefix test_,$(TESTS))
 	  node $(THIS_DIR)../tests/web_console_output.js || status=1; echo; \
 	  node $(THIS_DIR)../tests/web_manifest.js || status=1; echo; \
 	  node $(THIS_DIR)../tests/web_nvram_boot.js || status=1; echo; \
+	  node $(THIS_DIR)../tests/web_browser.js || status=1; echo; \
 	else \
 	  echo "SKIP  web JS tests (node not on PATH)"; echo; \
 	fi; \
@@ -223,6 +224,21 @@ test_vda_keyboard: $(THIS_DIR)../tests/vda_keyboard.cc $(DISPATCH_OBJS)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< $(DISPATCH_OBJS) $(LDLIBS) -o $@
 
 test_hbios_hostname: $(THIS_DIR)../tests/hbios_hostname.cc $(DISPATCH_OBJS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< $(DISPATCH_OBJS) $(LDLIBS) -o $@
+
+test_snd_channels: $(THIS_DIR)../tests/snd_channels.cc $(DISPATCH_OBJS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< $(DISPATCH_OBJS) $(LDLIBS) -o $@
+
+test_sys_bnkcpy: $(THIS_DIR)../tests/sys_bnkcpy.cc $(DISPATCH_OBJS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< $(DISPATCH_OBJS) $(LDLIBS) -o $@
+
+test_rtc_settim: $(THIS_DIR)../tests/rtc_settim.cc $(DISPATCH_OBJS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< $(DISPATCH_OBJS) $(LDLIBS) -o $@
+
+test_sys_switch: $(THIS_DIR)../tests/sys_switch.cc $(DISPATCH_OBJS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< $(DISPATCH_OBJS) $(LDLIBS) -o $@
+
+test_dio_units: $(THIS_DIR)../tests/dio_units.cc $(DISPATCH_OBJS)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< $(DISPATCH_OBJS) $(LDLIBS) -o $@
 
 test_cli_console: $(THIS_DIR)../tests/cli_console.cc emu_io_cli.o

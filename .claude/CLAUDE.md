@@ -135,12 +135,17 @@ in this family went red daily for the normal state and all four were deleted on
 
 ## Build Tools
 
-The four Z80 sources - `src/r8.asm`, `src/w8.asm`, `src/emu_hbios.asm`,
-`src/emu_rom.asm` - stay in this tree even though nothing here ships their
-output any more. romwbw_disks builds the published ROM and the disk-resident
-`r8.com`/`w8.com` from its own copies, and its `tools/check_source_drift.sh`
-compares them against these and asserts they are here. Deleting one turns that
-check red in another repository.
+Three Z80 sources - `src/r8.asm`, `src/w8.asm`, `src/emu_hbios.asm` - stay in
+this tree even though nothing here ships their output any more. romwbw_disks
+builds the published ROM and the disk-resident `r8.com`/`w8.com` from its own
+copies, and its `tools/check_source_drift.sh` compares them against these and
+asserts they are here. Deleting one turns that check red in another repository.
+
+`src/emu_rom.asm` was a fourth until romwbw_disks `69d2a71` deleted its copy, and
+it is no longer held here by anything: that check compares three files now and
+never opens it, nothing in this tree builds it, and it carries no `.z80`
+directive so `um80` cannot assemble it at all. This tree keeps the one remaining
+copy as the record of a path not taken - which is a reason, but not a check.
 
 - **Z80 Assembler: `um80`, and there is no second one.** `um80` and `ul80` are
   this project's own assembler and linker, from

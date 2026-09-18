@@ -23,6 +23,29 @@
 // HBIOS Function Codes (from RomWBW hbios.inc)
 //=============================================================================
 
+// Declared in emu_io.h.  Forward-declared rather than included: this header is
+// pulled in by every consumer of the dispatcher, and the platform interface is
+// not theirs to see.  The two RTC helpers below take it by reference only.
+struct emu_time;
+
+// How many units each group has, and the ONE place the number lives.
+//
+// BF_SYSGET's CIOCNT/VDACNT/SNDCNT/RTCCNT subfunctions report these to a guest,
+// and the group dispatchers reject a unit at or above them with ERR_NOUNIT the
+// way HB_DISPCALC does (hbios.asm:7448-7452).  Those two used to be a literal
+// `1` in the SYSGET case and nothing at all in the dispatcher, so the emulator
+// could tell a guest it had one console and then serve unit 200.
+// SWITCH_LEN from hbios.asm:6521 - `$ - SWITCH_TAB - 2` over a five-byte table,
+// so switch numbers 0..3 are addressable and 4 (the checksum byte) up are not.
+static const uint8_t SWITCH_LEN = 3;
+
+enum HBiosUnitCounts {
+  CIO_UNIT_COUNT = 1,
+  VDA_UNIT_COUNT = 1,
+  SND_UNIT_COUNT = 1,
+  RTC_UNIT_COUNT = 1,
+};
+
 // HBIOS error/result codes (from hbios.inc ERR_* values)
 enum HBiosResult {
   HBR_SUCCESS   = 0,     // ERR_NONE: Success
@@ -681,6 +704,35 @@ private:
                   std::chrono::milliseconds((long long)ticks * 1000 / TICKFREQ);
   }
 
+  // SECONDS ARE A SEPARATE COUNTER, not a division of the tick count.
+  //
+  // RomWBW keeps HB_TICKS and HB_SECS as two pieces of storage (hbios.asm:9527)
+  // and only the 50Hz ISR couples them (hbios.asm:7365-7394).  SYS_SETTIMER
+  // writes one and SYS_SETSECS the other, each verbatim:
+  //
+  //     SYS_SETTIMER: LD BC,HB_TICKS / ST32      (hbios.asm:6544-6550)
+  //     SYS_SETSECS:  LD BC,HB_SECS  / ST32      (hbios.asm:6561-6567)
+  //
+  // Both were writing the same origin here: setting either moved the other, and
+  // BF_SYSSET/SECS did `setTicks(want * TICKFREQ)`, which overflows 32 bits
+  // above about 2.7 years of seconds and lands the clock somewhere arbitrary.
+  //
+  // One monotonic clock still underlies both - that is what makes the tick
+  // count safe against the host's wall clock moving - so the second counter is
+  // an OFFSET from the derived seconds rather than a second origin.  Setting
+  // the ticks compensates the offset so the seconds do not move with it.
+  long long secs_offset = 0;
+
+  uint32_t currentSecs() const {
+    long long s = (long long)(currentTicks() / TICKFREQ) + secs_offset;
+    if (s < 0) s = 0;
+    return (uint32_t)s;
+  }
+
+  void setSecs(uint32_t secs) {
+    secs_offset = (long long)secs - (long long)(currentTicks() / TICKFREQ);
+  }
+
   uint16_t heap_ptr = 0x0200;
   // The watermark BF_SYSRESET subfunction 0x00 rewinds the heap to. RomWBW
   // latches it once after driver init (hbios.asm "LD HL,(CB_HEAPTOP) / LD
@@ -700,12 +752,47 @@ private:
   int vda_cols = 80;
   int vda_cursor_row = 0;
   int vda_cursor_col = 0;
-  uint8_t vda_attr = 0x07;
+  // VDA state, split because RomWBW keeps it split.  BF_VDASCO sets the colour
+  // pair (high nibble background, low nibble foreground) and BF_VDASAT sets a
+  // three-bit reverse/underline/blink bitmap; they are independent, and the one
+  // byte the front end wants is the two combined.  0x07 is light grey on black
+  // with no attributes, which is what a VDA comes up in.
+  uint8_t vda_color = 0x07;
+  uint8_t vda_rub = 0x00;
+
+  // What emu_video_set_attr() is given.  emu_io.h has one attribute byte and no
+  // way to express reverse/underline/blink separately, so the bitmap rides in
+  // the top bits the colour pair does not use - a front end that only knows
+  // colours reads the same nibbles it always did.
+  uint8_t vdaAttrByte() const {
+    return (uint8_t)(vda_color | (uint8_t)((vda_rub & 0x07) << 5));
+  }
 
   // Sound state
+  // SOUND STATE, in the shape SystemGuide.md actually describes.
+  //
+  // "The Sound functions defer the actual programming of the sound chip until
+  // the SNDPLAY function is called.  You will call the volume and period/note
+  // functions to preset the desired sound output, then call SNDPLAY when you
+  // want the sound to change."  So BF_SNDVOL, BF_SNDPRD and BF_SNDNOTE set ONE
+  // pending pair for the unit - C is the sound UNIT throughout, never a channel
+  // - and BF_SNDPLAY applies that pair to the channel named in **D**.
+  //
+  // This was four arrays indexed by C, which made every setter per-channel and
+  // gave BF_SNDPLAY no channel at all.  BF_SNDQ_VOLUME and BF_SNDQ_PERIOD also
+  // read back the unit's pending values, which is only expressible this way.
+  uint8_t snd_pending_volume = 0;
+  uint16_t snd_pending_period = 0;
+
+  // What each channel is sounding now, set by BF_SNDPLAY from the pending pair.
   uint8_t snd_volume[4] = {0};
   uint16_t snd_period[4] = {0};
-  uint16_t snd_duration = 100;
+
+  // BF_SNDDURATION (0x56), "REQUEST DURATION HL MILLISECONDS" in hbios.inc.
+  // The SystemGuide prose for SNDPLAY predates it and says a sound plays
+  // indefinitely; the equate is the newer word, so a duration of 0 here means
+  // exactly that - play until something changes it.
+  uint16_t snd_duration = 0;
 
   // Host file transfer state (EMU extension 0xE1-0xE7)
   // File handles are now managed by emu_io abstraction
@@ -718,6 +805,9 @@ private:
   // Boot info (saved during SYSBOOT, returned by SYSGET_BOOTINFO)
   int saved_boot_unit = 0;
   int saved_boot_slice = 0;
+  // CB_BOOTBID, the boot bank id.  BF_SYSSET/BOOTINFO takes it in L and
+  // BF_SYSGET/BOOTINFO returns it there; both were ignoring the register.
+  int saved_boot_bank = 0;
   bool boot_in_progress = false;  // Set when boot starts, for debugging
 
   // NVRAM switches for boot configuration (emulates RTC NVRAM)
@@ -733,8 +823,42 @@ private:
   // [4] = Checksum - XOR of bytes 0-3 XOR with version bytes
   //
   // See RomWBW Source/Doc/SystemGuide.md for full documentation.
-  static constexpr int NVRAM_SIZE = 5;
-  uint8_t nvram_switches[NVRAM_SIZE] = {0, 'H', BOPTS_ROM, 0, 0};
+  // THE DEVICE HAS 31 BYTES, not 5.  BF_RTCDEVICE names a clock, and every one
+  // in RomWBW's table carries application-usable NVRAM past the switch block:
+  // the DS1302 has 31 cells at indexes 0-30, of which HBIOS uses 0-4 and leaves
+  // the rest alone - DSRTC_DETECT even uses index 30 as a scratch byte, which
+  // is only legal because the part has one.
+  //
+  // This was 5, so a guest storing anything of its own in NVRAM wrote into a
+  // void: BF_RTCSETBYT(7) reported success and discarded the byte, and
+  // BF_RTCGETBYT(7) reported success and returned 0.
+  //
+  // Only 0-4 are persisted and only 0-3 feed the checksum; 5-30 round-trip for
+  // the life of the process, which is what a battery-backed part would do
+  // across a power cycle and this cannot.
+  static constexpr int NVRAM_SIZE = 31;
+
+  // The switch block HBIOS itself owns, and the extent of what is persisted.
+  static constexpr int NVRAM_SWITCH_BYTES = 5;
+  // What the guest set the clock to, as a signed offset in seconds from the
+  // host clock.  BF_RTCSETTIM used to be a comment and a break - it reported
+  // SUCCESS and discarded the time, which is the failure mode this file calls
+  // the worst there is, because a caller cannot defend against it.  A guest
+  // that sets the date and reads it back now gets what it set, and it drifts
+  // forward with the host clock the way a real chip does.  It is not persisted:
+  // a real RTC is battery-backed, this is not, and pretending otherwise would
+  // need a store nothing here has.
+  long rtc_offset_seconds = 0;
+
+  // Seconds from `a` to `b`, by counting days from a fixed epoch rather than
+  // calling mktime(): mktime is local-time and DST-dependent, and this has to
+  // be a plain difference of two calendar readings.
+  static long secondsBetween(const emu_time& a, const emu_time& b);
+
+  // Move a host reading forward (or back) by what the guest set.
+  void applyRtcOffset(emu_time* t) const;
+
+  uint8_t nvram_switches[NVRAM_SIZE] = {0, 'H', BOPTS_ROM, 0, 0};  // rest zero
   bool nvram_dirty = false;  // Set when NVRAM modified, cleared by getNvramSetting()
   // The checksum is seeded with the loaded ROM's release bytes, and the CLI
   // configures NVRAM (--boot, a persisted setting) BEFORE it loads the ROM.

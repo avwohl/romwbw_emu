@@ -70,8 +70,22 @@ HBX_SIZ		equ	0200h		; Size of proxy (512 bytes)
 RST00:
 	di
 	jp	HB_START		; Cold boot
-	db	0			; Signature pointer at 0x0004
-	dw	ROM_SIG
+;
+; NO FILLER BYTE HERE, and that is the whole point.  RomWBW publishes the
+; address of ROM_SIG as the word at 0x0004 - hbios.asm:428-431 is
+;
+;	JP	HB_START		; 3 bytes, 0x0000-0x0002
+;	.DB	0			; SIG PTR STARTS AT $0004
+;	.DW	ROM_SIG			; 0x0004-0x0005
+;
+; where the .DB pads a 3-byte JP out to four.  The `di` above already does
+; that: di (1) + jp (3) fills 0x0000-0x0003 exactly, so the pointer lands on
+; 0x0004 with no filler.  Keeping BOTH pushed it to 0x0005, and a reader
+; following the ROM-directory convention took the word at 0x0004, got 0x7000,
+; found no 76 B5 signature there and called the ROM unidentifiable.  The
+; shipped v3.6.0 ROM opened F3 C3 00 02 00 70 00; it now opens F3 C3 00 02 70 00.
+;
+	dw	ROM_SIG			; 0x0004 - the published address
 
 	org	0008h
 RST08:

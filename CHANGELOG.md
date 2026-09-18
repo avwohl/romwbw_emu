@@ -17,6 +17,364 @@ symlinks into `src/`, `z80cpmw`'s vcxproj compiles it in place, and `cpmdroid`'s
 CMakeLists pulls it from a sibling checkout — so a commit here reaches all three
 on their next build, tag or no tag.
 
+## [Unreleased]
+
+### The HBIOS dispatcher was read against RomWBW v3.6.0, and 44 divergences are fixed
+
+**`docs/HBIOS_AUDIT_2026-09-18.md` is the record**, and it is the point of the
+exercise as much as the fixes are. A pass in September 2026 raised 74 findings,
+fixed about thirty and wrote none of them down; they left with the session
+transcript, and `todo.txt` carried "they are recorded NOWHERE" for weeks because
+re-deriving them meant doing the whole pass again. This pass was done against
+the package sha256-pinned in `romwbw_disks/versions/3.6.0/version.json` -
+`hbios.asm` and its drivers, `hbios.inc`, `SystemGuide.md` - every finding
+carries the upstream line that decides it, and every finding was put to a
+separate reader told to refute it. 77 raised, 47 survived that, 14 did not.
+
+**44 of the 47 are fixed.** Two shapes account for most of them: a register the
+dispatcher never wrote, so the caller got its own value back as though it were
+an answer; and a function that reported success for something it had not done.
+The ones a guest is most likely to have noticed:
+
+- **`BF_DIOGEOM` returned three of its four values in the wrong registers** and
+  answered SUCCESS, and **`SYSBNKCPY` did not advance `HL`/`DE`** by the byte
+  count, so a chained copy re-copied its first block.
+- **`BF_SNDPLAY` had the wrong model entirely** - this tree treated `C` as the
+  channel and drove four of them. `C` is the *unit*; the channel is `D`, the
+  note is 16-bit in `HL`, and the scale's zero is A#0. Sound is now four real
+  voices, reached through a new opt-in `emu_snd_emit_tone()` hook in `emu_io.h`
+  that no port has to implement.
+- **`setResult` wrote `A` and the Z flag and left the rest of `F`.** Every HBIOS
+  return is `OR A` or `XOR A`, so a caller doing `CALL HBIOS / JP M,error` - the
+  natural test when every error code is negative - read its own stale sign flag.
+  S, C, N, H and P/V now all come out of the result.
+- **The unit number is a plain index again.** The two disk mappers accepted
+  three ranges that exist nowhere in HBIOS (`0x80-0x8F`, `0x90-0x9F`,
+  `0xC0-0xCF`), so unit `0x92` and unit 4 named the *same image* and an
+  enumeration past `DIOCNT` found phantom disks answering success.
+  `tests/dio_units.cc` is new and fails on the old mappers.
+- **NVRAM was 5 bytes**, and every index above 4 read 0 and discarded writes,
+  both reporting success. The switch table, its widths and `SYS_SETSWITCH`'s
+  precondition that the block already read `'W'` are all followed now.
+- A dozen functions that answered with the caller's own registers - `CIODEVICE`,
+  `DIODEVICE`'s `H`/`L`, `VDAKRD`'s scancode and keystate, `RTCDEVICE` - now
+  write what the drivers write, or decline where there is nothing to answer
+  with.
+
+**Two are confirmed and deliberately kept**, each tried the faithful way first
+and then measured:
+
+- `BF_CIOQUERY` returns `$FFFF` with NOTIMPL. TTY_QUERY returns SUCCESS, but the
+  two callers that ship on the published images want opposite things - the ROM
+  inventory tests the value, `MODE.COM` aborts on the status - and this is the
+  one answer that leaves both correct.
+- An exactly-8MB image with no `$2E` partition is still called hd1k. Upstream
+  calls it hd512, and following upstream made **Z3PLUS unbootable on both
+  published releases**: the media ID picks CBIOS's DPB, so `MID_HD` reads a
+  1024-entry directory with 512-entry parameters. The published single-slice
+  images are cut with `wbw_hd1k` diskdefs but carry a type-06 partition entry,
+  so upstream's own rule would misread them too.
+
+One finding is open - the ROM signature pointer at `0x0005` - and it is the only
+one whose fix moves every published ROM's sha256, so it is a release-channel
+call and is filed as `DECISIONS.md` #8 rather than left in `todo.txt`.
+
+`romwbw_disks/tools/boot_test.sh` - six operating systems across both published
+releases - was the gate on every one of these, and is what caught the hd1k one.
+
+### The browser checks are a script now, and the page stops carrying dead handlers
+
+**`tests/web_browser.js` drives the real page in real headless Chrome**, with no
+puppeteer and no npm: Chrome's DevTools endpoint is plain HTTP for discovery and
+a WebSocket for commands, and node has both built in. `make -C src test` runs it
+and it skips, naming the command that fixes it, when the web build or a browser
+is absent. Seventeen checks, of which the ones that were never automatable
+before: **the wasm boots RomWBW to a CP/M 2.2 prompt in the browser**, printing
+`CBIOS v3.6.0 [WBW]` and `NV Switches Found`; **a 3.5.1 ROM under a 3.6.0 image
+raises `*** WARNING: HBIOS/CBIOS Version Mismatch ***`**, driven through the real
+file picker with `DOM.setFileInputFiles`; a directory with no mirror says so and
+keeps its pickers working; and over plain http to a LAN address - an origin
+Chrome does not call secure - the page reports `size-checked only` instead of a
+SHA-256 pass it did not perform.
+
+Two ad-hoc harnesses of this shape settled checks on 2026-09-15 and 2026-09-17
+and were thrown away each time. `todo.txt` called committing one "the real
+decision hiding behind *needs a person at a browser*"; it is committed, and
+`MANUAL_CHECKS.md` section 1 is down to what a synthetic event genuinely cannot
+do - a reload, a paste, a zoom, a download, and how it looks to a human eye.
+
+**On an unmirrored page, "ready" used to win a race against "no catalog
+mirror".** `loadManifest()` sets the no-mirror status when `catalog/manifest.json`
+404s, and the wasm reports `RomWBW Emulator ready` from its `main()` a moment
+later - so which one the user was left looking at depended on whether a failed
+fetch or a wasm instantiation finished first. On a page with nothing to offer,
+the loser was the only immediate sign of it: the fuller notice does not appear
+until Start is pressed with no ROM selected. `Module.onStatus` now declines to
+replace the no-mirror status with a generic ready, and nothing else. Found by
+`tests/web_browser.js` going red about one run in eight - which is the argument
+for committing the harness rather than running it by hand twice.
+
+**Twelve dead callbacks are gone from `web/romwbw.html-template`**Twelve dead callbacks are gone from `web/romwbw.html-template` and from the
+second copy in `web/romwbw-debug.html`.** Eight `onVda*` and four `onSnd*`, under
+names `src/emu_io_wasm.cc` has never emitted under any build. Measured first:
+over a full boot, not one of the core's eight optional emitters fired at all -
+the console path is CIO from the boot loader to the prompt and never touches the
+video device, and 3.6.0's device inventory only *queries* the VDA. Renaming
+would not have woken them either, and `onVdaWriteChar` was worse than dead: it
+read an attribute byte the emitter never sends, and `undefined & 0x0F` is 0, so
+every character it drew was black on black.
+
+What replaced them is one line of real wiring - `Module.onDskyBeep`, the one
+sound callback the core does emit, now plays through the Web Audio code the dead
+block was already carrying - and a check that keeps the two sides honest: the
+harness reads the emitted names out of `emu_io_wasm.cc` and fails on any handler
+the page assigns that the core will never call.
+
+### A partial sector was handed to the guest as data
+
+The file-backed `BF_DIOREAD` path tested `read == 0` after `emu_disk_read()`, so
+a short read of 1..511 bytes - a truncated image, or a final partial sector -
+fell through the check, copied all 512 bytes of the stack buffer, and counted
+the block as transferred. The bytes past `read` were whatever had been on the
+stack, delivered with `A = 0` and `E` saying it arrived.
+
+The loop's tail has turned a short *transfer* into `ERR_IO` since 2026-09-05;
+this is the same rule one level down, on a short *sector*.
+
+### BF_RTCSETTIM reported success and threw the time away
+
+Two lines: a comment reading `// Set time - ignored in emulator` and a `break`,
+after `result` had already been set to `HBR_SUCCESS`. A guest running `DATE SET`
+watched it take and then read the host clock straight back. Answering success
+while doing nothing is the failure mode this dispatcher keeps being bitten by,
+and the reason is always the same - a caller cannot defend against it.
+
+There is no chip to write, so what is stored is an **offset** from the host
+clock. That keeps the clock running after it is set, which a frozen timestamp
+would not, and it is what a guest expects of a real RTC. It is deliberately not
+persisted: a real one is battery-backed and this is not. A buffer that is not
+valid BCD, or is a valid BCD impossibility like month 13, is refused with
+`ERR_RANGE` rather than accepted - every RomWBW driver returns non-zero when the
+write did not take (`Source/HBIOS/dsrtc.asm`, `DSRTC_SETTIM`).
+
+`tests/rtc_settim.cc` covers the round trip, a second set replacing the first,
+both refusal paths leaving the previous time alone, and a leap day reading back
+as 29 February rather than 1 March - the calendar arithmetic is done by
+days-from-civil rather than `mktime()`, which is local-time and DST-dependent.
+
+### SYSBNKCPY left HL and DE where it found them, so a run of copies never moved
+
+`Source/Doc/SystemGuide.md`, Function 0xF5, documents the returned values as
+**"HL: New Source Address"** and **"DE: New Destination Address"**, and the
+paragraph above that table says a caller may keep calling `SYSBNKCPY` after one
+`SYSSETCPY` "as long as you want to continue to copy between the already
+established Source/Destination Banks and the same size copy is being performed".
+Those two only fit together if the addresses advance - that is how a caller walks
+a region bigger than one block.
+
+This copied the bytes and returned HL and DE exactly as passed. So the second
+call in such a run copied the same block again, and the third, and everything
+past the first `count` bytes was never written. Nothing here had ever made two
+calls in a row, which is why it survived. `tests/sys_bnkcpy.cc` makes three, and
+fails on all three checks with the fix removed.
+
+### The HBIOS audit, and where its findings now live
+
+`docs/HBIOS_AUDIT_2026-09-18.md` is the thing `todo.txt` had been asking for.
+The September pass produced 74 findings, about thirty were fixed and the rest
+were never written down - they went with the session transcript, and re-deriving
+them meant doing the whole pass again. This is that pass done again, against
+RomWBW v3.6.0 from the package URL pinned in
+`romwbw_disks/versions/3.6.0/version.json`, sha256-verified before a line was
+read: `hbios.asm` (267,954 bytes) and its drivers, `hbios.inc`, and
+`SystemGuide.md`. Seven readers took a function group each - one of them the
+part of the file no earlier pass had reached - and every finding was then put to
+a separate reader told to refute it.
+
+**77 raised, 47 confirmed, 14 refuted.** The refuted ones are kept: a finding
+that was looked at and did not hold is the reason nobody has to look again, and
+several of them read RomWBW exactly right and fell only on the emulator half.
+`BF_VDASCR` is the instructive one - `E` really is signed upstream, and this
+dispatcher really did read it unsigned, but `emu_video_scroll_up()` is a no-op in
+every backend that exists, so the value is discarded before the sign could
+matter. It is sign-extended now anyway, and `emu_io.h` says what a negative
+count means, so a front end that ever draws inherits the right value rather than
+the bug.
+
+### Five more the audit found, each against RomWBW's own driver source
+
+- **`BF_DIOGEOM` had the geometry in the wrong registers and the wrong shape.**
+  `hdsk.asm:176-185` is 16 heads by **16** sectors, with `HL` := cylinders =
+  blocks/256, `D` := heads **with bit 7 set** to say the device is LBA-capable,
+  `E` := sectors per track, and `BC` left holding the 512 that `HDSK_CAP` put
+  there - the block size. This put 63 in `C`, 16 in `D` with no LBA bit, and the
+  low byte of the cylinder count in `E`. A guest reading `E` as sectors-per-track
+  got a number that changed with the size of the disk; one testing bit 7 of `D`
+  concluded the device could not do LBA.
+- **`BF_DIOSEEK` ignored CHS addressing.** Bit 7 of `D` says which form `DE:HL`
+  is in, and every driver opens `BIT 7,D / CALL Z,HB_CHS2LBA / RES 7,D`. This
+  masked the bit off and treated the rest as an LBA, so a CHS seek landed on a
+  sector computed from the cylinder, head and sector as though they were one
+  number. The conversion is `(cylinder << 8) | (head << 4) | sector`
+  (`hbios.asm:7223`), which is the same 16x16 geometry `DIOGEOM` reports.
+- **`BF_CIODEVICE` answered two registers of five.** It set `DE` to zero and
+  left `C`, `H` and `L` holding the caller's own values - including `C`, the
+  unit number the guest asked with, handed back as though it were the attribute
+  byte. It now answers `CIODEV_TERM` with the terminal attribute bit, the way
+  `tty.asm:138-145` does for a console that is a terminal rather than a UART.
+- **`BOOTINFO` dropped the boot bank id in both directions.** `SYSSET` takes it
+  in `L` and threw it away; `SYSGET` never wrote `L` at all, so a caller read
+  back what it passed in. Upstream is three registers each way
+  (`hbios.asm:6253` and `:6528`), and the emulator's own ROM has had the
+  `CB_BOOTBID` field all along (`emu_hbios.asm:143`).
+- **The tick count and the seconds count were the same counter.** RomWBW keeps
+  `HB_TICKS` and `HB_SECS` as separate storage, coupled only by the 50Hz ISR, and
+  `SYS_SETTIMER`/`SYS_SETSECS` write one each. Here both moved the same origin,
+  so setting either moved the other - and `BF_SYSSET/SECS` did
+  `setTicks(want * TICKFREQ)`, which overflows 32 bits above about 2.7 years of
+  seconds. Seconds are now their own offset over the same monotonic clock, with
+  no multiply.
+
+### The SYS group answered success for things it does not do
+
+Three arms, all the same shape - the one this dispatcher keeps being bitten by,
+because a caller cannot defend against it:
+
+- **`BF_SYSGET`'s default** returned `E = 0` with status success, commented as "a
+  safe default for count-type queries". It is the opposite of safe: a caller
+  asking how many of something there are and being told "none, successfully"
+  cannot tell that from a real zero. Now `ERR_NOFUNC`.
+- **`BF_SYSSET`'s default** likewise. `SETCPUSPD` and `SETPANEL` both landed
+  there, so a guest asking for a clock change or a front-panel write was told it
+  took.
+- **`BF_SYSINT`** was `// Interrupt management - just return success` with no
+  registers written at all. `INTINFO` and `INTGET` are queries, so callers read
+  their own inputs back as data; `INTSET` is documented to return the previous
+  vector in `HL`, which a caller needs to chain to it. There is no guest-visible
+  vector table here - the periodic tick is the emulator's - so it declines with
+  `ERR_NOTIMPL` rather than pretending.
+
+**And one the stricter default would have broken: `BF_SYSGET` subfunction
+`$12`.** The slice calculation moved to `BF_EXTSLICE` ($E0), and upstream still
+routes the old spelling, with the reason in the source at `hbios.asm:5987`:
+
+```
+	CP	$12		; LEFT FOR BACKWRD COMPATABILITY
+	JP	Z,EXT_SLICE	; FUNCTION MOVED TO TOP LEVEL $E0
+	; REMOVING THE ABOVE CAUSED UPGRADE ISSUES FOR EARLY ADOPTERS
+	; SINCE OS BOOT LOADERS DEPEND ON IT. WITHOUT CAN LEAVE OS
+	; UNBOOTABLE AND MIGRATION HARDER - Oct 2024
+```
+
+It had no case here and fell to the default. While that arm answered success
+with `E = 0` the symptom was a loader computing a slice offset of zero; with the
+arm now an honest error it would be a loader that fails outright. Routed to the
+same code, exactly as upstream does it.
+
+### The whole SND group was reading the wrong registers on the wrong scale
+
+The four-channel work below was built on this dispatcher's model of the sound
+group, and an audit of `hbios_dispatch.cc` against RomWBW 3.6.0's own sources
+showed that model was wrong in four ways at once. From
+`Source/Doc/SystemGuide.md`:
+
+- **C is the Sound UNIT on every function in the group, never a channel.** The
+  arrays were indexed by it.
+- **`BF_SNDPLAY` takes the channel in `D`.** Its worked example says so outright:
+  `HBIOS B=54 C=00 D=01 ; Play note on Channel 1`. Every guest that followed the
+  documented sequence played on channel 0 whatever channel it asked for.
+- **Volume and pitch are one pending pair for the unit**, preset by SNDVOL /
+  SNDPRD / SNDNOTE and applied to the channel named in `D` at play time. Only in
+  that shape are `SNDQ_VOLUME` and `SNDQ_PERIOD` expressible at all; both had
+  been answering `ERR_NOFUNC`.
+- **`BF_SNDNOTE` takes the note in `HL`, not `L`** - the guide's table runs to
+  340 for B7 - **and the scale's zero is A#0/Bb0**, with C4 = 152 and A4 = 188.
+  The old conversion assumed A4 sat at step 9 of octave 4 under a plain
+  `note/48` split, which put A4 at 246Hz and everything else wrong by a growing
+  margin. The anchor is `freq = 440 * 2^((note - 188) / 48)`.
+
+Also: `BF_SNDRESET` zeroed the arrays without telling the front end, so a tone
+already sounding played on; `SNDQ_DEV` answered `$00`, which `hbios.inc:470`
+defines as `SNDDEV_SN76489` - naming a chip rather than declining to - and is now
+`$02 SNDDEV_BITMODE`, the one code that claims no chip. An error is not available
+there: `invntdev.asm:412-418` does `LD A,B` and indexes a four-entry table
+without ever reading `A`, so a failure would print index 85.
+
+`tests/snd_channels.cc` pins all of it against the published note table.
+
+### Four voices instead of one beep, and Windows finally runs something
+
+**`BF_SNDPLAY` renders every channel the guest set up.** `handleSND` has kept
+`snd_period[4]` and `snd_volume[4]` since it was written and `SNDQ_CHCNT` has
+answered "4 tone channels" all along, but play looked at channel 0 and called
+`emu_dsky_beep(duration)` - a fixed beep of that length. The arrays were written
+and never read, which is why nobody noticed the three setters were reading the
+wrong register either.
+
+The new hook is **a pointer, not a symbol**, and no downstream port breaks:
+
+```c
+typedef void (*emu_snd_tone_fn)(int channel, int freq_hz, int volume, int duration_ms);
+void emu_snd_set_tone_handler(emu_snd_tone_fn fn);
+```
+
+Every other addition to `emu_io.h` has been a declaration the core does not
+define, so an un-updated port fails to link - the right signal when the core
+would otherwise assert a guarantee on a port's behalf. It is the wrong signal
+for sound: only the output side is per-port, and a port that does nothing must
+keep making the beep it makes today. With no handler installed the core falls
+back to exactly that, on channel 0 only. `web/` opts in and renders four voices
+through Web Audio. `tests/snd_channels.cc` asserts both halves - four voices
+with a renderer, one beep without - and pins the pitch conversion: the note
+index is eighth tones (48 to the octave), not MIDI, and it is ONE BYTE, so a
+guest can reach octave 0 to octave 5 step 15 and no further. See
+[DOWNSTREAM.md](DOWNSTREAM.md).
+
+**A `browser` job builds the wasm and draws the page in CI.** `tests/web_browser.js`
+skips when there is no web build, which is right on a developer's machine and
+would be silent in CI - so the job installs emsdk, builds the wasm, mirrors a
+ROM and a disk beside the page, runs the script, and then asserts it did not
+skip and that the guest really booted. It is the only job that runs the wasm at
+all. It needs no native build: `romwbw-get mirror` used to ask the binary which
+releases it could boot, and v1.44 deleted that allowlist.
+
+**The Windows job runs code now.** It compiled three `.cc` files with `cl` and
+stopped, so nothing of this repository had ever been *executed* by a Windows
+machine. `tests/vda_keyboard.cc` and `tests/hbios_hostname.cc` are portable
+except for `strncasecmp`, which they now spell through `EMU_TEST_STRNCASECMP`;
+the msvc job builds and runs both, compiling qkz80 out of the cpmemu checkout
+the way `web/Makefile` does. The other two tests drive a pty and a POSIX
+filesystem and are not portable by design. **That step has never been observed
+green** - it was written on a machine with no Windows and no mingw, so the next
+push is what measures it.
+
+**R8 cannot name the picked file in a browser, and now we know why.** The
+`[EMSCRIPTEN]` item said carrying the picked `File.name` back through
+`emu_host_file_load()` would fix `R8`'s `Reading:` line, and that it was "left
+undone deliberately" because nothing here could compile or run the result. The
+second half was false, so it was implemented - and then reverted, because
+driving it in a real browser showed it can never work:
+
+```
+A>R8 WANTED.TXT
+R8 - Read from host filesystem
+Reading: WANTED.TXT          <- printed HERE, before any pick exists
+Creating: WANTED.TXT
+Done: 33 bytes               <- the pick only arrives now
+```
+
+`R8` asks `HBF_HOST_GETRNAME` immediately after the open, and in this front end
+the open does not complete - it suspends the guest and returns - so the state is
+not `HOST_FILE_READING`, the dispatcher answers nothing, and the name the user
+will choose does not exist yet. Making it work is a change to a `.COM` on the
+published disk images, not to this repository. The measurement is in the comment
+on `emu_host_file_get_read_name()` so nobody implements it a third time.
+
+**`emcc` is on this machine after all.** `todo.txt` said it was absent - "not in
+`brew list`, not on PATH" - and `MANUAL_CHECKS.md` said brew `emscripten` 6.0.9.
+Both were wrong: it is emsdk 6.0.6 at `~/esrc/emsdk`, off PATH until its
+`emsdk_env.sh` is sourced. That single wrong fact was gating three items.
+
 ## [1.46] - 2026-09-17
 
 ### The package shipped two documentation directories

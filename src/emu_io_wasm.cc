@@ -98,6 +98,13 @@ EM_JS(void, js_dsky_beep, (int ms), {
   if (Module.onDskyBeep) Module.onDskyBeep(ms);
 });
 
+// Sound tone - calls Module.onSndTone(channel, freq, volume, ms) (optional).
+// Unlike onDskyBeep this carries a pitch and a channel, which is the whole
+// point: see emu_snd_set_tone_handler() in emu_io.h.
+EM_JS(void, js_snd_tone, (int channel, int freq_hz, int volume, int duration_ms), {
+  if (Module.onSndTone) Module.onSndTone(channel, freq_hz, volume, duration_ms);
+});
+
 // Video clear - calls Module.onVideoClear() in JavaScript (optional)
 EM_JS(void, js_video_clear, (), {
   if (Module.onVideoClear) Module.onVideoClear();
@@ -140,8 +147,17 @@ static FILE* aux_out_file = nullptr;
 // Console I/O Implementation
 //=============================================================================
 
+// The browser's four-voice renderer.  Installed below rather than declared in
+// emu_io.h, because the hook is opt-in: see the note there.
+static void wasm_snd_tone(int channel, int freq_hz, int volume, int duration_ms) {
+  js_snd_tone(channel, freq_hz, volume, duration_ms);
+}
+
 void emu_io_init() {
-  // Nothing special needed for WebAssembly
+  // Opt in to tones.  Without this the core falls back to one beep on channel
+  // 0, which is what this front end did before 2026-09-18 and what every port
+  // that has not opted in still does.
+  emu_snd_set_tone_handler(wasm_snd_tone);
 }
 
 void emu_sleep_ms(int ms) {
@@ -554,20 +570,39 @@ const char* emu_host_file_get_write_name() {
   return host_write_filename.c_str();
 }
 
-// The browser genuinely cannot say, so it says nothing, which is the documented
-// "" answer in emu_io.h: HBF_HOST_GETRNAME reports no answer and R8 prints the
-// path that was typed, exactly as it does today.
+// The browser genuinely cannot say in time, so it says nothing - the documented
+// "" answer in emu_io.h.  HBF_HOST_GETRNAME reports no answer and R8 prints the
+// path that was typed.
 //
-// Echoing the request would be worse here than anywhere else. A read in this
-// front end opens a FILE PICKER (js_host_file_request_read above) and the
+// Echoing the request would be worse in this front end than in any other. A
+// read here opens a FILE PICKER (js_host_file_request_read above) and the
 // guest's string is only a hint the user is free to ignore, so the file that
 // arrives routinely has nothing to do with what was typed - the one case where
-// printing the request is not merely uninformative but wrong.
+// printing the request back is not merely uninformative but wrong.
 //
-// Answering properly needs the picked file's name to come back with its bytes,
-// which is a change to emu_host_file_provide_data() and to the page's picker
-// callback. Left undone deliberately: emcc is not a build dependency of this
-// repository, so nothing here can compile or run the result. See todo.txt.
+// THIS WAS IMPLEMENTED AND REVERTED ON 2026-09-18, and the measurement is why:
+// carrying the picked File's .name through emu_host_file_load() works, and it
+// still cannot reach R8's "Reading:" line.  Driven in headless Chrome - boot to
+// a prompt, type `R8 WANTED.TXT`, then hand over bytes under the name
+// `PickedByTheUser.TXT` - the terminal reads:
+//
+//     A>R8 WANTED.TXT
+//     R8 - Read from host filesystem
+//     Reading: WANTED.TXT          <- printed HERE, before any pick exists
+//     Creating: WANTED.TXT
+//     Done: 33 bytes               <- the pick only arrives now
+//
+// R8 asks HBF_HOST_GETRNAME immediately after the open, and in this front end
+// the open does not complete: it suspends the guest and returns, so the state
+// is not HOST_FILE_READING and the dispatcher answers nothing (hbios_dispatch.cc,
+// HBF_HOST_GETRNAME).  The name the user picks does not exist yet and will not
+// until several seconds later.  Making it work needs R8 to ask AFTER the read
+// completes, which is a change to a .COM on the published disk images in
+// romwbw_disks - not to this file.
+//
+// The reason this comment gave before that date - "emcc is not a build
+// dependency, so nothing here can compile or run the result" - was simply
+// false, and it hid the real one for months.
 const char* emu_host_file_get_read_name() {
   return "";
 }

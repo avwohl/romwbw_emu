@@ -434,6 +434,25 @@
 
     // Status messages from emulator
     Module.onStatus = function(msg) {
+      // "No catalog mirror beside this page" outranks "ready".
+      //
+      // loadManifest() sets that when catalog/manifest.json 404s, and the wasm
+      // reports "RomWBW Emulator ready" from its main() a moment later - so
+      // which one the user ends up looking at was decided by whether a failed
+      // fetch or a wasm instantiation finished first.  On an unmirrored page
+      // the loser was the only immediate sign that the page has nothing to
+      // offer; the fuller notice does not appear until Start is pressed with no
+      // ROM selected.  Caught by tests/web_browser.js going red about one run
+      // in eight.
+      //
+      // Narrow on purpose: any LATER status - loading, an error, a boot - still
+      // replaces it, because those are things the user just caused.
+      // typeof, because `noMirrorNotice` is declared with `let` further down
+      // the script: this handler is only ever CALLED after the body has run, so
+      // the binding exists by then, but a bare reference would throw for the
+      // whole handler if that ever stopped being true.
+      if (typeof noMirrorNotice === 'string' && noMirrorNotice
+          && /ready/i.test(msg)) return;
       statusDiv.textContent = msg;
     };
 
@@ -448,107 +467,37 @@
     };
 
     //=========================================================================
-    // VDA (Video Display Adapter) callbacks
+    // Sound: the one callback the core actually emits
     //=========================================================================
-
-    // Track VDA cursor separately from terminal cursor
-    let vdaCursorRow = 0;
-    let vdaCursorCol = 0;
-    let vdaAttr = 0x07;
-    let vdaFg = 7;
-    let vdaBg = 0;
-
-    // ANSI color codes (CGA palette)
-    const ansiColors = [
-      '#000000', // 0: Black
-      '#0000AA', // 1: Blue
-      '#00AA00', // 2: Green
-      '#00AAAA', // 3: Cyan
-      '#AA0000', // 4: Red
-      '#AA00AA', // 5: Magenta
-      '#AA5500', // 6: Brown/Yellow
-      '#AAAAAA', // 7: Light Gray
-      '#555555', // 8: Dark Gray
-      '#5555FF', // 9: Light Blue
-      '#55FF55', // 10: Light Green
-      '#55FFFF', // 11: Light Cyan
-      '#FF5555', // 12: Light Red
-      '#FF55FF', // 13: Light Magenta
-      '#FFFF55', // 14: Yellow
-      '#FFFFFF'  // 15: White
-    ];
-
-    Module.onVdaInit = function(rows, cols) {
-      // Initialize video display
-      term.clear();
-      vdaCursorRow = 0;
-      vdaCursorCol = 0;
-    };
-
-    Module.onVdaClear = function() {
-      term.clear();
-      vdaCursorRow = 0;
-      vdaCursorCol = 0;
-    };
-
-    Module.onVdaSetCursor = function(row, col) {
-      vdaCursorRow = row;
-      vdaCursorCol = col;
-      // Use ANSI escape sequence to position cursor (1-based)
-      term.write('\x1b[' + (row + 1) + ';' + (col + 1) + 'H');
-    };
-
-    Module.onVdaWriteChar = function(ch, attr) {
-      // Apply attribute if different
-      if (attr !== vdaAttr) {
-        vdaAttr = attr;
-        // Convert attribute to ANSI colors (simple: low nibble = fg, high nibble = bg)
-        let fg = attr & 0x0F;
-        let bg = (attr >> 4) & 0x07;
-        term.write('\x1b[' + (30 + (fg & 7)) + ';' + (40 + bg) + 'm');
-      }
-      if (ch >= 32 && ch < 127) {
-        term.write(String.fromCharCode(ch));
-      } else if (ch === 13) {
-        term.write('\r');
-      } else if (ch === 10) {
-        term.write('\n');
-      }
-    };
-
-    Module.onVdaFill = function(row, col, count, ch, attr) {
-      // Position cursor and fill with character
-      term.write('\x1b[' + (row + 1) + ';' + (col + 1) + 'H');
-      const fillChar = (ch >= 32 && ch < 127) ? String.fromCharCode(ch) : ' ';
-      term.write(fillChar.repeat(count));
-    };
-
-    Module.onVdaScroll = function(lines) {
-      if (lines > 0) {
-        // Scroll up: use ANSI scroll up
-        term.write('\x1b[' + lines + 'S');
-      } else if (lines < 0) {
-        // Scroll down: use ANSI scroll down
-        term.write('\x1b[' + (-lines) + 'T');
-      }
-    };
-
-    Module.onVdaSetAttr = function(attr) {
-      vdaAttr = attr;
-      let fg = attr & 0x0F;
-      let bg = (attr >> 4) & 0x07;
-      term.write('\x1b[' + (30 + (fg & 7)) + ';' + (40 + bg) + 'm');
-    };
-
-    Module.onVdaSetColor = function(fg, bg) {
-      vdaFg = fg;
-      vdaBg = bg;
-      term.write('\x1b[' + (30 + (fg & 7)) + ';' + (40 + (bg & 7)) + 'm');
-    };
-
-    //=========================================================================
-    // Sound callbacks (using Web Audio API)
-    //=========================================================================
+    //
+    // MEASURED 2026-09-18, in headless Chrome, over a full boot to a CP/M 2.2
+    // prompt: of the eight Module.on* names src/emu_io_wasm.cc emits -
+    // onVideoClear, onVideoSetCursor, onVideoWriteChar, onDskyBeep, onDskyHex,
+    // onDskySegments, onDskyLeds, onPrinterOutput - NOT ONE fired. The console
+    // path is CIO (serial) from the boot loader to the prompt and never touches
+    // the video device, and the 3.6.0 device inventory only QUERIES the VDA
+    // (BF_VDAQRY / BF_VDADEV), which returns registers and emits nothing.
+    //
+    // This block used to carry twelve handlers - eight onVda* and four onSnd* -
+    // under names the core has never emitted under any build. They were dead on
+    // arrival, and renaming them would not have woken them: the three that line
+    // up by arity (onVdaClear, onVdaSetCursor, onVdaWriteChar) would drive
+    // term.clear() and term.write() into the SAME xterm the serial console owns,
+    // and which of the two gets to own the screen is a design question nobody
+    // has answered. onVdaWriteChar was worse than dead - it read an attribute
+    // byte the emitter never sends, and `undefined & 0x0F` is 0, so every
+    // character it drew was black on black.
+    //
+    // So: deleted rather than rewired, and the measurement is here so the next
+    // person does not re-derive it. If a guest that really drives the VDA ever
+    // needs drawing, the work is a second terminal (or a canvas) plus emitting
+    // onVideoSetAttr and onVideoScrollUp, which emu_io_wasm.cc holds as state
+    // and a no-op today - not a rename.
+    //
+    // What IS emitted is onDskyBeep(ms), from HBF_SNDPLAY and HBF_SNDBEEP by way
+    // of emu_dsky_beep(). A duration and no pitch is the whole of the core's
+    // audio vocabulary (see todo.txt's [SOUND] item), so this plays one fixed
+    // tone for that long, which is exactly what the core describes.
 
     let audioContext = null;
 
@@ -559,15 +508,7 @@
       return audioContext;
     }
 
-    Module.onSndReset = function() {
-      // Stop all sounds
-      if (audioContext) {
-        audioContext.close();
-        audioContext = null;
-      }
-    };
-
-    Module.onSndBeep = function(freq, duration_ms) {
+    function playBeep(freq, duration_ms) {
       try {
         const ctx = getAudioContext();
         const oscillator = ctx.createOscillator();
@@ -583,18 +524,39 @@
         oscillator.start();
         oscillator.stop(ctx.currentTime + duration_ms / 1000);
       } catch (e) {
-        // Sound error - ignore
+        // No audio device, or no user gesture yet - a silent beep is not a
+        // reason to stop the machine.
       }
     };
 
-    Module.onSndNote = function(channel, note, duration_ms) {
-      // Convert MIDI note number to frequency: f = 440 * 2^((n-69)/12)
-      const freq = 440 * Math.pow(2, (note - 69) / 12);
-      Module.onSndBeep(freq, duration_ms);
+    // 880 Hz because emu_dsky_beep carries a duration only.  BF_SNDBEEP and a
+    // guest that never set a period both land here.
+    Module.onDskyBeep = function(duration_ms) {
+      playBeep(880, duration_ms || 100);
     };
 
-    Module.onSndVolume = function(channel, volume) {
-      // Volume control (0-255) - could be used to adjust gain
+    // The four voices, one call per channel from BF_SNDPLAY.  This is the
+    // opt-in hook from emu_io.h: the core hands over the pitch and volume the
+    // guest set instead of a bare duration, so a four-voice tune is four voices
+    // rather than four identical beeps in sequence.  Volume is 0..255 as the
+    // guest set it; 0.1 full scale is the same ceiling the beep uses, so a tune
+    // cannot be louder than the beep it replaces.
+    Module.onSndTone = function(channel, freq_hz, volume, duration_ms) {
+      if (!freq_hz || !volume) return;
+      try {
+        const ctx = getAudioContext();
+        const oscillator = ctx.createOscillator();
+        const gainNode = ctx.createGain();
+        oscillator.connect(gainNode);
+        gainNode.connect(ctx.destination);
+        oscillator.type = 'square';
+        oscillator.frequency.value = freq_hz;
+        gainNode.gain.value = 0.1 * Math.min(1, volume / 255);
+        oscillator.start();
+        oscillator.stop(ctx.currentTime + (duration_ms || 100) / 1000);
+      } catch (e) {
+        // Same as playBeep: a silent note is not a reason to stop the machine.
+      }
     };
 
     //=========================================================================
@@ -623,6 +585,10 @@
           const data = new Uint8Array(e.target.result);
           const ptr = Module._malloc(data.length);
           Module.HEAPU8.set(data, ptr);
+          // No name goes with the bytes, and that is deliberate: R8 prints its
+          // "Reading:" line before the user has picked anything, so a name
+          // carried through here could never reach it.  Measured 2026-09-18 -
+          // see emu_host_file_get_read_name() in src/emu_io_wasm.cc.
           Module._emu_host_file_load(ptr, data.length);
           Module._free(ptr);
           statusDiv.textContent = 'Uploaded: ' + file.name + ' (' + data.length + ' bytes)';

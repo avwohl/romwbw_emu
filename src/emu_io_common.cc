@@ -28,6 +28,33 @@
 #endif
 
 //=============================================================================
+// Sound: the optional tone handler
+//
+// Here rather than in any emu_io_*.cc because every port links this file and
+// none of them has to know about it.  See emu_io.h for why this one hook is a
+// pointer when everything around it is a symbol.
+//=============================================================================
+
+static emu_snd_tone_fn snd_tone_handler = nullptr;
+
+void emu_snd_set_tone_handler(emu_snd_tone_fn fn) {
+  snd_tone_handler = fn;
+}
+
+void emu_snd_emit_tone(int channel, int freq_hz, int volume, int duration_ms) {
+  if (snd_tone_handler) {
+    snd_tone_handler(channel, freq_hz, volume, duration_ms);
+    return;
+  }
+  // No renderer: keep doing exactly what this always did, and only for the
+  // first channel, so a four-voice tune does not become four beeps in a row on
+  // a port that has not opted in.
+  if (channel == 0 && volume > 0 && freq_hz > 0) {
+    emu_dsky_beep(duration_ms);
+  }
+}
+
+//=============================================================================
 // File I/O Implementation
 //=============================================================================
 

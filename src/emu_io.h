@@ -284,7 +284,11 @@ void emu_video_set_cursor(int row, int col);      // Move cursor
 void emu_video_get_cursor(int* row, int* col);    // Get cursor position
 void emu_video_write_char(uint8_t ch);            // Write char at cursor
 void emu_video_write_char_at(int row, int col, uint8_t ch);  // Write at position
-void emu_video_scroll_up(int lines);              // Scroll up
+// Scroll up by `lines`.  NEGATIVE MEANS SCROLL BACK: BF_VDASCR takes a signed
+// count in E and the guide is explicit that a negative one reverses the
+// direction, so a front end that draws must handle both.  The CLI ignores it
+// entirely, which is correct for a stream with no addressable screen.
+void emu_video_scroll_up(int lines);
 void emu_video_set_attr(uint8_t attr);            // Set text attribute
 uint8_t emu_video_get_attr();                     // Get current attribute
 
@@ -293,6 +297,40 @@ void emu_dsky_show_hex(uint8_t position, uint8_t value);  // Show hex digit
 void emu_dsky_show_segments(uint8_t position, uint8_t segments);  // Raw segments
 void emu_dsky_set_leds(uint8_t leds);             // Set status LEDs
 void emu_dsky_beep(int duration_ms);              // Beep
+
+//-----------------------------------------------------------------------------
+// SOUND: the four channels HBIOS actually has
+//
+// emu_dsky_beep() above is a duration and nothing else - no pitch, no channel,
+// no volume - so a guest playing a four-voice tune through BF_SNDPLAY heard
+// four identical beeps in sequence, or on most front ends nothing at all. The
+// dispatcher has kept snd_period[4] and snd_volume[4] all along and had no way
+// to hand them to anybody.
+//
+// THIS HOOK IS OPTIONAL, AND DELIBERATELY NOT A PLAIN FUNCTION DECLARATION.
+// Everything else in this header is a symbol a port must define or fail to
+// link, which is right for a guarantee the core would otherwise be asserting on
+// the port's behalf (see emu_host_path_caps). It is wrong here: there are four
+// ports in three other repositories, only the output side of this is per-port
+// (AudioTrack, AVAudioEngine, WASAPI, Web Audio), and a port that has not been
+// updated must keep building and keep making the beep it makes today. So the
+// core holds a pointer, defaulted to nothing, and a front end that wants tones
+// opts in by calling the setter at start-up.
+//
+// channel   0..3
+// freq_hz   the pitch; 0 means silence this channel
+// volume    0..255 as the guest set it, 0 meaning off
+// duration_ms  how long BF_SNDPLAY asked for
+typedef void (*emu_snd_tone_fn)(int channel, int freq_hz, int volume,
+                                int duration_ms);
+
+// Install (or, with nullptr, remove) the front end's tone renderer.
+void emu_snd_set_tone_handler(emu_snd_tone_fn fn);
+
+// What the dispatcher calls. With a handler installed it forwards; with none it
+// falls back to emu_dsky_beep(duration_ms) on the first audible channel, which
+// is exactly the behaviour every port has today.
+void emu_snd_emit_tone(int channel, int freq_hz, int volume, int duration_ms);
 int emu_dsky_get_key();                           // Get key (-1 if none)
 
 //=============================================================================
