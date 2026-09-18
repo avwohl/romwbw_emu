@@ -19,6 +19,10 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [1.47] - 2026-09-18
+
 ### The HBIOS dispatcher was read against RomWBW v3.6.0, and 44 divergences are fixed
 
 **`docs/HBIOS_AUDIT_2026-09-18.md` is the record**, and it is the point of the
