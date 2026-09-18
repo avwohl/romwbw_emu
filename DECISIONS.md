@@ -195,3 +195,40 @@ it in place, rather than reaching outside the config directory the run selected.
 
 **Who is blocked.** Nobody. This is recorded as a deliberate choice with a
 trigger for revisiting it, not as an open defect.
+
+## 7. `docs/ROM_ATTESTATION.md`: whose signed filing is it, and is it re-signed?
+
+`docs/ROM_ATTESTATION.md` is a signed filing to Apple — it says "I hereby
+affirm", "I hereby grant Apple Inc. permission", and carries a "Digital
+Signature" block. That is why nothing in it gets reworded quietly, and why
+what is left here is a choice rather than an edit.
+
+**What has already been done, so nobody re-derives it.** Two of the three
+stale things in it were statements of *technical fact* that had become FALSE,
+not parts of the affirmation, and v1.44 corrected them without touching the
+affirmation or the signature block:
+
+- it claimed the emulator "refuses a ROM whose release is not on" a list.
+  There is no list since v1.44; any release with a readable HCB loads.
+- it claimed `roms/build_emu_rom.sh` "reproduces RomWBW 3.5.1 only". It
+  reproduces any published release, and 3.5.1 was not even the catalog's
+  default by then.
+
+**What needs a ruling.**
+
+1. Its `Date: December 2024` is two years stale.
+2. `ioscpm` carries a near-identical copy of the same document, differing from
+   this one **only** in that date. So there are two signed filings and no rule
+   about which is the original.
+
+The questions are: whose document is it, is it re-signed today naming both
+published releases, and does one of the two copies go?
+
+**Why this is not in `todo.txt`.** It was there, on the grounds that the work
+was "a document edit any machine can make". That was true of the two factual
+corrections, and they are done. What is left is agreement on the wording of a
+signed document, which is exactly this file's subject. Moved 2026-09-18.
+
+**Who is blocked.** Nobody is blocked from shipping. The filing is stale in
+its date and duplicated across two repositories, which is a correctness
+problem in a legal document rather than a defect in the software.

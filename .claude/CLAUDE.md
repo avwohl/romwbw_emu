@@ -190,9 +190,15 @@ check red in another repository.
     `romwbw_disks/tools/check_source_drift.sh` is what continuously asserts the
     two trees agree, and it needs no ROM.
 
-    `src/emu_hbios.asm` is **byte-identical** to romwbw_disks' copy and that
-    drift check asserts it, so an edit here is an edit to every published ROM -
-    see the generation cost in `todo.txt`.
+    **BUDGET AN emu_hbios.asm EDIT BEFORE YOU MAKE ONE.** It is
+    byte-identical to romwbw_disks' copy and that drift check asserts exactly
+    that - it used to assert the two differed in a documented way, until v1.44
+    parameterised this copy. So an edit in either tree is an edit to the other,
+    and to every published ROM's sha256, which bumps each romwbw_disks
+    version's `generation`, which makes every client invalidate its cached
+    images: every user re-downloads their disks. That is not theoretical -
+    HB_BNKCALL (`e47c948`, `d4f4a2a`, 2026-09-06) cost exactly that, a
+    generation-2 republish of both 3.5.1 and 3.6.0.
   - **Never write `org 0100h` in a CP/M `.COM` source.** L80 bases a relocatable
     code segment at 0100h by itself, so an ORG is applied *on top of* that base
     and puts the code at 0200h behind 256 zero bytes. The result runs - CP/M

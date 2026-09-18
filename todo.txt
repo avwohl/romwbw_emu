@@ -107,42 +107,6 @@ changing it needs a name parameter on emu_host_file_provide_data() and a change
 to the page's picker callback.  until then the browser answers 0xFF and R8
 prints what was typed, which is what it always did.
 
-- [ANY] src/emu_hbios.asm is bank 0 of every published ROM, and it is now
-BYTE-IDENTICAL to romwbw_disks' copy - tools/check_source_drift.sh there
-asserts exactly that, where it used to assert the two differed in a documented
-way.  so an edit in either tree is an edit to the other, and to every published
-ROM's sha256, which bumps each romwbw_disks version's generation, and a
-generation bump is what makes a client invalidate its cached images - every
-user re-downloads their disks.  that is not theoretical: HB_BNKCALL (e47c948,
-d4f4a2a, 2026-09-06) cost exactly that, a generation-2 republish of both 3.5.1
-and 3.6.0.  budget it before the next emu_hbios.asm change.
-  the file no longer names a release: both version stamps come from a generated
-romwbw_ver.inc.  making it so moved no published byte, because published ROMs
-are built from romwbw_disks' copy, which was already parameterised.
-  DO NOT BUILD ROMs HERE as a matter of routine.  They are romwbw_disks'
-province; nothing in this repository's build, test or release path assembles
-one.  roms/build_emu_rom.sh is a DEBUGGING tool for when bank 0 is actually
-suspect - what continuously asserts the two trees agree is
-romwbw_disks/tools/check_source_drift.sh, which needs no ROM.
-  the finished HB_BNKCALL work is CHANGELOG.md's `### HB_BNKCALL performs a
-real bank call` section (grep it; CHANGELOG grows at the top, so a line number
-will not stay right).
-
-- [ANY] docs/ROM_ATTESTATION.md is a signed filing to Apple - "I hereby
-affirm", "I hereby grant Apple Inc. permission", "Digital Signature" - so the
-signed text is not something to reword quietly, and what is open is agreement
-on the wording rather than a capability.  TWO of the three stale things are
-now fixed, because they were statements of technical fact that had become
-FALSE rather than parts of the affirmation: its claim that the emulator
-"refuses a ROM whose release is not on" a list, and its claim that
-build_emu_rom.sh "reproduces RomWBW 3.5.1 only".  Both were corrected in v1.44
-and the affirmation and signature block were not touched.
-  WHAT IS STILL OPEN, and needs the owner: its "Date: December 2024" is two
-years stale, and ioscpm carries a near-identical copy of the same document that
-differs from this one only in that date - so there are two signed filings and
-no rule about which is the original.  The ruling is whose document it is,
-whether it is re-signed today, and whether one of the two copies goes.
-
 - [WINDOWS] nothing on Windows is RUN, only compiled.  the msvc job builds the
 three core .cc files z80cpmw pulls straight out of src/ and stops there: there
 is no MSVC build of the emulator to link and no test program that would run.
