@@ -138,10 +138,20 @@ class Fixture(object):
         }
 
     def write(self, base, versions, index_extra=None, catalog_mangle=None):
-        """versions: [(ver, catalog_dict, default_bool, generation)]"""
+        """versions: [(ver, catalog, default_bool, generation[, prerelease])]
+
+        The fifth field is optional because the real index omits the key on
+        a released version - it is emitted only when true, so a released
+        catalog stays byte-identical to the one on its immutable tag.  A
+        fixture that always wrote `prerelease: false` would be testing a
+        document romwbw_disks does not publish, and would hide exactly the
+        bug .get() is there to prevent.
+        """
         self.base = base
         entries = []
-        for ver, cat, is_default, gen in versions:
+        for row in versions:
+            ver, cat, is_default, gen = row[:4]
+            pre = row[4] if len(row) > 4 else False
             raw = json.dumps(cat, indent=2).encode()
             if catalog_mangle:
                 raw = catalog_mangle(ver, raw)
@@ -165,6 +175,11 @@ class Fixture(object):
                 "rom_count": len(cat["roms"]), "disk_count": len(cat["disks"]),
                 "notes": [],
             })
+            if pre:
+                entries[-1]["prerelease"] = True
+                entries[-1]["label"] = ("RomWBW " + ver +
+                                        " (development snapshot)")
+                entries[-1]["status"] = "snapshot"
         index = {"schema": "romwbw-disks-index", "schema_version": 1,
                  "interface": "v0", "repo": "http://fixture",
                  "index_url": base + "index-v0.json",
@@ -205,6 +220,7 @@ def run(cache, base, *args, **kw):
     env = dict(os.environ)
     env["XDG_CONFIG_HOME"] = kw.pop("confdir", os.path.join(cache, "conf"))
     env["XDG_DATA_HOME"] = kw.pop("datadir", os.path.join(cache, "data"))
+    env.update(kw.pop("env_extra", {}))
     env.pop("ROMWBW_VERSION", None)
     env.pop("ROMWBW_INDEX_URL", None)
     env.pop("ROMWBW_GET_CACHE", None)
@@ -901,6 +917,163 @@ def _tests(tmp, web, base):
               "not misread as v0")
     finally:
         s3.shutdown()
+
+    # 13. development snapshots are opt-in --------------------------------------
+    #
+    # The index may carry RomWBW development snapshots, flagged
+    # `prerelease: true`.  CATALOG_SCHEMA.md 2.3.1: a client MUST NOT offer one
+    # by default.  The reason is that nothing downstream can tell them apart -
+    # a snapshot and the release it precedes report the SAME HBIOS version
+    # bytes, so emu_validate_rom_hcb cannot, and only the CBIOS banner inside
+    # the disk image carries the full tag.
+    pre = Fixture(os.path.join(tmp, "pre"))
+    os.makedirs(pre.root)
+    s6, b6 = serve(pre.root)
+    try:
+        pre.base = b6
+        p360 = pre.catalog("3.6.0",
+                           [pre.rom("emu_avw", "3.6.0", default=True)],
+                           [pre.disk("hd1k_combo", "3.6.0", slot=0)])
+        p370 = pre.catalog("3.7.0-dev.14",
+                           [pre.rom("emu_avw", "3.7.0-dev.14", default=True)],
+                           [pre.disk("hd1k_combo", "3.7.0-dev.14", slot=0)])
+        # Emitted in semver precedence order, in which a pre-release sorts
+        # BEFORE the release it precedes.  The snapshot is listed second here
+        # and first below, because neither position may decide anything.
+        pre.write(b6, [("3.6.0", p360, True, 1),
+                       ("3.7.0-dev.14", p370, False, 1, True)])
+        pcache = os.path.join(tmp, "pre-cache")
+        pconf = os.path.join(tmp, "pre-conf")
+
+        r = run(pcache, b6, "versions", confdir=pconf)
+        check(r.returncode == EX_OK and "3.6.0" in r.stdout
+              and "3.7.0-dev.14" not in r.stdout.split("not shown:")[0],
+              "versions does not list a development snapshot")
+        check("not shown" in r.stdout and "3.7.0-dev.14" in r.stdout,
+              "but names what it held back, and the exact string to ask for - "
+              "romwbw_version is a full upstream tag, not three numbers")
+
+        r = run(pcache, b6, "--prerelease", "versions", confdir=pconf)
+        check(r.returncode == EX_OK and "3.7.0-dev.14" in r.stdout,
+              "--prerelease lists it")
+        check("RomWBW 3.7.0-dev.14 (development snapshot)" in r.stdout,
+              "showing the published label verbatim, which 2.3 says is "
+              "the surface carrying the warning - this row is the whole "
+              "of what tells a reader the release is not one")
+        check(r.stdout.count("(development snapshot)") == 1,
+              "and once, not twice: a mark of our own beside the label "
+              "is a second copy of one fact")
+        r = run(pcache, b6, "versions", "--all", confdir=pconf)
+        check("3.7.0-dev.14" in r.stdout and "not shown" not in r.stdout,
+              "and `versions --all` is the same switch: it was a no-op left "
+              "from the release allowlist, and 'show every row' is what "
+              "anyone still passing it means")
+        r = run(pcache, b6, "versions", confdir=pconf,
+                env_extra={"ROMWBW_PRERELEASE": "1"})
+        check("3.7.0-dev.14" in r.stdout and "not shown" not in r.stdout,
+              "ROMWBW_PRERELEASE=1 is the same switch for a shell that has "
+              "already decided")
+        r = run(pcache, b6, "versions", confdir=pconf,
+                env_extra={"ROMWBW_PRERELEASE": "0"})
+        check("not shown" in r.stdout,
+              "and ROMWBW_PRERELEASE=0 reads the way anyone would expect")
+
+        r = run(pcache, b6, "versions", "--json", confdir=pconf)
+        doc = json.loads(r.stdout)
+        vs = [e["romwbw_version"] for e in doc["romwbw_versions"]]
+        check("3.7.0-dev.14" not in vs
+              and doc["hidden_prerelease"] == ["3.7.0-dev.14"],
+              "--json filters romwbw_versions and names what it held back "
+              "separately - a GUI renders that array straight into a picker, "
+              "which is the client 2.3.1 is written for")
+
+        r = run(pcache, b6, "list", "--roms", confdir=pconf)
+        check(r.returncode == EX_OK and "RomWBW 3.6.0" in r.stdout,
+              "with nothing named, a run lands on the release")
+
+        r = run(pcache, b6, "--romwbw", "3.7.0-dev.14", "list", "--roms",
+                confdir=pconf)
+        check(r.returncode == EX_OK and "3.7.0-dev.14" in r.stdout,
+              "naming a snapshot exactly reaches it without --prerelease: "
+              "naming it IS the opt-in")
+        check("development snapshot" in r.stdout,
+              "and `list` shows the published label, which is the surface "
+              "carrying the warning")
+
+        r = run(pcache, b6, "use", "3.7.0-dev.14", confdir=pconf)
+        check(r.returncode == EX_OK and "development snapshot" in r.stderr,
+              "`use` stores a snapshot and says what it just wrote down")
+        r = run(pcache, b6, "list", "--roms", confdir=pconf)
+        check(r.returncode == EX_OK and "3.7.0-dev.14" in r.stdout,
+              "a stored snapshot is honoured - `use` was the explicit opt-in")
+        check("development snapshot" in r.stderr,
+              "and never arrives silently: this is the one path where a "
+              "snapshot is selected and the user did not say so in THIS "
+              "command")
+        r = run(pcache, b6, "versions", confdir=pconf)
+        check("3.7.0-dev.14" in r.stdout and "selected" in r.stdout,
+              "and the row is shown although it is a snapshot - hiding the "
+              "selected row is how a stale choice survives unnoticed")
+
+        r = run(pcache, b6, "use", "--clear", confdir=pconf)
+        check(r.returncode == EX_OK, "use --clear forgets it again")
+
+        # The mirror is the picker the web page builds itself from:
+        # fillVersionSelect() renders manifest.romwbw_versions straight into
+        # the select, so mirroring a snapshot IS offering it.
+        psite = os.path.join(tmp, "pre-site")
+        r = run(pcache, b6, "mirror", psite, "--versions", "all", confdir=pconf)
+        doc = json.load(open(os.path.join(psite, "catalog", "manifest.json")))
+        vs = [e["romwbw_version"] for e in doc["romwbw_versions"]]
+        check(r.returncode == EX_OK and vs == ["3.6.0"],
+              "`mirror --versions all` means every RELEASE: a snapshot is not "
+              "written into the manifest the web page fills its picker from")
+        check("3.7.0-dev.14" in r.stdout or "3.7.0-dev.14" in r.stderr,
+              "and it says which one it left out")
+
+        psite2 = os.path.join(tmp, "pre-site2")
+        r = run(pcache, b6, "--prerelease", "mirror", psite2, "--versions",
+                "all", confdir=pconf)
+        doc = json.load(open(os.path.join(psite2, "catalog", "manifest.json")))
+        blocks = {e["romwbw_version"]: e for e in doc["romwbw_versions"]}
+        check(r.returncode == EX_OK and "3.7.0-dev.14" in blocks,
+              "--prerelease mirrors it")
+        check(blocks["3.7.0-dev.14"].get("prerelease") is True,
+              "and the block carries the flag, so a page that opts in can "
+              "label it")
+        check("prerelease" not in blocks["3.6.0"],
+              "while a released version's block is unchanged - the key is "
+              "emitted only when true, exactly as the index emits it")
+        check("development snapshot" in blocks["3.7.0-dev.14"]["label"],
+              "and the label travels, which is what fillVersionSelect() "
+              "renders into the option text")
+
+        # No `default` anywhere, and the snapshot FIRST.  fallback() drops to
+        # pool[0] when the index nominates nothing, so this is the arrangement
+        # in which a position-based pick lands on a snapshot.
+        nd = Fixture(os.path.join(tmp, "nodefault"))
+        os.makedirs(nd.root)
+        s7, b7 = serve(nd.root)
+        try:
+            nd.base = b7
+            n370 = nd.catalog("3.7.0-dev.2",
+                              [nd.rom("emu_avw", "3.7.0-dev.2", default=True)],
+                              [nd.disk("hd1k_combo", "3.7.0-dev.2", slot=0)])
+            n360 = nd.catalog("3.6.0",
+                              [nd.rom("emu_avw", "3.6.0", default=True)],
+                              [nd.disk("hd1k_combo", "3.6.0", slot=0)])
+            nd.write(b7, [("3.7.0-dev.2", n370, False, 1, True),
+                          ("3.6.0", n360, False, 1)])
+            r = run(os.path.join(tmp, "nd-cache"), b7, "list", "--roms",
+                    confdir=os.path.join(tmp, "nd-conf"))
+            check(r.returncode == EX_OK and "RomWBW 3.6.0" in r.stdout,
+                  "with no index default at all, the fallback still lands on "
+                  "a release - the pool a run chooses from is filtered, not "
+                  "just the rows a listing prints")
+        finally:
+            s7.shutdown()
+    finally:
+        s6.shutdown()
 
 
 if __name__ == "__main__":

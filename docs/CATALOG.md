@@ -57,7 +57,7 @@ its real filename until it has passed both.
 
 | | |
 |---|---|
-| `romwbw-get versions` | which RomWBW releases are published, and which this build can run |
+| `romwbw-get versions` | which RomWBW releases are published |
 | `romwbw-get list` | the ROMs and disks in the selected release |
 | `romwbw-get use 3.5.1` | pick a release and remember it |
 | `romwbw-get fetch @rom @disk0` | download and verify, printing the paths |
@@ -98,6 +98,7 @@ is not:
 | `--romwbw VER` | use this RomWBW release for this run |
 | `--emu PATH` | the `romwbw_emu` binary to run |
 | `--trust-cache` | check cached sizes but not their sha256 |
+| `--prerelease` | also offer RomWBW development snapshots; `$ROMWBW_PRERELEASE=1` does the same |
 
 **The index is cached for an hour** (`INDEX_TTL`), and a cached one is used for
 up to 30 days if the network is unreachable. So a newly published disk may not
@@ -115,9 +116,45 @@ and every cache path. The precedence, first one set wins:
 | `romwbw-get use VER` | remembered in `$XDG_CONFIG_HOME/romwbw_emu/catalog.json` |
 | the index's `default: true` entry | when nothing is chosen |
 
-Releases this build cannot run are filtered out **before** the index default is
-honoured, so a newly published default this binary would refuse is never picked
-and 51 MB is never downloaded for it.
+There used to be a sentence here about releases "this build cannot run" being
+filtered out before the index default was honoured. There is no such filter and
+has not been since the compile-time release allowlist went: every release a v0
+catalog publishes speaks the same HBIOS-to-emulator interface, which is what the
+v0 in the name means.
+
+**Development snapshots are the one thing held back, and for a different
+reason.** The index may carry RomWBW development snapshots, flagged
+`prerelease: true` — `3.7.0-dev.14` is published today. Upstream does not call
+these releases, and `CATALOG_SCHEMA.md` 2.3.1 says a client must not offer one
+by default, so:
+
+- `versions` lists neither them nor their assets, and prints a footer naming
+  what it held back and the exact string to ask for;
+- nothing auto-selects one — not the index default (which is never a snapshot),
+  and not the fallback a no-default index would take;
+- `mirror --versions all` means every *release*, so the web page's picker never
+  offers one;
+- `versions --json` filters `romwbw_versions[]` and names what it dropped in
+  `hidden_prerelease[]`, because a GUI renders that array straight into a menu.
+
+Three things opt in, and nothing else does:
+
+    tools/romwbw-get --prerelease versions        # this run
+    ROMWBW_PRERELEASE=1 tools/romwbw-get versions # this shell
+    tools/romwbw-get --romwbw 3.7.0-dev.14 list   # naming it IS the opt-in
+
+`romwbw-get use 3.7.0-dev.14` stores one, and warns both when it is stored and
+on every run that resolves to it — that is the one path where a snapshot is
+selected and the command in front of you did not say so.
+
+**Why this cannot be left to the user's eye.** A snapshot and the release it
+precedes are indistinguishable by their version bytes: `v3.7.0-dev.14`'s HCB
+reads `57 a8 37 00`, byte for byte what a released `3.7.0` will read. So
+`emu_validate_rom_hcb` cannot tell them apart and neither can anything computed
+from `hbios.ver_byte`. The only thing that carries the full tag is the CBIOS
+banner inside the disk image — `CBIOS v3.7.0-dev.14 [WBW]` — which is not
+readable until 49 MB has been downloaded and booted. Hence a boolean in the
+index, and hence branching on it rather than on `status`, which is free text.
 
 **A remembered choice can stop being usable, and it is never rewritten for
 you.** The index can stop publishing that release, or a rebuilt binary can stop
@@ -130,8 +167,10 @@ release says so, on stderr, and names what it used instead:
                 `romwbw-get use <version>` chooses another, `use --clear` forgets it.
 
 `romwbw-get versions` says the same thing in its listing — which matters,
-because a release that is filtered out has no row there to carry a `selected`
-mark, and one the index has dropped has no row at all. In `versions --json`,
+because a release the index has dropped has no row there to carry a `selected`
+mark. A snapshot that *is* the stored choice keeps its row even without
+`--prerelease`, for the same reason: hiding the selected row is how a stale
+choice survives unnoticed. In `versions --json`,
 `selected` is what the file says and `in_use` is what a run gets; equal until
 something diverges.
 

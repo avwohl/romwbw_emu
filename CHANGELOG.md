@@ -19,7 +19,47 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
-Nothing yet.
+### RomWBW development snapshots are opt-in in `romwbw-get`
+
+The published index carries `3.7.0-dev.14`, flagged `prerelease: true`, and
+`romwbw-get` had been listing it like any other release.
+`romwbw_disks/docs/CATALOG_SCHEMA.md` 2.3.1 says a client MUST NOT offer one by
+default, so now: `versions` omits them and prints a footer naming what it held
+back, nothing auto-selects one, `versions --json` filters `romwbw_versions[]`
+and reports `hidden_prerelease[]` beside it, and `mirror --versions all` means
+every *release*, so the web page's picker cannot offer a snapshot either.
+
+`--prerelease`, `ROMWBW_PRERELEASE=1`, or naming the exact version opts in;
+`versions --all` is an alias, which gives that no-op flag its meaning back.
+`use` stores one and warns, and so does every later run that resolves to it —
+that is the one path where a snapshot is selected and the command in front of
+you did not say so.
+
+**This is not the compile-time release allowlist coming back.** That filter
+asked whether this build could run a release; every release a v0 catalog
+publishes speaks the same HBIOS-to-emulator interface, so the answer was always
+yes and it went. This asks whether upstream calls it a release at all. The two
+are worth keeping apart because nothing downstream can tell a snapshot from the
+release it precedes: `v3.7.0-dev.14`'s HCB reads `57 a8 37 00`, byte for byte
+what a released `3.7.0` will read, so `emu_validate_rom_hcb` cannot separate
+them and neither can anything computed from `hbios.ver_byte`. Only the CBIOS
+banner inside the disk image carries the full tag, and that is 49 MB away.
+
+Thirty checks in `tests/catalog_client_test.py`, including the arrangement that
+would catch a position-based pick: a snapshot first in the array, no
+`default: true` anywhere.
+
+### DOWNSTREAM.md: four stale facts re-measured, and the checklist reaches v1.47
+
+`emu_io_common.cc` supplies **fifteen** of the functions `emu_io.h` declares,
+not nine — a count that was wrong by four the day it was written and widened by
+the sound pair. The 34 undefined `emu_*` symbols survive re-measurement, but
+there are **nine** `emu_host_file_*` entry points and the document said eight.
+The `romwbw_pin.h` removal instruction and the v1.37 C4267 line both cited live
+examples in ioscpm and z80cpmw that were done. And the porting checklist stopped
+at v1.44, so a new port never learned from it that it must define
+`emu_snd_set_tone_handler()` and `emu_snd_emit_tone()` itself — four v1.47 lines
+now say so, with the channel-0 test spelled out.
 
 ## [1.47] - 2026-09-18
 

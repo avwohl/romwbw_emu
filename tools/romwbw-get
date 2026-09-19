@@ -25,6 +25,15 @@
 # ends every time a release was published.  An interface this build could not
 # service would be published as v1, which index() refuses by name.
 #
+# THERE IS ONE FILTER, AND IT IS NOT THAT ONE COMING BACK.  The index may
+# carry RomWBW development snapshots, flagged `prerelease: true`, and
+# CATALOG_SCHEMA.md 2.3.1 says a client must not offer one by default.  That
+# is a different question from the one the allowlist asked: not "can this
+# build run it" - it can, a v0 catalog is one interface - but "does upstream
+# call this a release".  It does not, so --prerelease, ROMWBW_PRERELEASE, or
+# naming the exact version turns them on, and nothing else does.  See
+# is_prerelease() and Catalog.pool().
+#
 # Why a separate program and not C++ in the emulator: fetching needs HTTP, TLS
 # and SHA-256, none of which belong inside a program whose job is to execute
 # untrusted Z80 code, and all three of which would break `make STATIC=1` and
@@ -392,6 +401,28 @@ def fnv1a32(text):
     return "%08x" % (((h >> 32) ^ h) & 0xFFFFFFFF)
 
 
+def is_prerelease(entry):
+    """True for a RomWBW development snapshot.
+
+    `prerelease` is emitted ONLY when true, so that a released version's
+    catalog stays byte-identical to the one on its immutable tag - read it with
+    .get() and never assume the key is there (CATALOG_SCHEMA.md 2.3.1).
+
+    It is the only field worth branching on.  `status` sits right beside it and
+    is free text - "stable", "preview", "snapshot" are in use and the set is
+    not closed - so a client that hid rows by matching status strings would
+    break the first time a new word was published.
+
+    And there is nothing else to key on: a snapshot and the release it precedes
+    are indistinguishable by their version bytes.  `v3.7.0-dev.14`'s HCB reads
+    `57 a8 37 00`, byte for byte what a released 3.7.0 will read, so neither
+    hbios.ver_byte nor emu_validate_rom_hcb can tell them apart.  Only the
+    CBIOS banner in the disk image carries the full tag, and that is inside a
+    49 MB image this has not downloaded yet.
+    """
+    return bool(entry.get("prerelease"))
+
+
 def index_scope(url):
     """The namespace every download from `url` lives under.
 
@@ -449,6 +480,13 @@ class Catalog(object):
         self.timeout = args.timeout
         self.retries = args.retries
         self.quiet = args.quiet
+        # Development snapshots are opt-in - see is_prerelease() and pool().
+        # The environment variable is for a shell that has already decided,
+        # the same way ROMWBW_VERSION is; "0" and "" mean no, so that
+        # ROMWBW_PRERELEASE=0 reads the way anyone would expect it to.
+        env_pre = os.environ.get("ROMWBW_PRERELEASE", "")
+        self.want_prerelease = (bool(getattr(args, "prerelease", False))
+                                or env_pre not in ("", "0"))
         self._index = None
         self._catalogs = {}
         # EVERY DOWNLOAD A NON-DEFAULT INDEX PRODUCES LANDS IN ITS OWN
@@ -592,8 +630,28 @@ class Catalog(object):
             % (version, ", ".join(e["romwbw_version"] for e in self.entries())))
 
     def pool(self):
-        """The published releases a run can choose from - all of them."""
-        return list(self.entries())
+        """The releases a run may LAND ON when the user has not named one.
+
+        Not a capability filter, and the difference matters: every release a v0
+        catalog publishes is runnable, which is what the v0 in the name means,
+        and the filter that used to sit here asked the binary what it had been
+        compiled to allow.  This asks something else entirely - whether
+        upstream calls it a release at all.
+
+        CATALOG_SCHEMA.md 2.3.1: a client MUST NOT offer a `prerelease` entry
+        by default.  So a snapshot is out of the pool until it is asked for,
+        and `entry()` deliberately does NOT filter - naming one still reaches
+        it, because naming it IS the opt-in.
+        """
+        if self.want_prerelease:
+            return list(self.entries())
+        return [e for e in self.entries() if not is_prerelease(e)]
+
+    def hidden_prerelease(self):
+        """What pool() is holding back, for a message that names it."""
+        if self.want_prerelease:
+            return []
+        return [e for e in self.entries() if is_prerelease(e)]
 
     @staticmethod
     def fallback(pool):
@@ -622,6 +680,20 @@ class Catalog(object):
         stored = load_choice().get("romwbw_version")
         if stored and any(e["romwbw_version"] == stored for e in pool):
             return stored
+        if stored:
+            # `romwbw-get use <version>` IS the explicit opt-in 2.3.1 asks for,
+            # so a stored snapshot is honoured without --prerelease.  What it
+            # must not do is arrive silently: this is the one path where a
+            # snapshot is selected and the user did not say so in THIS command,
+            # and the warning is the difference between an opt-in and an
+            # accident.
+            for e in self.entries():
+                if e["romwbw_version"] == stored and is_prerelease(e):
+                    warn("RomWBW %s is a development snapshot, not a release. "
+                         "It is selected because" % stored)
+                    warn("`romwbw-get use` stored it; `use --clear` goes back "
+                         "to the index default.")
+                    return stored
         chosen = self.fallback(pool)
         if stored:
             # The stored release is not in the pool, so it is about to be
@@ -1013,30 +1085,61 @@ def cmd_versions(cat, args):
     pool = cat.pool()
     stored_ok = bool(stored) and any(e["romwbw_version"] == stored for e in pool)
     in_use = stored if stored_ok else (cat.fallback(pool) if pool else None)
+    # A snapshot row is held back unless it was asked for, EXCEPT the one a
+    # run is actually going to use.  Hiding THAT row would recreate the bug
+    # the footer below exists to prevent: a selection nothing in the listing
+    # accounts for.
+    shown = [e for e in entries
+             if not is_prerelease(e) or cat.want_prerelease
+             or e["romwbw_version"] in (stored, in_use)]
+    hidden = [e for e in entries if e not in shown]
     if args.json:
         json.dump({"index_url": cat.index_url,
                    "selected": stored, "in_use": in_use,
-                   "romwbw_versions": [dict(e) for e in entries]},
+                   "prerelease_shown": cat.want_prerelease,
+                   "hidden_prerelease": [e["romwbw_version"] for e in hidden],
+                   "romwbw_versions": [dict(e) for e in shown]},
                   sys.stdout, indent=2)
         sys.stdout.write("\n")
         return EX_OK
 
-    for e in entries:
+    for e in shown:
         v = e["romwbw_version"]
         marks = []
         if e.get("default"):
             marks.append("index default")
         if v == stored:
             marks.append("selected")
-        print("  %-7s %-8s %-22s %s"
-              % (v, e.get("status", "?"), e.get("label", ""),
-                 ("(" + ", ".join(marks) + ")") if marks else ""))
-    # Every published release is listed, because every one of them is
+        # No "snapshot" mark here.  The published label already says it -
+        # "RomWBW 3.7.0-dev.14 (development snapshot)" - and 2.3 is
+        # explicit that the label is the surface carrying the warning, so
+        # a mark beside it printed the same fact twice.  It is shown
+        # verbatim and never parsed.
+        print(("  %-14s %-8s %-34s %s"
+               % (v, e.get("status", "?"), e.get("label", ""),
+                  ("(" + ", ".join(marks) + ")") if marks else "")
+               ).rstrip())
+    # Every published RELEASE is listed, because every one of them is
     # runnable: a v0 catalog is one HBIOS-to-emulator interface.  There used
-    # to be a filter here, and rows it hid said "NOT RUNNABLE by this build".
+    # to be a filter here, and rows it hid said "NOT RUNNABLE by this
+    # build"; nothing says that now.  The only rows held back are the
+    # development snapshots, they are counted and named below rather than
+    # silently dropped, and the one a run would actually use is never among
+    # them.
     #
     # A stored release the index has dropped has no row at all, which is how
     # a stale choice survives unnoticed.
+    if hidden:
+        # Named, not counted.  A user who has heard a snapshot is published
+        # and sees no row needs to know it was held back rather than never
+        # shipped - and needs the exact string to pass, because
+        # romwbw_version carries the full upstream tag and is not three
+        # numbers to be reassembled.
+        print("")
+        print("  %d development snapshot(s) not shown: %s"
+              % (len(hidden), ", ".join(e["romwbw_version"] for e in hidden)))
+        print("  Upstream does not call these releases.  Add --prerelease to")
+        print("  list and use them, or name one exactly: --romwbw <version>.")
     if stored and not stored_ok:
         # One reason left.  There were two while the core carried a release
         # allowlist: the index had dropped it, or this build could not run it.
@@ -1067,7 +1170,16 @@ def cmd_list(cat, args):
         return EX_OK
 
     adir = cat.assets_dir(version)
-    print("RomWBW %s  (generation %s)" % (version, doc.get("generation")))
+    # 2.3 says to show `label` wherever the release is named and not only
+    # in a picker, because for a snapshot the label is the surface carrying
+    # the warning.  It REPLACES the headline rather than sitting beside it:
+    # the published string already reads "RomWBW 3.7.0-dev.14 (development
+    # snapshot)", so appending it printed the version twice.  Shown
+    # verbatim, never parsed.
+    e = cat.entry(version)
+    head = e.get("label") if is_prerelease(e) else None
+    print("%s  (generation %s)"
+          % (head or ("RomWBW " + version), doc.get("generation")))
     for label, items, want in (("ROMs", roms, want_roms), ("Disks", disks, want_disks)):
         if not want:
             continue
@@ -1102,7 +1214,16 @@ def cmd_use(cat, args):
 
     choice = load_choice()
     if args.version:
-        cat.entry(args.version)
+        # entry() does not filter, so naming a snapshot here works without
+        # --prerelease: naming it IS the opt-in.  It is stored, though, and a
+        # stored choice outlives the session that made it, so this is where
+        # it has to say what kind of thing it just wrote down.
+        e = cat.entry(args.version)
+        if is_prerelease(e):
+            warn("RomWBW %s is a development snapshot, not a release - "
+                 "upstream does not" % args.version)
+            warn("publish it as one.  Storing it anyway; `use --clear` "
+                 "goes back to the index default.")
         choice["romwbw_version"] = args.version
     for key in ("rom", "disk0", "disk1"):
         v = getattr(args, key)
@@ -1171,6 +1292,15 @@ def cmd_path(cat, args):
 
 def cmd_run(cat, args):
     version = cat.resolve_version(args)
+    # Before the ~51 MB fetch below and before os.execv, which does not
+    # return.  A snapshot and the release it precedes report the SAME version
+    # bytes, so once the emulator is up there is nothing on screen that
+    # distinguishes them except the CBIOS banner the disk prints at boot.
+    if is_prerelease(cat.entry(version)):
+        warn("booting RomWBW %s, a development snapshot: the ROM will "
+             "report itself as a" % version)
+        warn("release, and only the CBIOS banner the disk prints names "
+             "the snapshot.")
     choice = load_choice()
 
     rom_id = args.rom or choice.get("rom") or "@rom"
@@ -1284,8 +1414,21 @@ def cmd_mirror(cat, args):
     # long as the core carried a compile-time release allowlist, so it is
     # spelled in web/makefile, in deploy scripts and in whatever anyone
     # copied out of them; refusing it now would break those for no gain.
+    #
+    # And "all" is every release, not every entry.  What this writes is the
+    # picker the web page builds itself from - fillVersionSelect() renders
+    # manifest.romwbw_versions straight into the select - so mirroring a
+    # snapshot IS offering it, which 2.3.1 says not to do by default.  Name
+    # one in --versions, or pass --prerelease, and it is mirrored and
+    # labelled.
     if args.versions in ("all", "runnable"):
-        want = [e["romwbw_version"] for e in cat.entries()]
+        want = [e["romwbw_version"] for e in cat.pool()]
+        held = [e["romwbw_version"] for e in cat.hidden_prerelease()]
+        if held:
+            info("not mirroring %d development snapshot(s): %s"
+                 % (len(held), ", ".join(held)), cat.quiet)
+            info("pass --prerelease, or name one in --versions, to "
+                 "include them", cat.quiet)
     else:
         want = [v.strip() for v in args.versions.split(",") if v.strip()]
         for v in want:
@@ -1317,6 +1460,10 @@ def cmd_mirror(cat, args):
             "label": e.get("label", "RomWBW " + version),
             "status": e.get("status"),
             "default": bool(e.get("default")),
+            # Only when true, exactly as the index emits it (2.3.1), so a
+            # consumer reads it with .get() and a released version's block
+            # is unchanged from what it has always been.
+            **({"prerelease": True} if is_prerelease(e) else {}),
             "generation": doc.get("generation"),
             "source": {"base_url": doc.get("base_url"),
                        "release_tag": doc.get("release_tag")},
@@ -1452,6 +1599,9 @@ def build_parser():
     # argparse error would turn "this flag is obsolete" into exit 64.
     p.add_argument("--assume-supported", metavar="A,B", help=argparse.SUPPRESS)
     p.add_argument("--allow-untested", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--prerelease", action="store_true",
+                   help="also offer RomWBW development snapshots "
+                        "(hidden by default)")
     p.add_argument("--offline", action="store_true", help="never open a socket")
     p.add_argument("--refresh", action="store_true", help="ignore the index cache TTL")
     p.add_argument("--trust-cache", action="store_true",
@@ -1462,7 +1612,14 @@ def build_parser():
     sub = p.add_subparsers(dest="cmd", parser_class=Parser)
 
     s = sub.add_parser("versions", help="what RomWBW releases are published")
-    s.add_argument("--all", action="store_true", help=argparse.SUPPRESS)
+    # --all was accepted and ignored: it used to mean "show the rows the
+    # compile-time release allowlist is hiding", and there were none left to
+    # show.  There are again, for a different reason, and "show every row"
+    # is what anyone still passing it means - so it is an alias rather than
+    # a second thing to learn.  Still SUPPRESSed: --prerelease is the
+    # spelling that works on every subcommand, and is the one to document.
+    s.add_argument("--all", dest="prerelease", action="store_true",
+                   default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_versions)
 
