@@ -57,26 +57,3 @@ WHAT THIS MACHINE ACTUALLY HAS, measured 2026-09-17 and not inferred:
 - [ANY] the index may now carry prerelease:true entries (RomWBW dev snapshots).
 romwbw-get lists them like any other version; add an opt-in so they are hidden
 unless asked for. docs/CATALOG_SCHEMA.md 2.3.1 in romwbw_disks is the contract.
-
-- [ANY] DOWNSTREAM.md carries four stale facts, all measured 2026-09-18 and none
-touched by the four-voice rewrite.  (1) "it supplies nine of the symbols the core
-leaves undefined" and "emu_io_common.cc supplies nine of them if you take it" -
-that file defines FIFTEEN emu_* functions and src/emu_io.h declares every one of
-them, and two of the fifteen are emu_snd_set_tone_handler and emu_snd_emit_tone,
-which the same document now tells two ports to define themselves.  Count against
-src/emu_io.h, not by grepping emu_io_common.cc: that file also has a static
-emu_host_path_cap_name() which is nobody's undefined symbol.  (2) "linking the
-three core objects leaves 34 emu_* symbols undefined" - unmeasured here and it
-predates the sound pair; either re-measure it by linking or drop the number.
-(3) the romwbw_pin.h removal instruction still names two live examples and BOTH
-are done: "ioscpm symlinks it" - iOSCPM/Core/ carries no such entry - and
-"z80cpmw.vcxproj lists it as a <ClInclude>" - that file names romwbw_pin.h
-nowhere at all.  (4) the v1.37 checklist line cites a <DisableSpecificWarnings>4267
-at z80cpmw.vcxproj:260; that project now carries 4244 only, so the suppression it
-tells a port to drop is already gone.
-
-- [ANY] the porting checklist stops at v1.44 and has no v1.47 line, so a port
-reading only the checklist - which is what the checklist is for - never learns it
-must define emu_snd_set_tone_handler and emu_snd_emit_tone itself unless it takes
-emu_io_common.cc.  The news entry above it says so since 2026-09-18; the
-checklist is the half a new port actually works through.

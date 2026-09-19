@@ -177,9 +177,11 @@ Plus these headers:
 `romwbw_pin.h` **is gone** (v1.44). It held the compile-time RomWBW release
 allowlist and `ROMWBW_DEFAULT_*`, nothing else includes it, and nothing in the
 core names a RomWBW release any more. **If your tree carries a symlink or a
-copy of it, or names it in a project file, remove that** - `ioscpm` symlinks
-it, and `z80cpmw.vcxproj` lists it as a `<ClInclude>`. See "RomWBW releases are
-not this core's business" below.
+copy of it, or names it in a project file, remove that.** All three ports here
+already have: measured 2026-09-19, `iOSCPM/Core/` carries no such symlink and
+`z80cpmw/z80cpmw/z80cpmw.vcxproj` names the header nowhere at all. This
+paragraph cited those two as live examples long after they stopped being any.
+See "RomWBW releases are not this core's business" below.
 
 **And qkz80, which is not in this tree.** `hbios_cpu.h` includes `qkz80.h` and
 `romwbw_mem.h` includes `qkz80_mem.h`, so the core cannot be compiled or linked
@@ -189,10 +191,21 @@ headers. ioscpm, cpmdroid and z80cpmw all compile those sources out of a
 sibling `../cpmemu`; this repo links `libqkz80.a` instead.
 
 `emu_io_common.cc` is the fourth source in this tree, and whether you take it
-is a **per-port decision, not a requirement**: it supplies nine of the symbols
-the core leaves undefined, and ioscpm symlinks it. z80cpmw must NOT take it -
+is a **per-port decision, not a requirement**: it defines fifteen of the
+functions `emu_io.h` declares, and ioscpm symlinks it. Ten of the fifteen are
+among the 34 symbols the core leaves undefined (below); the other five -
+`emu_rename`, `emu_file_load_to_mem`, `emu_file_save`, `emu_host_path_basename`
+and `emu_snd_set_tone_handler` - the core never calls, so they are there for a
+front end. Count against `src/emu_io.h` and not by grepping this file, which
+also carries a `static emu_host_path_cap_name()` that is nobody's undefined
+symbol. **Two of the fifteen are the sound pair** the four-voice entry at the
+top tells z80cpmw and cpmdroid to define themselves, so a port that takes this
+file must not define them again. z80cpmw must NOT take it -
 its `emu_io_windows.cpp` already defines `emu_file_load`, `emu_file_save` and
-the rest, so linking both collides - and cpmdroid does not take it either.
+the rest, so linking both collides - and cpmdroid does not take it either. (This
+paragraph read "nine" from `25cf72f` until 2026-09-19. The sound pair took it
+from thirteen to fifteen, but it had never been nine: it was wrong by four on
+the day it was written.)
 
 ## Critical: Shadow RAM Fix (December 2024)
 
@@ -315,9 +328,19 @@ Each platform needs an `emu_io_*.cc` implementation. See these references:
 
 Key functions to implement. **This is a sample, not the contract** - linking
 the three core objects leaves 34 `emu_*` symbols undefined, including
-`emu_fatal` and the eight `emu_host_file_*` entry points that `R8`/`W8` need.
-`src/emu_io.h` is the authoritative list; `emu_io_common.cc` supplies nine of
-them if you take it.
+`emu_fatal` and the nine `emu_host_file_*` entry points that `R8`/`W8` need.
+`src/emu_io.h` is the authoritative list; `emu_io_common.cc` supplies ten of
+the 34 if you take it.
+
+Both numbers were re-measured on 2026-09-19 by compiling `emu_init.cc`,
+`hbios_dispatch.cc` and `hbios_cpu.cc` and taking `nm -u` minus `nm
+--defined-only` across the three objects. 34 still holds, and it now includes
+`emu_snd_emit_tone`. None of the three files carries a `#if`, so the count does
+not vary by platform. The nine are `close_read`, `close_write`, `get_read_name`,
+`get_state`, `get_write_name`, `open_read`, `open_write`, `read_byte` and
+`write_byte`; `emu_host_file_get_write_data`, `..._get_write_size` and
+`..._provide_data` are declared in `emu_io.h` as well, but the core does not
+call them, so they are not link errors. This said "eight".
 
 
 ```cpp
@@ -1168,7 +1191,11 @@ against, and it is not being moved or retracted.
 - [ ] v1.37: Refresh bundled images again - `r8.com` and `w8.com` changed once more (R8 names the file it opened; W8 tells a CP/M read error from end of file, which matters on ZSDOS and CP/M 3 and not on CP/M 2.2)
 - [ ] v1.37: If you scrape R8/W8 output, a failed open is two lines now: the message, then `  Asked for: <path>`
 - [ ] v1.37: If your `emu_io_cleanup()` closes state that has to survive a mode switch (the CLI's did - printer/aux redirection), move it to process exit
-- [ ] v1.37: MSVC ports can drop any C4267 suppression on `hbios_dispatch.cc` - `8eeb227` cast all six sites (a `size_t` loop index promoting a `uint16_t` guest address in `write_to_bank`/`read_from_bank`, where truncating to sixteen bits *is* the Z80 64K wrap HBIOS wants). Grep for the MSBuild spelling, not the compiler flag: `z80cpmw` still carries it as `<DisableSpecificWarnings>4267` at `z80cpmw/z80cpmw.vcxproj:260`, which a search for `/wd4267` reports as already gone
+- [ ] v1.37: MSVC ports can drop any C4267 suppression on `hbios_dispatch.cc` - `8eeb227` cast all six sites (a `size_t` loop index promoting a `uint16_t` guest address in `write_to_bank`/`read_from_bank`, where truncating to sixteen bits *is* the Z80 64K wrap HBIOS wants). Grep for the MSBuild spelling, not the compiler flag - a search for `/wd4267` reports a `<DisableSpecificWarnings>4267` as already gone. **z80cpmw took this on 2026-09-18** and its vcxproj now carries `4244` only, on the two qkz80 sources; what it left where the suppression was - a comment recording that one `cl` run at the project's own flags emits thirty warnings and not one C4267 - is the worked example
 - [ ] v1.40: Nothing to compile - no header, no signature, no link contract changed. But if you fetched artifacts out of this repository's `roms/` or `disks/`, or out of one of its release assets, take them from the [romwbw_disks](https://github.com/avwohl/romwbw_disks) catalog instead: `tools/romwbw-get` is a working client and [docs/CATALOG.md](docs/CATALOG.md) describes the documents. A `.deb`/`.rpm` built from this tree no longer contains a ROM
 - [ ] v1.40: If you download disk images, keep the hash-verified copy and the copy the guest writes to as **separate files**. The core opens every image `"rw"`, so the first CP/M `SAVE` breaks the hash of the file you verified, and re-downloading to repair it destroys the user's work
 - [ ] v1.40: If any of your tooling calls `roms/verify_romwbw_pin.sh`, the path is unchanged on purpose - keep calling it. It now scans the `romwbw-get` cache too, and when it finds nothing it still passes and exits 0 - a PASS line, then a second line reading `NO ARTIFACT WAS INSPECTED`. Match the text of the PASS line; do not gate on a missing PASS line or a non-zero exit, because neither happens. **Both PASS spellings changed in v1.44** when the release allowlist came out of the script - they are now `every artifact is a readable RomWBW artifact and every disk pairs` and `nothing here contradicts itself`
+- [ ] v1.47: **Define `emu_snd_set_tone_handler()` and `emu_snd_emit_tone()` yourself unless you link `emu_io_common.cc`** - and only ioscpm does, so this is z80cpmw's and cpmdroid's item. `hbios_dispatch.cc` calls `emu_snd_emit_tone()` and every port compiles that file, so the pair arrives undefined: z80cpmw got three LNK2019s, and cpmdroid's native build was broken the same way without anyone noticing, because nobody had built it. A do-nothing definition is correct and complete - keep the handler in a file-static pointer, and with none installed beep on channel 0 only, gated on `volume > 0 && freq_hz > 0`. **Take the channel test.** Without it a four-voice tune becomes four beeps in a row, each blocking for its full duration, which is a stall and not "the beep this port made yesterday". `emu_io_windows.cpp` and `emu_io_android.cpp` both carry that fallback already; `src/emu_io_common.cc` is the same shape
+- [ ] v1.47: If you want real four-voice sound rather than the fallback beep, install a renderer with `emu_snd_set_tone_handler()` at start-up - one call arrives per channel the guest plays, `volume` is 0..255 as the guest set it. `src/emu_io_wasm.cc` installs it in `emu_io_init()` and `web/romwbw.html-template` renders it with Web Audio; that is the worked example
+- [ ] v1.47: If you read this dispatcher for your own `BF_SND*` conventions, re-read it - `C` is the sound UNIT everywhere and never a channel, `BF_SNDPLAY` takes the channel in `D`, volume and pitch are one pending pair applied at play time, and `BF_SNDNOTE` takes a **16-bit** note in `HL` whose zero is A#0 (C4 = 152, A4 = 188, `freq = 440 * 2^((note - 188) / 48)`)
+- [ ] v1.47: Nothing else in the dispatcher audit needs you to act, and a dozen guest-visible behaviours changed anyway - see the entry at the top of this document. Two may surface as a *new* symptom rather than a fixed one: `BF_DIOSEEK` now honours CHS, so a guest that seeked by CHS and appeared to work by accident may behave differently, and `BF_SYSGET`/`BF_SYSSET` now return `ERR_NOFUNC` where they used to return success
