@@ -134,6 +134,19 @@ if [ "$want_code" = yes ]; then
     # not gone out.  Entries BELOW it are history and are not interesting here.
     newest_entry=$(grep -oE '^## \[[0-9][0-9.]*\]' "$root/CHANGELOG.md" 2>/dev/null |
                    head -1 | tr -d '#[] ')
+
+    # [Unreleased] is where this project writes work up BEFORE a version is
+    # cut, and the regex above cannot see it - it matches numbered headings
+    # only, on purpose, because that is how the released version is found.
+    # Until 2026-09-19 that meant "unwritten as well as unreleased" was printed
+    # over a perfectly complete [Unreleased] section, which is the one thing
+    # this report exists not to do: it is read to decide whether the writing up
+    # still has to be done.
+    unreleased_body=$(awk '/^## \[[Uu]nreleased\]/{f=1;next} /^## \[/{f=0} f' \
+                      "$root/CHANGELOG.md" 2>/dev/null |
+                      grep -vE '^[[:space:]]*$' |
+                      grep -viE '^[[:space:]]*nothing yet\.?[[:space:]]*$')
+
     if [ -n "${newest_entry:-}" ]; then
         rel=${published#v}
         if [ "$newest_entry" != "$rel" ]; then
@@ -142,10 +155,15 @@ if [ "$want_code" = yes ]; then
         elif [ "${n:-0}" = "0" ]; then
             echo "  CHANGELOG.md's newest entry is [$newest_entry], which IS the"
             echo "  released version.  Nothing is owed."
+        elif [ -n "${unreleased_body:-}" ]; then
+            echo "  CHANGELOG.md's newest numbered entry is [$newest_entry], which IS"
+            echo "  the released version, and [Unreleased] above it is written up."
+            echo "  So the commits above are WRITTEN and unreleased: what is left is"
+            echo "  cutting a version, not describing one."
         else
             echo "  CHANGELOG.md's newest entry is [$newest_entry], which IS the"
-            echo "  released version - so the commits above are unwritten as well"
-            echo "  as unreleased."
+            echo "  released version, and [Unreleased] is empty - so the commits"
+            echo "  above are unwritten as well as unreleased."
         fi
     fi
     echo
