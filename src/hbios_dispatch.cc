@@ -1702,42 +1702,52 @@ void HBIOSDispatch::handleDIO() {
 // rather than mktime(), which is local-time and DST-dependent: what is wanted
 // here is the difference between two calendar readings, not between two
 // instants in somebody's timezone.
-static long days_from_civil(int y, int m, int d) {
+static long long days_from_civil(int y, int m, int d) {
   y -= m <= 2;
-  const long era = (y >= 0 ? y : y - 399) / 400;
+  const long long era = (y >= 0 ? y : y - 399) / 400;
   const unsigned yoe = (unsigned)(y - era * 400);
   const unsigned doy = (unsigned)((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1);
   const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  return era * 146097L + (long)doe - 719468L;
+  return era * 146097LL + (long long)doe - 719468LL;
 }
 
-static long civil_seconds(const emu_time& t) {
-  return days_from_civil(t.year, t.month, t.day) * 86400L
-       + (long)t.hour * 3600L + (long)t.minute * 60L + (long)t.second;
+// long long throughout: on LLP64 (every Windows compiler) and on 32-bit
+// Android, `long` is 32 bits, and days * 86400 passes INT32_MAX in
+// January 2038 - 41666 * 86400 for the 2084 leap day this file used to
+// compute as -695024896.  The arithmetic below is deliberately not
+// mktime(), so it does not inherit a 64-bit time_t from the host either;
+// the width has to be stated here.
+static long long civil_seconds(const emu_time& t) {
+  return days_from_civil(t.year, t.month, t.day) * 86400LL
+       + (long long)t.hour * 3600LL + (long long)t.minute * 60LL
+       + (long long)t.second;
 }
 
-long HBIOSDispatch::secondsBetween(const emu_time& a, const emu_time& b) {
+long long HBIOSDispatch::secondsBetween(const emu_time& a, const emu_time& b) {
   return civil_seconds(b) - civil_seconds(a);
 }
 
 void HBIOSDispatch::applyRtcOffset(emu_time* t) const {
   if (!t || rtc_offset_seconds == 0) return;
 
-  long secs = civil_seconds(*t) + rtc_offset_seconds;
-  long days = secs / 86400L;
-  long rem = secs % 86400L;
-  if (rem < 0) { rem += 86400L; days -= 1; }
+  long long secs = civil_seconds(*t) + rtc_offset_seconds;
+  long long days = secs / 86400LL;
+  long long rem = secs % 86400LL;
+  if (rem < 0) { rem += 86400LL; days -= 1; }
 
   t->hour = (int)(rem / 3600);
   t->minute = (int)((rem % 3600) / 60);
   t->second = (int)(rem % 60);
 
-  // civil_from_days, the inverse of the above.
-  long z = days + 719468L;
-  const long era = (z >= 0 ? z : z - 146096) / 146097;
+  // civil_from_days, the inverse of the above.  Same width as `days` on
+  // purpose: a day count fits 32 bits for any date anyone will type, but
+  // narrowing it back here would put a silent truncation between the two
+  // halves of one round trip.
+  long long z = days + 719468LL;
+  const long long era = (z >= 0 ? z : z - 146096) / 146097;
   const unsigned doe = (unsigned)(z - era * 146097);
   const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-  long y = (long)yoe + era * 400;
+  long long y = (long long)yoe + era * 400;
   const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
   const unsigned mp = (5 * doy + 2) / 153;
   const unsigned d = doy - (153 * mp + 2) / 5 + 1;
@@ -1746,7 +1756,7 @@ void HBIOSDispatch::applyRtcOffset(emu_time* t) const {
   t->month = (int)m;
   t->day = (int)d;
   // 1970-01-01 was a Thursday.
-  long wd = (days + 4) % 7;
+  long long wd = (days + 4) % 7;
   if (wd < 0) wd += 7;
   t->weekday = (int)wd;
 }

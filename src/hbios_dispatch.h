@@ -848,12 +848,18 @@ private:
   // forward with the host clock the way a real chip does.  It is not persisted:
   // a real RTC is battery-backed, this is not, and pretending otherwise would
   // need a store nothing here has.
-  long rtc_offset_seconds = 0;
+  // long long, NOT long.  `long` is 32 bits on LLP64 - every Windows
+  // compiler, MSVC and MinGW alike - and 32 bits on 32-bit Android, so
+  // z80cpmw and cpmdroid's armeabi-v7a and x86 ABIs all had a signed
+  // overflow here for any date past January 2038.  The seconds counted
+  // below are a time_t-shaped quantity and break exactly where a 32-bit
+  // time_t breaks.  tests/rtc_settim.cc sets 2084 on purpose.
+  long long rtc_offset_seconds = 0;
 
   // Seconds from `a` to `b`, by counting days from a fixed epoch rather than
   // calling mktime(): mktime is local-time and DST-dependent, and this has to
   // be a plain difference of two calendar readings.
-  static long secondsBetween(const emu_time& a, const emu_time& b);
+  static long long secondsBetween(const emu_time& a, const emu_time& b);
 
   // Move a host reading forward (or back) by what the guest set.
   void applyRtcOffset(emu_time* t) const;

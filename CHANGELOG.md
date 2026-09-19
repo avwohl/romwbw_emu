@@ -19,6 +19,31 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+### The RTC overflowed on every 32-bit `long`, and five portable tests were never run on Windows
+
+`HBIOSDispatch` counted the guest's RTC offset in seconds from a fixed epoch in
+a `long`. On LP64 — Linux, macOS — that is 64 bits and it worked. On **LLP64,
+which is every Windows compiler, and on 32-bit Android**, `long` is 32 bits and
+`days * 86400` passes `INT32_MAX` in January 2038: for the 2084 leap day
+`tests/rtc_settim.cc` sets on purpose, 41666 * 86400 = 3,599,942,400 wrapped to
+-695,024,896. A guest that set a date past January 2038 read back a different
+one, `BF_RTCSETTIM` appeared to take and did not, and a second set added to the
+first instead of replacing it. `rtc_offset_seconds`, `secondsBetween()` and the
+civil-date conversions on both sides are `long long` now.
+
+**z80cpmw and cpmdroid shipped this**, since both compile `hbios_dispatch.cc` in
+place and cpmdroid builds armeabi-v7a and x86. Measured, not inferred: the
+pre-fix file built with `cl` fails the same four checks, and passes after.
+
+**It survived because the test never ran on a machine that could see it.**
+`tests/rtc_settim.cc` has always been portable — a stub CPU and no POSIX. But
+the MSVC CI job ran two tests by name, and the comment over that list read "two
+of the four tests are portable" while the suite grew to nine. Seven of the nine
+are portable and five of them were running only on POSIX, where a 32-bit `long`
+does not exist. The job now builds and runs all seven, and the file says that a
+new portable test belongs in that list — a test that runs only on the POSIX job
+cannot see an LLP64 bug.
+
 ### RomWBW development snapshots are opt-in in `romwbw-get`
 
 The published index carries `3.7.0-dev.14`, flagged `prerelease: true`, and

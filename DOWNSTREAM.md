@@ -2,6 +2,42 @@
 
 This document explains how to integrate the RomWBW emulator core into downstream projects (iOS, macOS, Windows, etc.).
 
+**2026-09-19: the RTC was broken on every port with a 32-bit `long`, which is
+z80cpmw and two of cpmdroid's four ABIs.** You get the fix by rebuilding; there
+is nothing to change. It is listed here because it was shipped, because the
+symptom is silent, and because the reason it survived is a lesson about where
+tests run.
+
+`HBIOSDispatch` keeps the guest's RTC offset in seconds counted from a fixed
+epoch — deliberately not `mktime()`, so that it is a difference between two
+calendar readings rather than between two instants in somebody's timezone. It
+counted them in `long`. On LP64 (Linux, macOS) that is 64 bits and everything
+worked. On **LLP64 — every Windows compiler, MSVC and MinGW alike — and on
+32-bit Android, `long` is 32 bits**, and `days * 86400` passes `INT32_MAX` in
+January 2038. For the 2084 leap day `tests/rtc_settim.cc` sets on purpose,
+41666 * 86400 = 3,599,942,400 wrapped to -695,024,896.
+
+So on those builds a guest that set a date past January 2038 read back a
+different one, `BF_RTCSETTIM` appeared to take and did not, and a second set
+added to the first instead of replacing it. `rtc_offset_seconds`,
+`secondsBetween()` and the civil-date conversions on both sides are `long long`
+now.
+
+**Why it survived.** `tests/rtc_settim.cc` is portable and has been since it was
+written — it drives the dispatcher through a stub CPU and touches no POSIX. It
+had simply never been compiled by a Windows compiler: the MSVC CI job ran two
+tests by name, the comment above that list said "two of the four tests are
+portable", and the suite grew to nine underneath it. Five portable tests were
+running only on POSIX, where a 32-bit `long` does not exist. The job now builds
+and runs all seven, and says in the file that a new portable test belongs in
+that list.
+
+**If you carry your own copy of any of this** — and z80cpmw compiles
+`hbios_dispatch.cc` in place, so it does not — check your own arithmetic on
+guest dates for the same shape. The rule is that a seconds-since-epoch count is
+`long long` or `int64_t`, never `long`, in code that has to build for Windows or
+for a 32-bit ABI.
+
 **2026-09-18: a dispatcher audit changed guest-visible behaviour in a dozen
 places, and needs nothing from you.** Every port compiles `hbios_dispatch.cc` in
 place, so all of this arrives on your next build. None of it changes a signature
@@ -1198,4 +1234,5 @@ against, and it is not being moved or retracted.
 - [ ] v1.47: **Define `emu_snd_set_tone_handler()` and `emu_snd_emit_tone()` yourself unless you link `emu_io_common.cc`** - and only ioscpm does, so this is z80cpmw's and cpmdroid's item. `hbios_dispatch.cc` calls `emu_snd_emit_tone()` and every port compiles that file, so the pair arrives undefined: z80cpmw got three LNK2019s, and cpmdroid's native build was broken the same way without anyone noticing, because nobody had built it. A do-nothing definition is correct and complete - keep the handler in a file-static pointer, and with none installed beep on channel 0 only, gated on `volume > 0 && freq_hz > 0`. **Take the channel test.** Without it a four-voice tune becomes four beeps in a row, each blocking for its full duration, which is a stall and not "the beep this port made yesterday". `emu_io_windows.cpp` and `emu_io_android.cpp` both carry that fallback already; `src/emu_io_common.cc` is the same shape
 - [ ] v1.47: If you want real four-voice sound rather than the fallback beep, install a renderer with `emu_snd_set_tone_handler()` at start-up - one call arrives per channel the guest plays, `volume` is 0..255 as the guest set it. `src/emu_io_wasm.cc` installs it in `emu_io_init()` and `web/romwbw.html-template` renders it with Web Audio; that is the worked example
 - [ ] v1.47: If you read this dispatcher for your own `BF_SND*` conventions, re-read it - `C` is the sound UNIT everywhere and never a channel, `BF_SNDPLAY` takes the channel in `D`, volume and pitch are one pending pair applied at play time, and `BF_SNDNOTE` takes a **16-bit** note in `HL` whose zero is A#0 (C4 = 152, A4 = 188, `freq = 440 * 2^((note - 188) / 48)`)
+- [ ] v1.47: **If your port builds for Windows or for a 32-bit ABI, rebuild and re-test your RTC.** `HBIOSDispatch` counted the guest's RTC offset in `long`, which is 32 bits on LLP64 and on 32-bit Android, so a guest setting a date past January 2038 read back a different one on z80cpmw and on cpmdroid's armeabi-v7a and x86 builds. Nothing to change - it is `long long` now and you get it by compiling - but if you worked around it, or carry your own seconds-since-epoch arithmetic anywhere, that is the shape to look for
 - [ ] v1.47: Nothing else in the dispatcher audit needs you to act, and a dozen guest-visible behaviours changed anyway - see the entry at the top of this document. Two may surface as a *new* symptom rather than a fixed one: `BF_DIOSEEK` now honours CHS, so a guest that seeked by CHS and appeared to work by accident may behave differently, and `BF_SYSGET`/`BF_SYSSET` now return `ERR_NOFUNC` where they used to return success

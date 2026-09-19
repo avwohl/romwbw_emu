@@ -510,11 +510,27 @@ jobs:
       # code at all was z80cpmw built by hand on somebody's PC. cpmemu stopped
       # being in that position on 2026-09-03 and this is the same move.
       #
-      # Two of the four tests are portable: vda_keyboard and hbios_hostname
-      # drive the dispatcher through a stub CPU and touch no POSIX beyond
-      # strncasecmp, which they now spell through EMU_TEST_STRNCASECMP. The
-      # other two are not and are not meant to be - cli_console drives a pty and
-      # cli_hostfile a POSIX filesystem.
+      # SEVEN OF THE NINE TESTS ARE PORTABLE, and this job ran two of them
+      # until 2026-09-19. vda_keyboard, hbios_hostname, snd_channels,
+      # sys_bnkcpy, rtc_settim, sys_switch and dio_units drive the dispatcher
+      # through a stub CPU and touch no POSIX beyond strncasecmp, which they
+      # spell through EMU_TEST_STRNCASECMP. Only cli_console and cli_hostfile
+      # are not portable, and are not meant to be - one drives a pty and the
+      # other a POSIX filesystem.
+      #
+      # The comment here said "two of the four tests" and named the same two
+      # while the suite grew to nine, so five portable tests were never run by
+      # any Windows compiler. rtc_settim was one of them, and it was FAILING:
+      # HBIOSDispatch's RTC offset counted seconds in `long`, which is 32 bits
+      # on LLP64 - every Windows compiler - and on 32-bit Android. The test
+      # sets 2084 deliberately; 41666 days * 86400 is 3.6e9 and wrapped to
+      # -695024896, so a guest that set a date past January 2038 read back
+      # something else. z80cpmw compiles this same file with cl, and cpmdroid's
+      # armeabi-v7a and x86 ABIs have a 32-bit long too, so both shipped it.
+      # Fixed in the same commit that widened this list.
+      #
+      # ADD NEW PORTABLE TESTS TO THE %%T LIST BELOW. A test that runs only on
+      # the POSIX job is a test that cannot see an LLP64 bug.
       #
       # qkz80 is compiled from the cpmemu checkout the same way web/Makefile
       # does it, rather than linked: there is no prebuilt qkz80 for this runner.
@@ -528,7 +544,7 @@ jobs:
           )
           call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
           setlocal enabledelayedexpansion
-          for %%T in (vda_keyboard hbios_hostname) do (
+          for %%T in (vda_keyboard hbios_hostname snd_channels sys_bnkcpy rtc_settim sys_switch dio_units) do (
             echo === %%T ===
             cl /nologo /EHsc /W3 /std:c++17 ^
                /D_CRT_SECURE_NO_WARNINGS /DQKZ80_NO_TRACE /DNDEBUG /D_WINDOWS ^

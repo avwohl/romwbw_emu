@@ -58,12 +58,34 @@ are read against it.  So it now names the machine it measured.
                 `mingw32-make`, and `make -C src test` does not exist here.
   the CLI       DOES NOT BUILD on this machine.  romwbw_emu.cc includes
                 <termios.h> and MinGW has none, so `mingw32-make -C src` dies
-                on the first object.  The three CORE objects are fine -
-                emu_init.cc, hbios_dispatch.cc and hbios_cpu.cc compile and
-                link-check with the sibling ../cpmemu headers, which is how
-                DOWNSTREAM.md's 34-undefined-symbol count was re-measured on
-                2026-09-19.  It is the CLI front end that is POSIX, not the
-                core.
+                on the first object.  It is the CLI FRONT END that is POSIX,
+                not the core, and not the tests.
+  the C++ tests SEVEN OF NINE RUN HERE, and do not need the CLI.  The test
+                programs link DISPATCH_OBJS - emu_io_common, hbios_dispatch,
+                hbios_cpu, emu_init - and nothing else; only the `test:`
+                target's dependency on the romwbw_emu binary made it look
+                otherwise, and this block said "the C++ tests cannot run here"
+                on the strength of that until 2026-09-19.  Build them one at a
+                time and skip the binary:
+
+                    cd ../cpmemu/src && mingw32-make libqkz80.a
+                    cd ../../romwbw_emu/src
+                    for t in vda_keyboard hbios_hostname snd_channels \
+                             sys_bnkcpy rtc_settim sys_switch dio_units; do
+                      mingw32-make test_$t && ./test_$t.exe
+                    done
+
+                All seven pass.  cli_console and cli_hostfile are the two that
+                genuinely cannot run: a pty and a POSIX filesystem.  Running
+                them here found the 32-bit `long` RTC overflow that z80cpmw
+                and cpmdroid had shipped - see CHANGELOG.md.  cl builds and
+                runs the same seven; the .bat that does it is in the msvc job
+                of .github/workflows/test.yml.
+  WSL           Ubuntu is INSTALLED and starts, at /mnt/c/temp/src, but has
+                python3 and NOTHING ELSE - no g++, no make - and sudo wants a
+                password, so this session could not add them.  That is the one
+                route to the POSIX front end and the last two tests on this
+                machine:  wsl -d Ubuntu -- sudo apt install build-essential
   cl            YES, 14.51.36231, under Visual Studio 18 Community.  NOT on
                 PATH - it needs a developer prompt, or the vcvars script.
                 MSBuild IS on PATH.  [WINDOWS] is measurable here, and this
