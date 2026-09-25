@@ -63,9 +63,9 @@ python3 "$CPM" create newdisk.img            # 8 MB hd1k
 python3 "$CPM" create --combo newdisk.img    # 49 MB combo, six slices
 ```
 
-There is a `create --sssd` for a 250 KB 8" floppy, but it fails its own
-post-create verify and writes no file, and the emulator accepts no image that
-size in any case.
+There is a `create --sssd` for a 250 KB 8" floppy - it works from cpmemu
+4.10.0; earlier releases failed their own post-create verify and wrote no
+file - but the emulator accepts no image that size.
 
 `create` writes the image and its empty directory in one step - there is no
 separate blank-file-then-format sequence, and `--force` overwrites an existing

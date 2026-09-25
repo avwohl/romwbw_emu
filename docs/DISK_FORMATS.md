@@ -62,10 +62,11 @@ python3 "$CPM" create --combo mydisk.img    # 49 MB combo, six slices
 `create` makes the image and its empty directory in one step; there is no
 separate blank-file-then-format sequence.
 
-`cpm_disk.py` also offers `create --sssd` for a 250 KB 8" floppy. Do not reach
-for it here: it fails its own post-create verify and writes no file, and the
-emulator would refuse the result anyway - `--diskN=` accepts only 8,388,608
-bytes, a 1 MB + N x 8 MB combo, or a multiple of 8,519,680.
+`cpm_disk.py` also offers `create --sssd` for a 250 KB 8" floppy. It works
+from cpmemu 4.10.0 (earlier releases failed their own post-create verify and
+wrote no file), but do not reach for it here: the emulator refuses an image
+that size - `--diskN=` accepts only 8,388,608 bytes, a 1 MB + N x 8 MB combo,
+or a multiple of 8,519,680.
 
 ### The one format it does not read: hd512
 

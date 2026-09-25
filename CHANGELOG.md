@@ -19,6 +19,14 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+### `cpm_disk.py create --sssd` works now, and the disk docs say so
+
+`docs/DISK_FORMATS.md` and `docs/disk-images.md` said `create --sssd` fails its
+own post-create verify and writes no file. That was true through cpmemu 4.9.0;
+4.10.0 formats the whole SSSD image and its `create -f --sssd x.img` verifies
+clean. The advice not to use it here stands - the emulator takes no 250 KB
+image - so only the reason changed. Documentation only.
+
 ### The RTC overflowed on every 32-bit `long`, and five portable tests were never run on Windows
 
 `HBIOSDispatch` counted the guest's RTC offset in seconds from a fixed epoch in
