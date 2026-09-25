@@ -9,9 +9,9 @@ source release carries the whole kit in `mpm2src/PLM_WORK`, with the submit
 files DRI built with.
 
 `tools/romwbw-batch --isx` runs that kit on this emulator, unattended, and
-`tools/romwbw-plm80` wraps DRI's two recipes. Rebuilt this way, 23 of DRI's 24
+`tools/romwbw-plm80` wraps DRI's two recipes. Rebuilt this way, 24 of the 25
 PL/M binaries in the MP/M II source tree come out **byte for byte identical**,
-and the 24th differs only in bytes the program never initialises (see
+and the 25th differs only in bytes the program never initialises (see
 [Results](#results)). [BATCH.md](BATCH.md) documents `romwbw-batch` itself.
 
 None of DRI's or Intel's binaries is in this repository. Point the tools at
@@ -87,15 +87,16 @@ it extracts one.
 
 ## Why it does not simply run on RomWBW
 
-RomWBW's CP/M 2.2 puts the CCP at D000H, the BDOS at D800H and a 6.5 KB CBIOS
+RomWBW's CP/M 2.2 puts the CCP at D000H, the BDOS at D800H and a 6 KB CBIOS
 at E600H-FDFFH. Against the list above:
 
 1. **The warm boot does not reload the BDOS.** `cbios.asm`, WBOOT: "WE DON'T
    WANT TO RELOAD BDOS" - only the CCP comes back, from a copy in the HBIOS
    bank. After PL/M-80 has used memory up to E5FFH, `CPM` lands the CCP on top
-   of a BDOS full of symbol table. What that looked like: a run that printed
-   memory, a run that hung, a run that exited at once. ISX and `CPM` with no
-   ISIS program between them works, which is what narrowed it down.
+   of a BDOS full of symbol table. What that looked like: garbage on the
+   console and then a hang in one run, an immediate end in another. ISX and
+   `CPM` with no ISIS program between them works, which is what narrowed it
+   down.
 2. **E5FFH is not enough memory for PL/M-80.** Compiling the MP/M II sources
    with the reference ISIS emulator at different MEMCK values: SET, SHOW and
    STAT fail with `LIMIT EXCEEDED: DYNAMIC STORAGE` at E5FFH and compile at
@@ -269,9 +270,10 @@ figure to plan with.
 | SDIR, 8 modules | | 17 s | 99 s |
 
 A small program is a second or two, which is quick enough for a test oracle.
-The emulator stops a run at ten billion instructions; the whole rebuild above
-is well under that per program, but a single batch compiling all of MP/M II
-would come close.
+The emulator runs about 22 million Z80 instructions per CPU second here, and
+stops any run at ten billion: the 25 builds above took about 110 CPU seconds
+together, so even one batch doing all of them would use about a quarter of
+that.
 
 ## A differential test for uplm80
 

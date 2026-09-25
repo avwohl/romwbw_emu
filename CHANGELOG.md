@@ -76,7 +76,7 @@ and none of them an emulator defect:
 
 **Proved on MP/M II.** From `mpm2src`, each program built by the route its own
 submit file uses and compared as a whole file with DRI's binary beside the
-source: 23 of 24 are byte for byte identical - DIR, ERA, ERAQ, REN, SET, SHOW,
+source: 24 of 25 are byte for byte identical - DIR, ERA, ERAQ, REN, SET, SHOW,
 STAT, TYPE, ABORT, CONSOLE, DSKRESET, PRINTER, PRLCOM, SUBMIT, TOD, USER,
 SCHED, SPOOL, MPMSTAT, STOPSPLR, ED, PIP, GENSYS.COM, and MPMLDR.COM through
 MAC, PIP and LOAD as well. SDIR differs in 526 bytes it never initialises,

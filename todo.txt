@@ -108,10 +108,11 @@ are read against it.  So it now names the machine it measured.
                 itself is gone (4086092, "the one thing it was waiting on is
                 released").
 
-NO OPEN ITEMS.  That is the state, not a file someone forgot to write in:
-the last one - hide prerelease:true entries behind an opt-in - closed on
-2026-09-19.  An empty list here does not mean there is no work; it means
-nothing is written down that a machine could pick up unprompted.  Look in
-MANUAL_CHECKS.md for what needs a person, DECISIONS.md for what needs the
-owner's ruling, and the sibling repositories' own todo.txt for work this
-one cannot close.
+- [ANY] romwbw_emu.cc ends every run at ten billion instructions - a local
+constant, `max_instructions`, with no option - prints "Reached instruction
+limit" and exits 0 as though the guest had finished.  Interactive use never
+gets near it; an unattended run can, and tools/romwbw-batch now reports it
+but cannot lift it.  At about 22 million instructions a CPU second (measured
+2026-09-25 on a loaded Mac) it is some seven minutes of guest time.  Either an
+option, or no limit when a timeout is the caller's business; the exit status
+should say which way a run ended either way.
