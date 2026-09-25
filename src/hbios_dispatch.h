@@ -575,14 +575,19 @@ public:
   // notePoll() for the rule and the measurements.
   bool isConsoleIdle() const { return idle_poll_count >= IDLE_POLL_THRESHOLD; }
 
-  // Hold typed-ahead input back from the guest until it first WAITS for a key:
-  // a CIOIN or VDAKRD, or console polls that count as idle.  Until
-  // then CIOIST and VDAKST report no key, whatever is queued.  The CLI turns
-  // this on when stdin is not a terminal, because a script's first line is
-  // meant for whatever first asks for one - and RomWBW's boot loader, which
-  // asks for nothing, used to eat it: its autoboot countdown reads keys up to
-  // Enter looking for Esc, and its prompt flushes what is waiting.  Once
-  // released, input is never held again.
+  // Hold typed-ahead input back from the guest until it first WAITS for a key
+  // - a CIOIN or VDAKRD, or console polls that count as idle - or until
+  // HOLD_AFTER_HANDOVER T-states after the boot loader hands over to what it
+  // booted (SYSSET BOOTINFO, which romldr calls just before it jumps, or
+  // HBF_SYSBOOT).  Until then CIOIST and VDAKST report no key, whatever is
+  // queued.  The CLI turns this on when stdin is not a terminal, because a
+  // script's first line is meant for whatever first asks for one - and
+  // RomWBW's boot loader, which asks for nothing, used to eat it: its autoboot
+  // countdown reads keys up to Enter looking for Esc, and its prompt flushes
+  // what is waiting.  The bounded release is for a program that runs before
+  // anything reads a key and prints between polls, which neither reads nor
+  // waits (releaseHeldInputIfDue()).  Once released, input is never held
+  // again.
   void holdInputUntilWanted(bool hold = true) { input_held = hold; }
   bool isInputHeld() const { return input_held; }
 
@@ -689,6 +694,12 @@ private:
   unsigned long long last_poll_cycles = 0;       // cpu->cycles at the last poll
   bool idle_poll_pending = false;                // for takeIdlePoll()
   bool input_held = false;                       // holdInputUntilWanted()
+  // cpu->cycles when the boot loader last handed over, or 0 for "it has not
+  // since the last reset"; see releaseHeldInputIfDue().
+  unsigned long long handover_at = 0;
+  static constexpr unsigned long long HOLD_AFTER_HANDOVER = 120000000ull;
+  void noteHandover();
+  void releaseHeldInputIfDue();
   static constexpr int IDLE_POLL_THRESHOLD = 8;
   static constexpr unsigned long long IDLE_POLL_MAX_GAP = 1500;  // T-states
   // A wait loop can poll more than once per turn - MBASIC's INKEY$ loop polls

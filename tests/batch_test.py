@@ -15,12 +15,15 @@ Three layers, each skipped when what it needs is not here:
     to its end, one that does not, and the two programs that found the
     console idle bug - PIP concatenating files and MBASIC running a loop, both
     of which the emulator used to cut off at end of input - and piped stdin
-    reaching the CCP and the boot menu, which the boot loader used to eat;
-    and, when hd1k_combo is cached too, ZPM3, whose prompt the idle rule
-    missed so that the emulator never ended there and held piped input from
-    it for ever; and on a pty, ^E at the boot loader's prompt, which took a
-    tenth of a second or more to reach sim> while the CLI looked for it only
-    every 1024th instruction;
+    reaching the CCP and the boot menu, which the boot loader used to eat,
+    and a program booted from the disk that prints between polls and never
+    waits, which the hold on piped input starved; and, when hd1k_combo is
+    cached too, ZPM3, whose prompt the idle rule missed so that the emulator
+    never ended there and held piped input from it for ever, and CP/M 3 and
+    NZ-COM, whose starts ate a script's first key when the hold let go at the
+    boot loader's handover; and on a pty, ^E at the boot loader's prompt,
+    which took a tenth of a second or more to reach sim> while the CLI looked
+    for it only every 1024th instruction;
   * Intel PL/M-80 under ISX (needs $ISX_TOOLS naming DRI's PLM_WORK
     directory, which this repository does not carry): a program compiled by
     both ISX modes, and DRI's `CPM` getting back to CP/M from each; a rebuild
@@ -36,6 +39,7 @@ import importlib.machinery
 import importlib.util
 import io
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -420,6 +424,8 @@ def test_batches():
                   "%s" % (boot, "the CCP" if boot == "2" else "the boot menu"))
 
         test_zpm3(emu, rom, d)
+        test_os_starts(emu, rom, d)
+        test_boot_image_polls(emu, rom, d)
         test_escape_at_prompt(emu, rom)
 
         # ...and MBASIC, which checks for ^C before every statement, ran at a
@@ -464,6 +470,141 @@ def test_zpm3(emu, rom, d):
         out = ""
     check("Files Found" in out,
           "ZPM3: piped input reaches its prompt, and DIR runs")
+
+
+def poll_program(org):
+    """A program that prints a dot, polls the console and spins a while,
+    60,000 times, straight to HBIOS (CALL 0FFF0H), then says what it found:
+    "GOT k" or "STARVED".  Then it reads the console for ever, so at end of
+    input the run ends.  60,000 turns is about four times as long as the hold
+    lasts after the boot loader hands over."""
+    code = bytearray()
+    fix = {}
+
+    def at():
+        return org + len(code)
+
+    def op(*b):
+        code.extend(b)
+
+    def ref(label):                      # a 16-bit address, patched below
+        fix.setdefault(label, []).append(len(code))
+        code.extend(b"\x00\x00")
+
+    def hbios(func):                     # LD BC,func<<8|80H (the console)
+        op(0x01, 0x80, func, 0xCD, 0xF0, 0xFF)
+
+    labels = {}
+    op(0x31, 0x00, (org >> 8) + 0x10)    # LD SP,org+1000H
+    op(0x21, 0x60, 0xEA, 0x22); ref("count")      # LD HL,60000; LD (count),HL
+    labels["loop"] = at()
+    op(0x1E, ord(".")); hbios(0x01)                # CIOOUT '.'
+    hbios(0x02)                                    # CIOIST
+    op(0xB7, 0xC2); ref("got")                     # OR A; JP NZ,got
+    for _ in range(6):
+        op(0x06, 0x00, 0x10, 0xFE)                 # LD B,0; DJNZ $
+    op(0x2A); ref("count")                         # LD HL,(count)
+    op(0x2B, 0x22); ref("count")                   # DEC HL; LD (count),HL
+    op(0x7C, 0xB5, 0xC2); ref("loop")              # LD A,H; OR L; JP NZ,loop
+    op(0x21); ref("starved")                       # LD HL,starved
+    op(0xC3); ref("print")
+    labels["got"] = at()
+    hbios(0x00)                                    # CIOIN
+    op(0x7B, 0x32); ref("key")                     # LD A,E; LD (key),A
+    op(0x21); ref("gotmsg")
+    labels["print"] = at()
+    op(0x7E, 0xB7, 0xCA); ref("done")              # LD A,(HL); OR A; JP Z,done
+    op(0xE5, 0x5F); hbios(0x01); op(0xE1, 0x23)    # PUSH HL; LD E,A; CIOOUT...
+    op(0xC3); ref("print")
+    labels["done"] = at()
+    hbios(0x00)                                    # CIOIN, for ever
+    op(0xC3); ref("done")
+    labels["count"] = at()
+    op(0, 0)
+    labels["starved"] = at()
+    code.extend(b"\r\nSTARVED\r\n\x00")
+    labels["gotmsg"] = at()
+    code.extend(b"\r\nGOT ")
+    labels["key"] = at()
+    code.extend(b"?\r\n\x00")
+    for label, offs in fix.items():
+        for o in offs:
+            code[o:o + 2] = labels[label].to_bytes(2, "little")
+    return bytes(code)
+
+
+def test_boot_image_polls(emu, rom, d):
+    """A program that runs before anything reads a key and prints between
+    polls - a game loop, a display started at boot - gets piped input.
+
+    The CLI holds piped input back from the boot loader, which read and
+    dropped a script's first line.  It let the input go only when the guest
+    read a key or sat in a wait loop, and a program like this does neither:
+    each line it prints resets the idle count.  So it never saw the input,
+    where on 0448175 it did.  Now the hold lets go 120M T-states after the
+    loader hands over to what it booted - about a second here.  The program
+    is booted as the disk's OS, the way romldr boots CP/M."""
+    org = 0xD000
+    prog = poll_program(org)
+    img = os.path.join(d, "poll.img")
+    shutil.copyfile(rb.resolve_asset(rb.DEFAULT_SYSTEM_DISK, offline=True), img)
+    os.chmod(img, 0o644)
+    cd = rb.find_cpm_disk()
+    base = getattr(rb.Drive(cd, img).disk, "base", 0)
+    with open(img, "r+b") as f:
+        # The boot record, as rb.SystemImage reads it: label, then load
+        # address, end and entry; the image from the next sector.
+        rec = base + rb.SystemImage.RECORD
+        f.seek(rec + 0x1E7)
+        f.write(b"POLLTEST$")
+        f.seek(rec + 0x1FA)
+        f.write(org.to_bytes(2, "little") + (org + 0x200).to_bytes(2, "little")
+                + org.to_bytes(2, "little"))
+        f.seek(base + rb.SystemImage.IMAGE)
+        f.write(prog + bytes(0x200 - len(prog)))
+    try:
+        p = subprocess.run([emu, "--romwbw=" + rom, "--disk0=" + img,
+                            "--boot=2", "--no-config"], input=b"K",
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                           timeout=60)
+        out = p.stdout.decode("latin-1")
+    except subprocess.TimeoutExpired:
+        out = ""
+    turns = out.count(".", out.find("POLLTEST"))
+    check("POLLTEST" in out and "GOT K" in out,
+          "piped input reaches a program the loader boots that prints between "
+          "polls and never waits (%s after %d turns)"
+          % ("GOT K" if "GOT K" in out else "STARVED" if "STARVED" in out
+             else "no result", turns))
+
+
+def test_os_starts(emu, rom, d):
+    """CP/M 3 and NZ-COM, slices 3 and 2 of hd1k_combo, poll the console as
+    they start and take what they find: released as soon as the boot loader
+    handed over, a piped `DIR` reached CP/M 3's prompt as `IR`, and NZ-COM's
+    too.  The hold keeps it until their prompts wait for a key."""
+    try:
+        combo = rb.resolve_asset("hd1k_combo", offline=True)
+    except rb.BatchError:
+        skip("CP/M 3 and NZ-COM starting: hd1k_combo is not cached "
+             "(tools/romwbw-get fetch hd1k_combo)")
+        return
+    img = os.path.join(d, "combo.img")
+    for slice_, name in (("3", "CP/M 3"), ("2", "NZ-COM")):
+        shutil.copyfile(combo, img)
+        os.chmod(img, 0o644)
+        try:
+            p = subprocess.run([emu, "--romwbw=" + rom, "--disk0=" + img,
+                                "--boot=2." + slice_, "--no-config"],
+                               input=b"DIR\r", stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL, timeout=60)
+            out = p.stdout.decode("latin-1").replace("\r", "")
+        except subprocess.TimeoutExpired:
+            out = ""
+        typed = re.findall(r"^\S*>(\S*)", out, re.M)
+        check("DIR" in typed,
+              "piped stdin: %s's prompt gets the whole first line (typed at "
+              "its prompts: %s)" % (name, typed))
 
 
 def test_escape_at_prompt(emu, rom):

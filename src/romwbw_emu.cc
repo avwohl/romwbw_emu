@@ -1537,8 +1537,12 @@ int main(int argc, char** argv) {
   // romwbw_emu --boot=2` ran only STAT, and the prompt flushes what is
   // waiting, so `printf '2\r' | romwbw_emu --boot=H` booted nothing.  Held
   // until the guest reads a key or sits in a loop polling for one - console
-  // idle, notePoll() in hbios_dispatch.cc; see holdInputUntilWanted().  A
-  // terminal is left alone: Esc during the countdown is a person's to press.
+  // idle, notePoll() in hbios_dispatch.cc - or, failing both, a bounded time
+  // after the boot loader hands over to what it booted; see
+  // holdInputUntilWanted().  A terminal is left alone: Esc during the
+  // countdown is a person's to press.  A pipe's cannot be - the countdown
+  // never sees the input, Esc included - and `--boot=H` is the way for a
+  // script to start at the loader's prompt.
   if (!isatty(STDIN_FILENO)) {
     emu.getHBIOS()->holdInputUntilWanted();
   }

@@ -954,6 +954,7 @@ void HBIOSDispatch::handleCIO() {
       // to anything testing the sign. HTALK.COM ships on the combo image and
       // does exactly that ("JP M,..."), so it never reached BF_CIOIN, never saw
       // the ^C that is its only exit, and span forever.
+      releaseHeldInputIfDue();
       bool has_input = !input_held && emu_console_has_input();
       result = has_input ? 1 : 0;  // Count of characters waiting
       cpu->regs.DE.set_low(has_input ? 1 : 0);  // E = pending count
@@ -1203,6 +1204,39 @@ void HBIOSDispatch::notePoll(bool has_input) {
     // boot loader's prompt, a program looping on BDOS fn 6, ZPM3's prompt.
     // The boot loader's autoboot countdown is not one: it decrements a
     // counter every time round, so it never repeats.
+    input_held = false;
+  }
+}
+
+// The boot loader has handed over to what it booted - SYSSET BOOTINFO, or
+// HBF_SYSBOOT.  Held input stays held a while yet, and is released by the
+// first status poll HOLD_AFTER_HANDOVER T-states on, if nothing has read a key
+// or waited for one by then.
+//
+// Not at once: the OS's own start polls the console, and takes what it
+// finds.  Released at the handover, CP/M 3's CPMLDR, NZCOM's loader and
+// Z3PLUS's start each ate part of a piped script's first line - `DIR`
+// arrived as `IR`, or not at all - which the hold spares them, since until
+// their prompts wait for a key they see none.  But released only by a read
+// or a wait, the hold starved a program that runs before anything reads a
+// key and prints between polls - a game loop, a display started at boot -
+// because it does neither: every line it prints resets the idle count.  It
+// never saw the input at all, where 0448175 gave it everything after the
+// first line.
+//
+// Measured from the handover to the first read or wait, in T-states: ROM
+// Z-System 0.7M, ROM CP/M 1.2M, ZSDOS 1.5M, BPBIOS 1.6M, QP/M 2.0M, CP/M 2.2
+// 2.4M, CP/M 3 4.5M, Z3PLUS 12.6M, ZPM3 14.0M and NZCOM 16.4M.  The bound is
+// seven times the slowest of those: 30 seconds at the 4 MHz SYSGET CPUINFO
+// reports, and about a second of host time at full speed.
+void HBIOSDispatch::noteHandover() {
+  handover_at = cpu ? cpu->cycles : 0;
+  if (handover_at == 0) handover_at = 1;  // 0 means "not handed over"
+}
+
+void HBIOSDispatch::releaseHeldInputIfDue() {
+  if (input_held && handover_at != 0 && cpu &&
+      cpu->cycles - handover_at >= HOLD_AFTER_HANDOVER) {
     input_held = false;
   }
 }
@@ -2097,6 +2131,8 @@ void HBIOSDispatch::handleSYS() {
         heap_ptr = heap_curb;
       }
       if (reset_type == 0x01 || reset_type == 0x02) {
+        // The boot loader runs again, and its countdown is no OS.
+        handover_at = 0;
         // Call the reset callback if set
         if (reset_callback) {
           reset_callback(reset_type);
@@ -2744,6 +2780,13 @@ void HBIOSDispatch::handleSYS() {
             emu_log("[SYSSET BOOTINFO] unit=%d slice=%d -> CB_BOOTVOL=0x%02X%02X\n",
                     saved_boot_unit, saved_boot_slice, saved_boot_unit, saved_boot_slice);
           }
+          // The boot loader is done with the console: recording where it
+          // booted from is the last thing romldr does before it jumps to what
+          // it loaded, a disk's OS or a ROM application (romldr.asm: diskboot
+          // and appload).  Input held back from it (holdInputUntilWanted())
+          // is released a bounded time from here - see
+          // releaseHeldInputIfDue().
+          noteHandover();
           break;
         }
         default:
@@ -3019,6 +3062,7 @@ void HBIOSDispatch::handleVDA() {
       // much was queued and a guest polling this device never read one.
       // Same as BF_CIOIST above, and wrong the same way until 2026-09-06: a
       // count, not a flag, and 0xFF reads as a negative error code.
+      releaseHeldInputIfDue();
       bool has_key = !input_held && emu_console_has_input();
       result = has_key ? 1 : 0;                    // A = count waiting
       cpu->regs.DE.set_low(has_key ? 1 : 0);       // E = pending count
@@ -3888,6 +3932,9 @@ bool HBIOSDispatch::bootFromDevice(const char* cmd_str) {
   if (!cpu || !memory) return false;
 
   boot_in_progress = true;  // Signal that boot has started (for debugging)
+  // HBF_SYSBOOT is emu_hbios's own boot menu handing over, as SYSSET BOOTINFO
+  // is romldr's.
+  noteHandover();
 
   // Skip leading whitespace
   while (*cmd_str == ' ') cmd_str++;

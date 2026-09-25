@@ -29,16 +29,41 @@ up to Enter watching for Esc and drops them, and at its prompt it flushes
 whatever is waiting. A person does not type during a zero-second countdown; a
 pipe has everything waiting before the first instruction runs.
 
-So the CLI now holds piped or redirected stdin back until the guest first
-wants a key: a `CIOIN` or `VDAKRD`, or console polls that count as idle (see
-"A program that polls the keyboard while it works" below) - the boot loader's
-prompt loop, a program looping on BDOS function 6, ZPM3's prompt. The autoboot
-countdown is not one: it counts down as it polls. Until then a status poll
-sees no key and `VDAKFL` flushes nothing. Both scripts above now run as
-written. A terminal is left alone - Esc during a countdown is a person's to
-press - and so is every other front end: `holdInputUntilWanted()` is off
-unless called. Once released, input is never held again, so what CP/M
-programs do with typed-ahead input is unchanged.
+So the CLI now holds piped or redirected stdin back until the guest first wants
+a key - a `CIOIN` or `VDAKRD`, or console polls that count as idle (see "A
+program that polls the keyboard while it works" below): the boot loader's
+prompt loop, a program looping on BDOS function 6, ZPM3's prompt - or, failing
+both, until a bounded time after the boot loader hands over to what it booted.
+The autoboot countdown is none of these: it counts down as it polls. Until then
+a status poll sees no key and `VDAKFL` flushes nothing. Both scripts above now
+run as written. A terminal is left alone - Esc during a countdown is a person's
+to press - and so is every other front end: `holdInputUntilWanted()` is off
+unless called. Once released, input is never held again, so what CP/M programs
+do with typed-ahead input is unchanged.
+
+**The bounded release.** A first version released the input only on a key read
+or a wait loop, and a program that runs before anything reads a key and prints
+between polls - a game loop, a display started at boot - does neither: each
+line it prints resets the idle count. It never saw the input at all, where
+0448175 had given it everything after the countdown's first line. The loader's
+last act before jumping to a disk's OS or a ROM application is `SYSSET
+BOOTINFO` (`romldr.asm`, `diskboot` and `appload`; emu_hbios's own menu uses
+`HBF_SYSBOOT`), and the hold now lets go at the first status poll 120M T-states
+after it - 30 seconds at the 4 MHz the HBIOS reports, about one second of host
+time - if nothing has read a key or waited for one by then. Not at the handover
+itself: every OS polls the console as it starts, and CP/M 3's CPMLDR, NZCOM's
+loader and Z3PLUS's start take what they find, so released there a piped `DIR`
+reached CP/M 3's and NZCOM's prompts as `IR` and Z3PLUS's not at all. From the
+handover to its first read or wait, NZCOM, the slowest, takes 16.4M T-states,
+ZPM3 14.0M, Z3PLUS 12.6M, CP/M 3 4.5M and CP/M 2.2 2.4M. A program booted as a
+disk's OS that prints a dot, polls and spins, 60,000 times, now gets a piped
+`K` after some 15,000 turns - a second - where it printed `STARVED`; and piped
+into the boot matrix of 18 systems and slices, with and without input, every
+prompt got what it did before.
+
+**One thing a pipe can no longer do: stop the countdown with Esc.** The
+countdown never sees piped input, Esc included; a script that wants the
+loader's prompt starts with `--boot=H`, as the test below does.
 
 **What a script sees differently.** Its first line now runs, where it used to
 vanish, and the lines after it are typed ahead while that one runs - which
@@ -48,10 +73,14 @@ lists one file and runs `TAT`, where it used to run just `STAT`, and
 `printf 'DIR\rDIR\r'` on QPM a short DIR and `IR`. `tools/romwbw-batch`
 exists for scripts longer than a line or two.
 
-`tests/console_idle.cc` has the dispatcher half - checks that fail without
-the hold, and one for ZPM3's prompt getting the key - and
-`tests/batch_test.py` pipes both scripts into the built CLI, and `DIR` into
-ZPM3 when `hd1k_combo` is cached.
+`tests/console_idle.cc` has the dispatcher half - checks that fail without the
+hold, one for ZPM3's prompt getting the key, and the bounded release: not at
+the handover, not 1000 T-states short of the bound, at it, and not after a
+reset has put the loader back. `tests/batch_test.py` pipes both scripts into
+the built CLI, a `K` into that dot-printing program, booted from a scratch copy
+of `hd1k_cpm22` whose boot record it replaces, and, when `hd1k_combo` is
+cached, `DIR` into ZPM3, CP/M 3 and NZ-COM - the last two fail against a
+release at the handover itself.
 
 ### `romwbw-batch` and `romwbw-plm80`: unattended CP/M, and Intel's PL/M-80 under DRI's ISX
 

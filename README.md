@@ -364,15 +364,18 @@ harness (`expect`, `socat`, `ttyd`) must send `\r` for Enter, not `\n`. Piped
 stdin is unaffected.
 
 **Piped stdin is held until the guest first asks for a key** - reads one, or
-sits in a loop polling for one - so a script's first line goes to CP/M's CCP,
-ZPM3's prompt or the boot loader's prompt, not to the autoboot countdown, which
-reads keys up to Enter looking for Esc and used to swallow it: `printf
-'STAT DSK:\rSTAT\r' | romwbw_emu ... --boot=2` runs both. After that,
-typed-ahead input is CP/M's to handle as it would a fast typist's: the BDOS
-keeps a key it sees while printing, and DDT stops a listing on one - and so
-does DIR, so `printf 'DIR\rSTAT\r'` lists one file and then runs `TAT`. For
-anything longer than a few lines, `tools/romwbw-batch` runs the commands from a
-submit file instead - see [docs/BATCH.md](docs/BATCH.md).
+sits in a loop polling for one - or, failing both, until about a second after
+the boot loader hands over to the OS it booted, so a script's first line goes
+to CP/M's CCP, ZPM3's prompt, the boot loader's prompt or a program that starts
+at boot and never waits, not to the autoboot countdown, which reads keys up to
+Enter looking for Esc and used to swallow it: `printf 'STAT DSK:\rSTAT\r' |
+romwbw_emu ... --boot=2` runs both. (So a pipe cannot stop the countdown with
+Esc; `--boot=H` starts at the loader's prompt.) After that, typed-ahead input
+is CP/M's to handle as it would a fast typist's: the BDOS keeps a key it sees
+while printing, and DDT stops a listing on one - and so does DIR, so `printf
+'DIR\rSTAT\r'` lists one file and then runs `TAT`. For anything longer than a
+few lines, `tools/romwbw-batch` runs the commands from a submit file instead -
+see [docs/BATCH.md](docs/BATCH.md).
 
 In the browser, xterm.js translates `Ctrl`+letter to the control byte and the
 page forwards it verbatim, and the terminal takes focus on load, so `Ctrl+R` is

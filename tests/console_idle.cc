@@ -33,7 +33,10 @@
  * It also covers the hold on typed-ahead input that the CLI puts on a piped
  * stdin (holdInputUntilWanted()): RomWBW's boot loader used to eat a
  * script's first line, reading keys up to Enter during its autoboot
- * countdown and flushing them at its prompt.
+ * countdown and flushing them at its prompt.  And the hold's other end: a
+ * bounded time after the loader hands over to what it booted, it lets go, so
+ * a program that prints between polls before anything reads a key still gets
+ * its input.
  *
  * Build and run:  make -C src test
  */
@@ -395,6 +398,83 @@ int main() {
     }
     check(seen == 10, "held: ZPM3's prompt (3605 T apart) gets the key once it "
                       "counts as waiting, on its tenth poll");
+    g_keys.clear();
+  }
+  {
+    // A program that runs before anything reads a key - a game loop, a
+    // display started at boot - and prints between polls.  Output resets the
+    // idle count, so it never waits, and it never reads: under a hold
+    // released only by a read or a wait loop it saw none of its input, where
+    // without the hold it saw all of it.  So the boot loader handing over to
+    // what it booted - SYSSET BOOTINFO, its last act before the jump - starts
+    // a clock, and the input goes 120M T-states later.  Not at once: the OS's
+    // own start polls too, and CP/M 3's CPMLDR, NZCOM's loader and Z3PLUS
+    // took the first key of a script that way.  The slowest of them, NZCOM,
+    // waits at its prompt 16.4M T-states after the handover.
+    const unsigned long long BOUND = 120000000ull;
+    Rig r;
+    r.work = Rig::COUNTING;
+    g_keys.clear();
+    g_keys.push_back('K');
+    r.hbios.holdInputUntilWanted();
+    bool seen = false;
+    for (int i = 0; i < 200 && !seen; i++) {
+      r.call(HBF_CIOOUT, 0, '.');
+      r.poll_after(2000);
+      seen = r.A() != 0;
+    }
+    check(!seen && r.hbios.isInputHeld(),
+          "held: a loop that prints between polls sees no key in 200 turns - "
+          "it neither reads nor waits");
+    r.cpu.regs.DE.set_high(2);             // D = boot unit
+    r.cpu.regs.HL.set_low(0x8E);           // L = boot bank
+    r.call(HBF_SYSSET, SYSSET_BOOTINFO);   // C = subfunction; E = slice 0
+    unsigned long long handover = r.cpu.cycles;
+    r.call(HBF_CIOOUT, 0, '.');
+    r.poll_after(2000);
+    check(r.A() == 0 && r.hbios.isInputHeld(),
+          "held: just after the boot loader hands over (SYSSET BOOTINFO), a "
+          "poll still sees no key - the OS is starting");
+    r.cpu.cycles = handover + BOUND - 3000;
+    r.call(HBF_CIOOUT, 0, '.');
+    r.poll_after(2000);
+    check(r.A() == 0, "held: ...nor one 1000 T-states short of the bound");
+    r.call(HBF_CIOOUT, 0, '.');
+    r.poll_after(2000);
+    check(r.A() != 0 && !r.hbios.isInputHeld(),
+          "released: the first poll 120M T-states after the handover sees the "
+          "key");
+    g_keys.clear();
+  }
+  {
+    // An OS that waits for a key before the bound gets the input then, as it
+    // always did.
+    Rig r;
+    g_keys.clear();
+    g_keys.push_back('D');
+    r.hbios.holdInputUntilWanted();
+    r.call(HBF_SYSSET, SYSSET_BOOTINFO);
+    r.cpu.cycles += 4500000;               // CP/M 3's start
+    r.call(HBF_CIOIN);
+    check(r.E() == 'D', "held: an OS reading a key before the bound gets it");
+    g_keys.clear();
+  }
+  {
+    // A reset reboots into the boot loader, whose countdown must not get
+    // the input because an OS started a while ago.
+    Rig r;
+    r.work = Rig::COUNTING;
+    g_keys.clear();
+    g_keys.push_back('Z');
+    r.hbios.holdInputUntilWanted();
+    r.call(HBF_SYSSET, SYSSET_BOOTINFO);
+    r.cpu.cycles += 1000000;
+    r.call(HBF_SYSRESET, 0x01);            // warm boot
+    r.cpu.cycles += 200000000ull;
+    r.poll_after(50000);
+    check(r.A() == 0 && r.hbios.isInputHeld(),
+          "held: after a reset the loader's countdown sees no key, however "
+          "long ago an OS started");
     g_keys.clear();
   }
   {

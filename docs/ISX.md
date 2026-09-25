@@ -352,8 +352,9 @@ through a pipe works for short scripts, with two things to know:
   `printf 'STAT DSK:\rSTAT\r' | romwbw_emu --boot=2` ran only `STAT`, and
   `printf '2\rSTAT\r' | romwbw_emu --boot=H` booted nothing. That was the
   emulator's to fix, and it is fixed: the CLI now holds piped input back until
-  the guest first reads a key or sits in a loop polling for one, so both
-  scripts run as written.
+  the guest first reads a key or sits in a loop polling for one - or, if it
+  does neither, until about a second after the boot loader hands over to the
+  OS it booted - so both scripts run as written.
 - **CP/M programs read ahead**, as they would a fast typist. The BDOS checks
   for ^S before each character it prints and keeps the key it finds; DIR stops
   listing on any key, so `printf 'DIR\rSTAT\r'` lists one file and then runs
