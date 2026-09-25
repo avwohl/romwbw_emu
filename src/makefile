@@ -158,7 +158,7 @@ romwbw_emu.o: $(wildcard $(THIS_DIR)../VERSION)
 #                 BSDs and macOS.
 #   cli_hostfile  is also a test of emu_io_cli.o, plus emu_io_common.o for the
 #                 shared path helper the sandboxed backends reduce a path with.
-TESTS = vda_keyboard hbios_hostname snd_channels sys_bnkcpy rtc_settim sys_switch dio_units cli_console cli_hostfile
+TESTS = vda_keyboard hbios_hostname snd_channels sys_bnkcpy rtc_settim sys_switch dio_units console_idle cli_console cli_hostfile
 
 DISPATCH_OBJS = emu_io_common.o hbios_dispatch.o hbios_cpu.o emu_init.o
 
@@ -239,6 +239,9 @@ test_sys_switch: $(THIS_DIR)../tests/sys_switch.cc $(DISPATCH_OBJS)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< $(DISPATCH_OBJS) $(LDLIBS) -o $@
 
 test_dio_units: $(THIS_DIR)../tests/dio_units.cc $(DISPATCH_OBJS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< $(DISPATCH_OBJS) $(LDLIBS) -o $@
+
+test_console_idle: $(THIS_DIR)../tests/console_idle.cc $(DISPATCH_OBJS)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $< $(DISPATCH_OBJS) $(LDLIBS) -o $@
 
 test_cli_console: $(THIS_DIR)../tests/cli_console.cc emu_io_cli.o

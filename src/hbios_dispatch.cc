@@ -62,6 +62,7 @@ void HBIOSDispatch::reset() {
   waiting_for_input = false;
   waiting_for_host_file = false;
   idle_poll_count = 0;
+  idle_poll_pending = false;
   manifest_write_pending = false;  // Clear pending flag
   // Note: manifest_warning_shown is static, persists across resets within session
   emu_state = HBIOS_RUNNING;
@@ -954,8 +955,7 @@ void HBIOSDispatch::handleCIO() {
       bool has_input = emu_console_has_input();
       result = has_input ? 1 : 0;  // Count of characters waiting
       cpu->regs.DE.set_low(has_input ? 1 : 0);  // E = pending count
-      // Track consecutive "no input" polls for idle detection
-      if (has_input) idle_poll_count = 0; else idle_poll_count++;
+      notePoll(has_input);
       break;
     }
 
@@ -1097,6 +1097,52 @@ static bool is_md_unit(uint8_t unit, const MemDiskState* md_disks) {
 // Get memory disk index for a unit (assumes is_md_unit returned true)
 static uint8_t get_md_index(uint8_t unit) {
   return map_md_unit(unit);
+}
+
+// A console status poll (CIOIST or VDAKST) and what it found.
+//
+// Counted toward "idle" only when it comes within IDLE_POLL_MAX_GAP cycles of
+// the previous empty poll; a longer gap starts the count again at one.  It
+// used to count every empty poll, so a program that polls while it works
+// looked exactly like one waiting at a prompt: eight polls with no output and
+// no disk I/O in between were enough.  Two things followed, both on the CLI:
+//
+//   * romwbw_emu.cc slept 10 ms after EVERY instruction while idle, so such a
+//     program ran at about a hundred instructions a second until it next
+//     printed or touched a disk.  MBASIC running `FOR I=1 TO 3000: X=X+1:
+//     NEXT` did not finish in 30 seconds;
+//   * with stdin a pipe at end of file, idle means "waiting for input that
+//     can never come", and the emulator ended the run - in the middle of
+//     PIP concatenating two .HEX files, which left a zero-length DIR.$$$ and
+//     no DIR.HEX, and in the middle of that MBASIC loop.
+//
+// Measured, in T-states between consecutive empty polls:
+//
+//   waiting   romldr boot prompt 170, BIOS CONST loop 160, BDOS fn 6 loop
+//             370 (CP/M 2.2 and 3) and 425 (ZSDOS), BDOS fn 11 loop 395
+//             (CP/M 2.2), 410 (ZSDOS), 885 (CP/M 3, through its bank switch)
+//   working   MBASIC FOR/NEXT loop 1865-7380, never two in a row under 1865;
+//             PIP concatenating 46335; the BDOS between printed characters
+//             650, but every one of those follows output, which resets
+//
+// so 1500 sits between the slowest wait loop and the fastest working one.  The
+// price is on the other side of the line: MBASIC waiting in an INKEY$ loop
+// polls at 920-3790 and no longer counts as idle, because nothing tells it
+// from MBASIC computing - both are the interpreter running statements.
+void HBIOSDispatch::notePoll(bool has_input) {
+  if (has_input) {
+    idle_poll_count = 0;
+    return;
+  }
+  unsigned long long now = cpu ? cpu->cycles : 0;
+  bool close = idle_poll_count > 0 && now - last_idle_poll_cycles <= IDLE_POLL_MAX_GAP;
+  if (!close) {
+    idle_poll_count = 1;
+  } else if (idle_poll_count < IDLE_POLL_THRESHOLD) {
+    idle_poll_count++;  // capped: an int counting forever at a prompt wraps
+  }
+  last_idle_poll_cycles = now;
+  if (idle_poll_count >= IDLE_POLL_THRESHOLD) idle_poll_pending = true;
 }
 
 void HBIOSDispatch::handleDIO() {
@@ -2914,8 +2960,7 @@ void HBIOSDispatch::handleVDA() {
       bool has_key = emu_console_has_input();
       result = has_key ? 1 : 0;                    // A = count waiting
       cpu->regs.DE.set_low(has_key ? 1 : 0);       // E = pending count
-      // Track consecutive "no input" polls for idle detection
-      if (has_key) idle_poll_count = 0; else idle_poll_count++;
+      notePoll(has_key);
       break;
     }
 

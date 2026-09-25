@@ -2,6 +2,19 @@
 
 This document explains how to integrate the RomWBW emulator core into downstream projects (iOS, macOS, Windows, etc.).
 
+**2026-09-25: `isConsoleIdle()` means waiting for a key, not polling while
+working - and needs nothing from you.** It used to turn true after eight
+console status polls that found no key with no output or disk I/O between
+them, which a busy program also produces: MBASIC polls for ^C before every
+statement, PIP between records. It now counts a poll only when it comes within
+1500 T-states of the previous one, which every measured wait loop does and no
+measured working program does; `CHANGELOG.md` has the numbers. If your run
+loop sleeps longer between batches while `isConsoleIdle()` holds, a program
+that was running slowly for that reason now runs at full speed, and MBASIC
+waiting in an `INKEY$` loop no longer earns the longer sleep. There is also a
+new `takeIdlePoll()`, true once per poll of an idle console, for a loop that
+would rather sleep per poll than per batch; the CLI uses it.
+
 **2026-09-19: the RTC was broken on every port with a 32-bit `long`, which is
 z80cpmw and two of cpmdroid's four ABIs.** You get the fix by rebuilding; there
 is nothing to change. It is listed here because it was shipped, because the

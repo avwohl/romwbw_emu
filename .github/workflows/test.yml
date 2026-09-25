@@ -7,6 +7,8 @@ name: Tests
 #
 # `make -C src test` needs no ROM, no disk image and no network. It runs:
 #   tests/vda_keyboard.cc        HBIOS VDA keyboard behaviour
+#   tests/console_idle.cc        idle means waiting for a key, not polling
+#                                while working
 #   tests/hbios_hostname.cc      HBF_HOST_GETNAME and its buffer bound
 #   tests/cli_console.cc         the console on a real pipe and a real pty
 #   tests/cli_hostfile.cc        where W8 writes, and what it reports back
@@ -510,9 +512,10 @@ jobs:
       # code at all was z80cpmw built by hand on somebody's PC. cpmemu stopped
       # being in that position on 2026-09-03 and this is the same move.
       #
-      # SEVEN OF THE NINE TESTS ARE PORTABLE, and this job ran two of them
+      # EIGHT OF THE TEN TESTS ARE PORTABLE, and this job ran two of them
       # until 2026-09-19. vda_keyboard, hbios_hostname, snd_channels,
-      # sys_bnkcpy, rtc_settim, sys_switch and dio_units drive the dispatcher
+      # sys_bnkcpy, rtc_settim, sys_switch, dio_units and console_idle
+      # (added 2026-09-25) drive the dispatcher
       # through a stub CPU and touch no POSIX beyond strncasecmp, which they
       # spell through EMU_TEST_STRNCASECMP. Only cli_console and cli_hostfile
       # are not portable, and are not meant to be - one drives a pty and the
@@ -544,7 +547,7 @@ jobs:
           )
           call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
           setlocal enabledelayedexpansion
-          for %%T in (vda_keyboard hbios_hostname snd_channels sys_bnkcpy rtc_settim sys_switch dio_units) do (
+          for %%T in (vda_keyboard hbios_hostname snd_channels sys_bnkcpy rtc_settim sys_switch dio_units console_idle) do (
             echo === %%T ===
             cl /nologo /EHsc /W3 /std:c++17 ^
                /D_CRT_SECURE_NO_WARNINGS /DQKZ80_NO_TRACE /DNDEBUG /D_WINDOWS ^

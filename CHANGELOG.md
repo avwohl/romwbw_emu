@@ -19,6 +19,37 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+### A program that polls the keyboard while it works is no longer "idle"
+
+The console idle detector counted every console status poll that found no key
+and called the guest idle after eight of them with no output and no disk I/O
+in between. Programs poll while they work - MBASIC checks for ^C before every
+statement, PIP between records - so a busy program read as a waiting one, and
+the CLI acted on that twice:
+
+- **it slept 10 ms after every instruction** for as long as the flag held, so
+  MBASIC running `FOR I=1 TO 3000: X=X+1: NEXT` had not finished after 30
+  seconds; it now takes under a second;
+- **with stdin a pipe at end of file it ended the run**, because idle plus EOF
+  means "waiting for input that can never come". `PIP DIR.HEX=DIR1.HEX,DIR2.HEX`
+  was cut off with a zero-length `DIR.$$$` on the disk, which is how
+  `tools/romwbw-batch` found it.
+
+An empty poll now counts only when it follows the previous one within 1500
+T-states. Measured on the real guests, every wait loop polls faster than that
+(the boot prompt every 170, a BDOS function 11 loop every 395 on CP/M 2.2 and
+885 on CP/M 3) and no working program seen does (MBASIC's statement loop 1865
+at the least, PIP 46335). And the CLI sleeps once per poll of an idle console,
+through the new `takeIdlePoll()`, not once per instruction. A wait loop still
+exits at end of piped input and still costs about 1% of a CPU. What is given
+up: MBASIC waiting in an `INKEY$` loop polls at 920-3790 and is no longer idle,
+because nothing distinguishes it from MBASIC computing.
+
+`tests/console_idle.cc` drives the dispatcher with the measured gaps; five of
+its checks fail against the old counting rule. It is portable and runs in the
+MSVC job too. Every port compiles `hbios_dispatch.cc`, so the new rule reaches
+their `isConsoleIdle()` batch sleeps as well - see `DOWNSTREAM.md`.
+
 ### `cpm_disk.py create --sssd` works now, and the disk docs say so
 
 `docs/DISK_FORMATS.md` and `docs/disk-images.md` said `create --sssd` fails its

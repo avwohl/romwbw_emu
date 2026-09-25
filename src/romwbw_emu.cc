@@ -1641,7 +1641,9 @@ int main(int argc, char** argv) {
     // past EOF (blocking CIOIN), or the guest is only *polling* status
     // (e.g. the romldr boot menu) - console-idle plus EOF means it waits
     // for input that can never come. isConsoleIdle resets on every CIOOUT,
-    // so a guest that is still producing output is never cut off.
+    // so a guest that is still producing output is never cut off, and it
+    // counts only polls in a tight loop, so neither is one that is working
+    // and polls for ^C as it goes (notePoll() in hbios_dispatch.cc).
     if (emu_console_input_exhausted() ||
         (emu_console_input_eof() && emu.getHBIOS()->isConsoleIdle())) {
       stop_requested = true;
@@ -1650,10 +1652,15 @@ int main(int argc, char** argv) {
     // Flush output from HBIOSDispatch to stdout
     emu.flush_output();
 
-    // Sleep when guest is idle (polling console with no input available)
-    // to reduce CPU usage and power draw.
-    if (emu.getHBIOS()->isConsoleIdle()) {
-      usleep(10000);  // 10ms — imperceptible latency, significant power savings
+    // Sleep when the guest polls an idle console, to reduce CPU usage and
+    // power draw: 10 ms per poll, imperceptible latency.  Per POLL - this
+    // slept after every instruction for as long as isConsoleIdle() held,
+    // which is the right test at a prompt (the next instruction is the next
+    // poll, near enough) and a hundred-instructions-a-second throttle on
+    // anything that had polled eight times without printing.  notePoll() in
+    // hbios_dispatch.cc has the measurements.
+    if (emu.getHBIOS()->takeIdlePoll()) {
+      usleep(10000);
     }
 
     // Check if strict I/O mode halted us during port operations

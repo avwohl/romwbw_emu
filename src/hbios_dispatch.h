@@ -564,10 +564,25 @@ public:
   void clearWaitingForInput() { waiting_for_input = false; }
 
   // Console idle detection for power management.
-  // Returns true when guest is polling console status with no input available
-  // (consecutive CIOIST/VDAKST calls returning "no key").
+  // Returns true when the guest is WAITING for a key: polling console status
+  // (CIOIST/VDAKST) in a tight loop, with nothing else happening in between.
   // Host run loop should sleep longer when idle (e.g., 10ms instead of 0.1ms).
+  //
+  // "Tight" is the point.  A program that is working also polls - MBASIC
+  // checks for ^C before every statement, PIP between records, the BDOS
+  // before every character it prints - and counting those polls made a busy
+  // program look idle.  See notePoll() for the rule and the measurements.
   bool isConsoleIdle() const { return idle_poll_count >= IDLE_POLL_THRESHOLD; }
+
+  // True once for each console poll the guest has made while idle, cleared by
+  // the call.  A front end that sleeps to save power should sleep HERE - once
+  // per poll of a waiting guest - and not on every instruction for as long as
+  // isConsoleIdle() holds, which is what romwbw_emu.cc used to do.
+  bool takeIdlePoll() {
+    bool r = idle_poll_pending;
+    idle_poll_pending = false;
+    return r;
+  }
 
   //==========================================================================
   // State Machine I/O Interface
@@ -653,10 +668,16 @@ private:
   uint16_t main_entry = 0xFFF0;    // Main HBIOS entry point
 
   // Console idle detection: counts consecutive CIOIST/VDAKST polls returning
-  // "no input". Reset when input is consumed, output is written, or disk I/O
-  // occurs. When count >= threshold, isConsoleIdle() returns true.
+  // "no input", each within IDLE_POLL_MAX_GAP cycles of the one before.
+  // Reset when input is consumed, output is written, or disk I/O occurs.
+  // When count >= threshold, isConsoleIdle() returns true.  notePoll() keeps
+  // it.
   int idle_poll_count = 0;
+  unsigned long long last_idle_poll_cycles = 0;  // cpu->cycles at that poll
+  bool idle_poll_pending = false;                // for takeIdlePoll()
   static constexpr int IDLE_POLL_THRESHOLD = 8;
+  static constexpr unsigned long long IDLE_POLL_MAX_GAP = 1500;  // T-states
+  void notePoll(bool has_input);
 
   // Manifest disk write warning - set true on first write to manifest disk (non-suppressed)
   // Cleared after pollManifestWriteWarning() returns true
