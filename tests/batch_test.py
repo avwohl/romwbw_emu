@@ -16,6 +16,7 @@ Three layers, each skipped when what it needs is not here:
     console idle bug - PIP concatenating files and MBASIC running a loop, both
     of which the emulator used to cut off at end of input - and piped stdin
     reaching the CCP and the boot menu, which the boot loader used to eat,
+    and the instruction limit, which used to end a run with exit status 0,
     and a program booted from the disk that prints between polls and never
     waits, which the hold on piped input starved; and, when hd1k_combo is
     cached too, ZPM3, whose prompt the idle rule missed so that the emulator
@@ -426,6 +427,7 @@ def test_batches():
         test_zpm3(emu, rom, d)
         test_os_starts(emu, rom, d)
         test_boot_image_polls(emu, rom, d)
+        test_instruction_limit(emu, rom, d)
         test_escape_at_prompt(emu, rom)
 
         # ...and MBASIC, which checks for ^C before every statement, ran at a
@@ -605,6 +607,36 @@ def test_os_starts(emu, rom, d):
         check("DIR" in typed,
               "piped stdin: %s's prompt gets the whole first line (typed at "
               "its prompts: %s)" % (name, typed))
+
+
+def test_instruction_limit(emu, rom, d):
+    """The emulator stops a run at an instruction limit.  It was ten billion,
+    a constant with no option, and a run that reached it exited 0, which a
+    script could not tell from the guest finishing.  Now it is
+    --max-instructions, and a run stopped there exits 124."""
+    def run(*opts):
+        p = subprocess.run([emu, "--romwbw=" + rom, "--boot=H", "--no-config"]
+                           + list(opts), stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                           timeout=60)
+        return p.returncode, p.stderr.decode("latin-1")
+    rc, err = run("--max-instructions=1000")
+    check(rc == 124 and "instruction limit, 1000 instructions" in err,
+          "a run stopped at --max-instructions exits 124 and says so "
+          "(exit %s)" % rc)
+    rc, _ = run()
+    check(rc == 0, "a run that ends at the boot prompt, at end of input, "
+                   "exits 0")
+    rc, _ = run("--max-instructions=0")
+    check(rc == 0, "--max-instructions=0 is no limit")
+    rc, err = run("--max-instructions=1e9")
+    check(rc == 1 and "Invalid --max-instructions" in err,
+          "--max-instructions=1e9 is refused, not read as 1")
+    r = batch(["-c", "DIR", "--max-instructions", "200000"], d)
+    check(r.returncode == 1 and
+          "instruction limit (200,000 instructions)" in r.stdout,
+          "romwbw-batch: a batch the emulator stopped at its instruction "
+          "limit fails, and says so")
 
 
 def test_escape_at_prompt(emu, rom):

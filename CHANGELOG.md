@@ -82,6 +82,30 @@ of `hd1k_cpm22` whose boot record it replaces, and, when `hd1k_combo` is
 cached, `DIR` into ZPM3, CP/M 3 and NZ-COM - the last two fail against a
 release at the handover itself.
 
+### The instruction limit is `--max-instructions`, and a run stopped there exits 124
+
+`romwbw_emu.cc` ended every run at ten billion instructions - a constant in
+`main()` with no option - printed `Reached instruction limit` and exited 0, as
+though the guest had finished. A script could not tell the two apart, and
+`tools/romwbw-batch`, which could see the line, could not lift the limit.
+Interactive use never gets near it; an unattended run can, at some 22 million
+instructions a CPU second.
+
+`--max-instructions=N` sets it, and 0 removes it; the default is still ten
+billion. A run stopped there says so on stderr - `Stopped at the instruction
+limit, N instructions, at PC=...: the guest had not finished` - and exits 124,
+the status `timeout(1)` gives a command it stopped; every other end of a run
+still exits 0. A value that is not a plain count (`1e9`, `-5`, nothing) is an
+error rather than read as some other number. `romwbw-batch` and
+`romwbw-plm80` take `--max-instructions N` and pass it on, and report a run
+the emulator stopped by its exit status: "the emulator stopped at its
+instruction limit (200,000 instructions) before the batch finished". It is a
+command-line option only, like `--trace`.
+
+`tests/batch_test.py` stops a boot at 1000 instructions (exit 124, and the
+line), lets one run to the prompt with no option and with 0 (exit 0), refuses
+`1e9`, and stops a batch at 200,000.
+
 ### `romwbw-batch` and `romwbw-plm80`: unattended CP/M, and Intel's PL/M-80 under DRI's ISX
 
 `tools/romwbw-batch` boots CP/M 2.2 from a scratch copy of `hd1k_cpm22`, adds

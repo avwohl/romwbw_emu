@@ -302,6 +302,9 @@ def build_parser():
                         "SDIR.SUB did")
     p.add_argument("-o", "--out", default=".", metavar="DIR")
     p.add_argument("--timeout", type=int, default=rb.DEFAULT_TIMEOUT)
+    p.add_argument("--max-instructions", type=int, metavar="N",
+                   help="passed to the emulator: stop after N Z80 "
+                        "instructions (default ten billion); 0 for no limit")
     p.add_argument("--rom", default="@rom", metavar="ID|FILE")
     p.add_argument("--disk", default=rb.DEFAULT_SYSTEM_DISK, metavar="ID|FILE")
     p.add_argument("--emu", metavar="PATH")
@@ -365,7 +368,8 @@ def main(argv):
 
             b = rb.Batch(workdir=args.work, rom=args.rom, system=args.disk,
                          emulator=args.emu, offline=args.offline, isx=True,
-                         timeout=args.timeout, verbose=args.verbose)
+                         timeout=args.timeout, verbose=args.verbose,
+                         max_instructions=args.max_instructions)
             for n in sorted(tools.files):
                 b.add(tools.files[n], n, drive="B")
             for p in includes:

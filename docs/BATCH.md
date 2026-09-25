@@ -56,6 +56,7 @@ emulator now holds back.
 | `--emu PATH` | the emulator (default `$ROMWBW_EMU`, `src/romwbw_emu`, then PATH) |
 | `--offline` | pass `--offline` to `romwbw-get` |
 | `--timeout SECS` | kill the run after this long (default 900) |
+| `--max-instructions N` | have the emulator stop the run after N Z80 instructions (default: its own, ten billion); 0 for no limit |
 | `--work DIR` | keep `a.img`, `b.img` and `console.log` here |
 | `--log FILE` | write the console transcript here as well |
 | `-v` | show the console as it runs |
@@ -122,6 +123,8 @@ b.cleanup()
 - **A CP/M 2.2 CCP.** The submit file is read by the CCP at boot; CP/M 3 reads
   `$$$.SUB` differently and is not supported. `hd1k_cpm22` is the default.
 - **A: and B: only**, and user area 0.
-- **Ten billion instructions a run** - the emulator's own limit. The tool
-  reports it when a run stops there.
+- **Ten billion instructions a run**, by default - the emulator's own limit,
+  some seven minutes at full speed; `--max-instructions` moves it and 0
+  removes it. A run stopped there exits 124 from the emulator, and the tool
+  says the batch did not complete and why.
 - `-g` reads the directory after the run; a file a program deleted is gone.

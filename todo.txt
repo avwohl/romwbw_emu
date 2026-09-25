@@ -108,15 +108,6 @@ are read against it.  So it now names the machine it measured.
                 itself is gone (4086092, "the one thing it was waiting on is
                 released").
 
-- [ANY] romwbw_emu.cc ends every run at ten billion instructions - a local
-constant, `max_instructions`, with no option - prints "Reached instruction
-limit" and exits 0 as though the guest had finished.  Interactive use never
-gets near it; an unattended run can, and tools/romwbw-batch now reports it
-but cannot lift it.  At about 22 million instructions a CPU second (measured
-2026-09-25 on a loaded Mac) it is some seven minutes of guest time.  Either an
-option, or no limit when a timeout is the caller's business; the exit status
-should say which way a run ended either way.
-
 - [ANY] The console idle rule (notePoll() in src/hbios_dispatch.cc) still
 takes one working program for a waiting one: MBASIC running a FOR loop on an
 INTEGER variable - `10 FOR I%=1 TO 3000: NEXT` - polls for ^C every 1095

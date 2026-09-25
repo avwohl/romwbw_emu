@@ -823,6 +823,16 @@ static void print_version_banner() {
                   " loads, not compiled in)\n");
 }
 
+// The instruction limit, and how a run that reaches it ends.  It used to be a
+// constant in main() with no option, and a run that reached it printed a line
+// on stderr and exited 0, as though the guest had finished - which a script
+// cannot tell from success.  tools/romwbw-batch looked for the line.  It exits
+// 124 now, the status timeout(1) gives a command it stopped, and the limit is
+// --max-instructions.  Interactive use never gets near the default; an
+// unattended run can.
+static const long long DEFAULT_MAX_INSTRUCTIONS = 10000000000LL;  // 10 billion
+static const int EXIT_INSTRUCTION_LIMIT = 124;
+
 void print_usage(const char* prog) {
   print_version_banner();
   fprintf(stderr, "Usage: %s --romwbw=<rom.rom> [options]\n", prog);
@@ -883,6 +893,12 @@ void print_usage(const char* prog) {
   fprintf(stderr, "                    the same). Console mode is then unreachable.\n");
   fprintf(stderr, "  --trace=FILE      Write execution trace to FILE\n");
   fprintf(stderr, "  --symbols=FILE    Load symbol table from FILE (.sym)\n");
+  fprintf(stderr, "  --max-instructions=N\n");
+  fprintf(stderr, "                    Stop after N Z80 instructions (default %lld, some\n",
+          DEFAULT_MAX_INSTRUCTIONS);
+  fprintf(stderr, "                    seven minutes at full speed); 0 for no limit.\n");
+  fprintf(stderr, "                    A run stopped there exits %d, as timeout(1) does.\n",
+          EXIT_INSTRUCTION_LIMIT);
   fprintf(stderr, "\n");
   fprintf(stderr, "Console mode:\n");
   fprintf(stderr, "  Press the escape char (default Ctrl+E) to enter console mode. On an\n");
@@ -940,6 +956,7 @@ int main(int argc, char** argv) {
   // developer had configured, because the exit path saves whatever NVRAM holds.
   bool boot_from_cli = false;
   bool boot_clear = false;  // --boot=none: forget the persisted target too
+  long long max_instructions = DEFAULT_MAX_INSTRUCTIONS;  // 0: no limit
 
   // ROM application definitions: key=name:path
   struct RomAppDef {
@@ -1147,6 +1164,19 @@ int main(int argc, char** argv) {
       trace_file = argv[i] + 8;
     } else if (strncmp(argv[i], "--symbols=", 10) == 0) {
       symbols_file = argv[i] + 10;
+    } else if (strncmp(argv[i], "--max-instructions=", 19) == 0) {
+      // Digits only: strtoll alone takes "1e9" as 1, "-5" as negative and ""
+      // as 0 - and 0 means no limit, which is not a thing to arrive at by typo.
+      const char* n = argv[i] + 19;
+      char* end = nullptr;
+      errno = 0;
+      long long v = (*n >= '0' && *n <= '9') ? strtoll(n, &end, 10) : -1;
+      if (v < 0 || errno != 0 || !end || *end != '\0') {
+        fprintf(stderr, "Invalid --max-instructions value: %s (a count of "
+                        "instructions, or 0 for no limit)\n", n);
+        return 1;
+      }
+      max_instructions = v;
     } else if (strncmp(argv[i], "--escape=", 9) == 0) {
       // Parse escape character: ^X for control chars, or literal char
       const char* esc = argv[i] + 9;
@@ -1599,7 +1629,7 @@ int main(int argc, char** argv) {
 
   // Main execution loop
   long long instruction_count = 0;
-  long long max_instructions = 10000000000LL;  // 10 billion max
+  bool limit_reached = false;
   bool in_step_mode = false;  // True if stepping from console
 
   while (!stop_requested) {
@@ -1777,9 +1807,12 @@ int main(int argc, char** argv) {
       }
     }
 
-    if (instruction_count >= max_instructions) {
-      fprintf(stderr, "\nReached instruction limit at PC=0x%04X\n",
-              cpu.regs.PC.get_pair16());
+    if (max_instructions > 0 && instruction_count >= max_instructions) {
+      fprintf(stderr, "\nStopped at the instruction limit, %lld instructions, "
+                      "at PC=0x%04X: the guest had not finished.  "
+                      "--max-instructions=N moves the limit, 0 removes it.\n",
+              max_instructions, cpu.regs.PC.get_pair16());
+      limit_reached = true;
       break;
     }
   }
@@ -1809,5 +1842,5 @@ int main(int argc, char** argv) {
     }
   }
 
-  return 0;
+  return limit_reached ? EXIT_INSTRUCTION_LIMIT : 0;
 }

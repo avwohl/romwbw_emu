@@ -321,7 +321,15 @@ use:
   --save-config[=F] Write the effective settings as JSON and exit
   --debug           Enable debug output
   --strict-io       Halt on unexpected I/O ports
+  --max-instructions=N  Stop after N Z80 instructions (default ten billion,
+                    some seven minutes at full speed); 0 for no limit
 ```
+
+A run ends with exit status 0 however the guest ends it - at end of piped
+input, `quit` at `sim>`, a `HLT` - and 124, as `timeout(1)` gives, when
+`--max-instructions` stopped it; the line it prints on stderr says so. Until
+2026-09-25 the limit had no option and a run stopped there exited 0 too, which
+a script could not tell from the guest finishing.
 
 `--version`, `-v`, `--help` and `-h` are answered before any settings file is
 read, so they work even with a malformed `romwbw_emu.json` in the directory.

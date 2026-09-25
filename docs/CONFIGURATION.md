@@ -88,8 +88,8 @@ The cache comes through that untouched and `romwbw-get verify` still passes;
 what is lost is the guest's work. See [CATALOG.md](CATALOG.md).
 
 Deliberately excluded (per-run debug switches, CLI only): `--trace`,
-`--load`, `--start`, `--sense`, `--mask-interrupt`, `--nmi`, and the config
-options themselves.
+`--load`, `--start`, `--sense`, `--mask-interrupt`, `--nmi`,
+`--max-instructions`, and the config options themselves.
 
 ## romwbw-get keeps its choice in a different file
 

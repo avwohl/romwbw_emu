@@ -85,6 +85,12 @@
 # ($ROMWBW_EMU, ../src/romwbw_emu, then PATH) and, unless --rom and --disk name
 # files, tools/romwbw-get to find the ROM and the system disk.
 #
+# LIMITS.  --timeout kills a run after that many seconds of wall clock, and the
+# emulator stops one after --max-instructions Z80 instructions - its own
+# default is ten billion, some seven minutes at full speed - and says so, with
+# exit status 124.  Either way the batch did not complete, and the tool says
+# which stopped it.
+#
 # Exit status: 0 the batch completed and every requested file was extracted;
 # 1 it did not complete, or a requested file is missing; 2 something it needs
 # is missing (emulator, ROM, disk, cpm_disk.py); 64 usage; 130 interrupted.
@@ -113,6 +119,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SENTINEL_FILE = "ROMWBW.END"
 DEFAULT_SYSTEM_DISK = "hd1k_cpm22"
 DEFAULT_TIMEOUT = 900
+
+# romwbw_emu's exit status when it stops at --max-instructions, as timeout(1)'s.
+EMU_EXIT_INSTRUCTION_LIMIT = 124
 
 # The CCP's command buffer holds 127 characters; SUBMIT.COM refuses a longer
 # line with "Command Buffer Overflow", and so does this.
@@ -564,7 +573,8 @@ class Batch(object):
 
     def __init__(self, workdir=None, rom="@rom", system=DEFAULT_SYSTEM_DISK,
                  emulator=None, offline=False, isx=False, exact=False,
-                 timeout=DEFAULT_TIMEOUT, verbose=False, keep=False):
+                 timeout=DEFAULT_TIMEOUT, verbose=False, keep=False,
+                 max_instructions=None):
         self.cd = find_cpm_disk()
         self.emulator = find_emulator(emulator)
         self.offline = offline
@@ -577,6 +587,10 @@ class Batch(object):
         self.isx = isx or None
         self.exact = exact or bool(isx)
         self.timeout = timeout
+        # None: the emulator's own limit.  0: none.
+        if max_instructions is not None and max_instructions < 0:
+            raise UsageError("--max-instructions is a count, or 0 for no limit")
+        self.max_instructions = max_instructions
         self.verbose = verbose
         self.keep = keep or workdir is not None
         if workdir is None:
@@ -693,6 +707,8 @@ class Batch(object):
         if "B" in self.drives:
             argv.append("--disk1=" + self.drives["B"].path)
         argv += ["--boot=2", "--no-config"]
+        if self.max_instructions is not None:
+            argv.append("--max-instructions=%d" % self.max_instructions)
 
         res = Result()
         out, err = [], []
@@ -742,8 +758,14 @@ class Batch(object):
 
         if res.timed_out:
             res.problems.append("timed out after %ds" % self.timeout)
-        if "Reached instruction limit" in res.stderr:
-            res.problems.append("the emulator stopped at its instruction limit")
+        if res.returncode == EMU_EXIT_INSTRUCTION_LIMIT and \
+                not res.timed_out:
+            m = re.search(r"instruction limit, (\d+) instructions", res.stderr)
+            res.problems.append(
+                "the emulator stopped at its instruction limit%s before the "
+                "batch finished; --max-instructions raises it, 0 removes it"
+                % (" (%s instructions)" % "{:,}".format(int(m.group(1)))
+                   if m else ""))
         if self.isx == "cbios":
             p = self._isx_heap_problem(res.console)
             if p:
@@ -854,6 +876,9 @@ def build_parser():
     p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
                    metavar="SECS", help="kill the run after this long "
                                         "(default %d)" % DEFAULT_TIMEOUT)
+    p.add_argument("--max-instructions", type=int, metavar="N",
+                   help="the emulator stops the run after N Z80 instructions "
+                        "(default: its own, ten billion); 0 for no limit")
     p.add_argument("--work", metavar="DIR",
                    help="keep the images and console.log here")
     p.add_argument("--log", metavar="FILE", help="write the console here")
@@ -883,7 +908,8 @@ def main(argv):
             b = Batch(workdir=args.work, rom=args.rom, system=args.disk,
                       emulator=args.emu, offline=args.offline, isx=args.isx,
                       exact=args.exact, timeout=args.timeout,
-                      verbose=args.verbose)
+                      verbose=args.verbose,
+                      max_instructions=args.max_instructions)
             for specs, text in ((args.add, False), (args.add_text, True)):
                 for spec in specs:
                     drive, path, name = split_spec(spec)
