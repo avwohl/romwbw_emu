@@ -58,7 +58,8 @@
 #     `CPM` jumps through 0001H) reboots CP/M from the same disk, and the CCP
 #     carries on with $$$.SUB.  A reboot rebuilds the CBIOS drive map, so the
 #     tool re-issues the B: swap after every `CPM`.  :F0: and :F1: are --disk0
-#     and --disk1, straight to HBIOS.
+#     and --disk1, straight to HBIOS, and B: is attached even when nothing is
+#     added to it, because ISIS programs put their work files on :F1:.
 #
 #   --isx=cbios.  ISX runs on RomWBW's own CBIOS, and ISIS programs stop at
 #     E5FFH.  ISX's `CPM` jumps to the BIOS warm boot expecting the BDOS to be
@@ -84,7 +85,8 @@
 #
 # Exit status: 0 the batch completed and every requested file was extracted;
 # 1 it did not complete, or a requested file is missing; 2 something it needs
-# is missing (emulator, ROM, disk, cpm_disk.py); 64 usage.
+# is missing (emulator, ROM, disk, cpm_disk.py); 64 usage; 130 interrupted.
+# The scratch directory is removed on every exit but --work.
 
 import argparse
 import fnmatch
@@ -102,7 +104,7 @@ import threading
 import time
 from contextlib import redirect_stdout
 
-EX_OK, EX_FAILED, EX_ENV, EX_USAGE = 0, 1, 2, 64
+EX_OK, EX_FAILED, EX_ENV, EX_USAGE, EX_INTERRUPTED = 0, 1, 2, 64, 130
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -581,19 +583,28 @@ class Batch(object):
         self.workdir = os.path.abspath(workdir)
         self.drives = {}
         self.result = None
-
-        a = os.path.join(self.workdir, "a.img")
-        shutil.copyfile(self.system_src, a)
-        os.chmod(a, 0o644)
-        self.drives["A"] = Drive(self.cd, a, self.exact)
-        # The OS image on the system tracks: only --isx=cbios needs it, to
-        # put the BDOS back, so only it refuses a disk without one - and it
-        # refuses now, not after the boot.
-        self.system = None
-        if self.isx == "cbios":
-            self.system = SystemImage(self.drives["A"].slice_bytes())
-            self.system.cpm22_layout()
         self.isx_files = []                 # (drive, name) of each ISX.COM
+        self.system = None
+        try:
+            a = os.path.join(self.workdir, "a.img")
+            shutil.copyfile(self.system_src, a)
+            os.chmod(a, 0o644)
+            self.drives["A"] = Drive(self.cd, a, self.exact)
+            # The OS image on the system tracks: only --isx=cbios needs it,
+            # to put the BDOS back, so only it refuses a disk without one -
+            # and it refuses now, not after the boot.
+            if self.isx == "cbios":
+                self.system = SystemImage(self.drives["A"].slice_bytes())
+                self.system.cpm22_layout()
+            # The compact BIOS has only the drives the batch attaches, and
+            # ISIS programs put their work files on :F1: - PL/M-80 its five
+            # - so without B: the first one ends in "Bdos Err On B: Select".
+            # (Under cbios B: is the RAM disk when nothing is added to it.)
+            if self.isx == "compact":
+                self.drive("B")
+        except BaseException:
+            self.cleanup()
+            raise
 
     def drive(self, letter):
         letter = letter.upper()
@@ -709,6 +720,11 @@ class Batch(object):
             res.timed_out = True
             proc.kill()
             proc.wait()
+        except BaseException:
+            # ^C, most likely: leave no emulator running behind us.
+            proc.kill()
+            proc.wait()
+            raise
         for t in th:
             t.join(5)
         res.seconds = time.time() - t0
@@ -855,32 +871,45 @@ def read_script(path):
 def main(argv):
     args = build_parser().parse_args(argv)
     commands = list(args.cmd)
+    b = None
     try:
-        if args.script:
-            commands += read_script(args.script)
-        if not commands:
-            raise UsageError("no commands: give -c LINE or --script FILE")
-        b = Batch(workdir=args.work, rom=args.rom, system=args.disk,
-                  emulator=args.emu, offline=args.offline, isx=args.isx,
-                  exact=args.exact, timeout=args.timeout,
-                  verbose=args.verbose)
-        for specs, text in ((args.add, False), (args.add_text, True)):
-            for spec in specs:
-                drive, path, name = split_spec(spec)
-                if os.path.isdir(path):
-                    for fn in sorted(os.listdir(path)):
-                        fp = os.path.join(path, fn)
-                        if os.path.isfile(fp) and not fn.startswith("."):
-                            b.add(fp, None, drive, text)
-                else:
-                    b.add(path, name, drive, text)
-    except UsageError as e:
-        say(str(e))
-        return EX_USAGE
-    except (BatchError, OSError) as e:
-        say(str(e))
-        return EX_ENV
+        try:
+            if args.script:
+                commands += read_script(args.script)
+            if not commands:
+                raise UsageError("no commands: give -c LINE or --script FILE")
+            b = Batch(workdir=args.work, rom=args.rom, system=args.disk,
+                      emulator=args.emu, offline=args.offline, isx=args.isx,
+                      exact=args.exact, timeout=args.timeout,
+                      verbose=args.verbose)
+            for specs, text in ((args.add, False), (args.add_text, True)):
+                for spec in specs:
+                    drive, path, name = split_spec(spec)
+                    if os.path.isdir(path):
+                        for fn in sorted(os.listdir(path)):
+                            fp = os.path.join(path, fn)
+                            if os.path.isfile(fp) and not fn.startswith("."):
+                                b.add(fp, None, drive, text)
+                    else:
+                        b.add(path, name, drive, text)
+        except UsageError as e:
+            say(str(e))
+            return EX_USAGE
+        except (BatchError, OSError) as e:
+            say(str(e))
+            return EX_ENV
+        return run_batch(b, commands, args)
+    except KeyboardInterrupt:
+        say("interrupted")
+        return EX_INTERRUPTED
+    finally:
+        # The scratch directory holds an 8 MB disk image or two; --work keeps
+        # it.  A setup error after Batch() was built used to leave it behind.
+        if b is not None:
+            b.cleanup()
 
+
+def run_batch(b, commands, args):
     r = b.run(commands)
     if args.log:
         with open(args.log, "w", encoding="latin-1") as f:
@@ -912,7 +941,6 @@ def main(argv):
         say("completed in %.1fs" % r.seconds)
     if args.work:
         say("images and console.log kept in %s" % b.workdir)
-    b.cleanup()
     return status
 
 

@@ -66,7 +66,9 @@ refuses longer. Commands are passed as written; the CCP upper-cases them.
 
 Exit status: **0** the batch completed and every `-g` matched something;
 **1** it did not complete, or a `-g` matched nothing; **2** something it needs
-is missing - the emulator, the ROM, the disk, `cpm_disk.py`; **64** usage.
+is missing - the emulator, the ROM, the disk, `cpm_disk.py`; **64** usage;
+**130** interrupted. The scratch directory, with its disk images, is removed
+however the tool exits, unless `--work` named it.
 
 It needs `cpm_disk.py`, cpmemu's disk tool, found as the rest of this
 repository finds it: `$CPM_DISK`, then a sister `../cpmemu` checkout, then a
@@ -87,7 +89,11 @@ filesystem - `ASSIGN B:=HDSK1:0` alone says "Multiple drive letters reference
 one filesystem, aborting!" - hence the swap.) That is what lets DRI's ISX
 recipes, which keep their tools on `:F1:`, run as they were written. With
 `--isx=compact` the swap is issued again after every `CPM`, because leaving ISX
-that way reboots CP/M.
+that way reboots CP/M, and B: is attached even when nothing is added to it:
+the compact BIOS has only the drives the batch attaches, and ISIS programs put
+their work files on `:F1:` - PL/M-80 its five - so without it the first one
+ended the batch with `Bdos Err On B: Select`. (Under `--isx=cbios` an empty B:
+is the RAM disk, which serves.)
 
 ## From Python
 

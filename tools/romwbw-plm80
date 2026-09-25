@@ -35,9 +35,17 @@
 # docs/ISX.md explains ISX and what this machine does for it; docs/BATCH.md
 # explains romwbw-batch.
 #
+# OUTPUTS.  Each run owns the output names it lists (NAME.COM, .SYM, .LIN,
+# .TRA or NAME.PRL and the hex files, and each source's .LST and .OBJ) in the
+# -o directory, which is `.` unless given.  What the run produced is written
+# there; a name it did not produce is removed, so a file an earlier build
+# left cannot stand in for this one's; and a build that failed writes only
+# its listings (.LST, and LOCATE's .TRA), which say what went wrong - not the
+# .COM or .PRL, objects or hex it made.
+#
 # Exit status: 0 built, with no compiler errors; 1 the build failed or
 # reported errors (the console log says where); 2 a tool or file is missing;
-# 64 usage.
+# 64 usage; 130 interrupted.
 
 import argparse
 import importlib.machinery
@@ -60,7 +68,7 @@ def _load_batch():
 
 rb = _load_batch()
 
-EX_OK, EX_FAILED, EX_ENV, EX_USAGE = 0, 1, 2, 64
+EX_OK, EX_FAILED, EX_ENV, EX_USAGE, EX_INTERRUPTED = 0, 1, 2, 64, 130
 
 ISIS_TOOLS = ["ISX.COM", "PLM80", "PLM80.OV0", "PLM80.OV1", "PLM80.OV2",
               "PLM80.OV3", "PLM80.OV4", "PLM80.LIB", "LINK", "LINK.OVL",
@@ -109,8 +117,24 @@ def isis_name(path_or_name):
     return stem, ext
 
 
+def output_name(name):
+    """--name: the CP/M name of the .COM or .PRL, 1-8 letters or digits.
+
+    Only CP/M sees it whole.  The ISIS steps use its first six characters
+    (`com`: the located module, which OBJCPM names the .COM after) or five
+    (`prl`: NAME1 and NAME2), as DRI did - CONSOLE.PRL was built as CNS1 and
+    CNS2 and renamed."""
+    n = name.upper()
+    if not re.match(r"^[A-Z0-9]{1,8}$", n):
+        raise rb.UsageError("--name %s: a CP/M name, 1-8 letters or digits, "
+                            "with no type" % name)
+    return n
+
+
 def build_commands(route, sources, name, args):
-    """The command lines, and the output files to extract."""
+    """The command lines, and the outputs: (name on the CP/M disk, host name).
+
+    The first output is the one the build is for."""
     f1 = ":F1:"
     objs, cmds = [], ["B:ISX"]
     for src in sources:
@@ -135,12 +159,13 @@ def build_commands(route, sources, name, args):
 
     stack = "STACKSIZE(%s)" % args.stack
     if route == "com":
-        cmds.append(link_line("X0100", name + ".MOD"))
+        stem = name[:6]
+        cmds.append(link_line("X0100", stem + ".MOD"))
         cmds.append("%sLOCATE %s.MOD CODE(0100H) %s MAP PRINT(%s.TRA)"
-                    % (f1, name, stack, name))
+                    % (f1, stem, stack, stem))
         cmds.append(f1 + "CPM")
-        cmds.append("B:OBJCPM " + name)
-        outs = [name + ".COM", name + ".SYM", name + ".LIN", name + ".TRA"]
+        cmds.append("B:OBJCPM " + stem)
+        outs = [(stem + t, name + t) for t in (".COM", ".SYM", ".LIN", ".TRA")]
     else:
         short = name[:5]
         n1, n2 = short + "1", short + "2"
@@ -158,12 +183,52 @@ def build_commands(route, sources, name, args):
         if args.data:
             gen += " $" + args.data
         cmds.append(gen)
-        outs = [name + ".PRL", n1 + ".HEX", n2 + ".HEX", short + ".HEX"]
+        outs = [(n, n) for n in (name + ".PRL", n1 + ".HEX", n2 + ".HEX",
+                                 short + ".HEX")]
     for src in sources:
         stem, _ = isis_name(src)
-        outs.append(stem + ".LST")
-        outs.append(stem + ".OBJ")
+        for t in (".LST", ".OBJ"):
+            if (stem + t, stem + t) not in outs:
+                outs.append((stem + t, stem + t))
     return cmds, outs
+
+
+# What the tools print when they fail, read out of the binaries that print
+# it (strings(1)).  None of it appears on the console of a good build: the
+# builds of every MP/M II program in docs/ISX.md were checked for it.  A
+# console line matching any of these fails the build.
+TOOL_FAILURES = re.compile("|".join([
+    # PLM80 and its overlays.  Both the I/O and the fatal error end in
+    # COMPILATION TERMINATED, and so do the command-tail errors.
+    r"PL/M-80 (?:I/O|FATAL) ERROR", r"COMPILATION TERMINATED",
+    r"COMPILER ERROR", r"NOT ENOUGH MEMORY",
+    # The ISIS-II library texts, which LINK, LOCATE, OBJHEX and ASM80 print
+    # after the name of the file concerned (":F0:HELLO.OBJ, NO SUCH FILE"),
+    # and LINK's and LOCATE's own.
+    r"NO SUCH FILE", r"DIRECTORY FULL", r"CHECKSUM ERROR", r"PHASE ERROR",
+    r"FIXUP BOUNDS ERROR", r"BAD RECORD SEQUENCE", r"ILLEGAL", r"INVALID",
+    r"MISSING (?:FILENAME|FILE NAME|EXTENSION)", r"CAN'T ",
+    r"COMMAND TAIL ERROR", r"UNRESOLVED EXTERNAL", r"PROGRAM EXCEEDS 64K",
+    r"COMMON NOT FOUND", r"\*\*\* ERROR", r"\bERROR\s+\d+",
+    # OBJCPM
+    r"NO OBJECT FILE", r"DISK FULL", r"BAD LOAD MODULE",
+    # GENMOD
+    r"RELOC ERROR", r"BAD HEX DIGIT", r"BAD INPUT RECORD",
+    # PIP ("NO FILE: =DIR1.HEX"), and ISX's and the BDOS's own
+    r"\bNO FILE\b", r"NO DIRECTORY SPACE", r"DISK (?:READ|WRITE) ERROR",
+    r"VERIFY ERROR", r"RECORD TOO LONG", r"\bABORTED\b", r"CANNOT ",
+    r"NOT FOUND", r"READ ERROR", r"LOAD ERROR", r"Bdos Err",
+]))
+
+PLM_BLOCK = re.compile(r"PL/M-80 (?:I/O|FATAL) ERROR")
+
+# What a failed build still writes: PL/M-80's and ASM80's listings and
+# LOCATE's map.
+LISTINGS = (".LST", ".TRA")
+
+# The command lines themselves, echoed after the CCP's A> or ISX's 0>: a file
+# called INVALID.PLM is not an error.
+ECHOED_COMMAND = re.compile(r"^(?:[A-P]|\d)>")
 
 
 def check_console(console):
@@ -175,10 +240,25 @@ def check_console(console):
     for m in re.finditer(r"ASSEMBLY COMPLETE,\s+(\d+) ERROR", console):
         if int(m.group(1)):
             problems.append("ASM80 reported %s error(s)" % m.group(1))
-    for pat in (r"UNRESOLVED EXTERNAL NAMES?", r"\*\*\* ERROR[^\r\n]*",
-                r"ERROR \d+ [^\r\n]*", r"INVALID[^\r\n]*", r"LOAD ERROR"):
-        for m in re.finditer(pat, console):
-            problems.append(m.group(0).strip())
+    lines = [l.replace("\x00", "").strip()
+             for l in re.split(r"[\r\n]+", console)]
+    lines = [l for l in lines if l]
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        if ECHOED_COMMAND.match(line) or not TOOL_FAILURES.search(line):
+            continue
+        if PLM_BLOCK.match(line):
+            # PL/M-80 spreads one error over several lines - which file, its
+            # name, the error - and ends with COMPILATION TERMINATED.
+            while i < len(lines) and not ECHOED_COMMAND.match(lines[i]):
+                line += " " + lines[i]
+                i += 1
+                if "COMPILATION TERMINATED" in line:
+                    break
+        if line not in problems:
+            problems.append(line)
     return problems
 
 
@@ -200,8 +280,8 @@ def build_parser():
     p.add_argument("--include", action="append", default=[], metavar="PATH",
                    help="a file or directory of $INCLUDE files (.LIT) to put "
                         "beside the sources on A:")
-    p.add_argument("-n", "--name", help="output name (default: the first "
-                                        "source's)")
+    p.add_argument("-n", "--name", help="output name, 1-8 letters or digits "
+                                        "(default: the first source's)")
     p.add_argument("--plm-options", default="DEBUG PAGEWIDTH(80)",
                    metavar="OPTS", help="PLM80 controls (default %(default)s)")
     p.add_argument("--asm-options", default="DEBUG", metavar="OPTS",
@@ -233,61 +313,86 @@ def build_parser():
     return p
 
 
+def include_files(includes):
+    """The files --include names: each a file, or a directory of them."""
+    files = []
+    for inc in includes:
+        if os.path.isdir(inc):
+            files += [os.path.join(inc, f) for f in sorted(os.listdir(inc))
+                      if os.path.isfile(os.path.join(inc, f))
+                      and not f.startswith(".")]
+        elif os.path.isfile(inc):
+            files.append(inc)
+        else:
+            raise rb.UsageError("--include %s: no such file or directory" % inc)
+    for f in files:
+        try:
+            rb.cpm_name(os.path.basename(f))
+        except rb.UsageError:
+            raise rb.UsageError("--include: %s is not a CP/M 8.3 name, so no "
+                                "$INCLUDE could name it" % f)
+    return files
+
+
 def main(argv):
     args = build_parser().parse_args(argv)
     tool_dirs = list(args.tools)
     if not tool_dirs and os.environ.get("ISX_TOOLS"):
         tool_dirs = os.environ["ISX_TOOLS"].split(os.pathsep)
+    b = None
     try:
-        tools = Tools(tool_dirs)
-        need = list(ISIS_TOOLS)
-        if args.route == "prl":
-            need += PRL_TOOLS
-            if not args.no_zero:
-                need.append("ZERO.COM")
-        if any(s.upper().endswith(".ASM") for s in args.sources):
-            need += ASM_TOOLS
-        if args.x0100 == "none":
-            need = [n for n in need if n not in ("X0100", "X0200")]
-        tools.need(need)
-        for s in args.sources:
-            if not os.path.isfile(s):
-                raise rb.UsageError("%s: no such file" % s)
-            isis_name(s)
-        name = (args.name or isis_name(args.sources[0])[0]).upper()
-        isis_name(name)
-        if args.data and not re.match(r"^[0-9A-Fa-f]{1,4}$", args.data):
-            raise rb.UsageError("--data wants a hex number, e.g. 1000")
-        cmds, outs = build_commands(args.route, args.sources, name, args)
+        try:
+            tools = Tools(tool_dirs)
+            need = list(ISIS_TOOLS)
+            if args.route == "prl":
+                need += PRL_TOOLS
+                if not args.no_zero:
+                    need.append("ZERO.COM")
+            if any(s.upper().endswith(".ASM") for s in args.sources):
+                need += ASM_TOOLS
+            if args.x0100 == "none":
+                need = [n for n in need if n not in ("X0100", "X0200")]
+            tools.need(need)
+            for s in args.sources:
+                if not os.path.isfile(s):
+                    raise rb.UsageError("%s: no such file" % s)
+                isis_name(s)
+            name = output_name(args.name or isis_name(args.sources[0])[0])
+            if args.data and not re.match(r"^[0-9A-Fa-f]{1,4}$", args.data):
+                raise rb.UsageError("--data wants a hex number, e.g. 1000")
+            cmds, outs = build_commands(args.route, args.sources, name, args)
+            includes = include_files(args.include)
 
-        b = rb.Batch(workdir=args.work, rom=args.rom, system=args.disk,
-                     emulator=args.emu, offline=args.offline, isx=True,
-                     timeout=args.timeout, verbose=args.verbose)
-        for n in sorted(tools.files):
-            b.add(tools.files[n], n, drive="B")
-        for inc in args.include:
-            paths = ([os.path.join(inc, f) for f in sorted(os.listdir(inc))]
-                     if os.path.isdir(inc) else [inc])
-            for p in paths:
-                if os.path.isfile(p) and not os.path.basename(p).startswith("."):
-                    b.add(p, None, "A", text=True)
-        for s in args.sources:
-            b.add(s, None, "A", text=True)
-    except rb.UsageError as e:
-        say(str(e))
-        return EX_USAGE
-    except (rb.BatchError, OSError) as e:
-        say(str(e))
-        return EX_ENV
+            b = rb.Batch(workdir=args.work, rom=args.rom, system=args.disk,
+                         emulator=args.emu, offline=args.offline, isx=True,
+                         timeout=args.timeout, verbose=args.verbose)
+            for n in sorted(tools.files):
+                b.add(tools.files[n], n, drive="B")
+            for p in includes:
+                b.add(p, None, "A", text=True)
+            for s in args.sources:
+                b.add(s, None, "A", text=True)
+        except rb.UsageError as e:
+            say(str(e))
+            return EX_USAGE
+        except (rb.BatchError, OSError) as e:
+            say(str(e))
+            return EX_ENV
+        return build(b, cmds, outs, args)
+    except KeyboardInterrupt:
+        say("interrupted")
+        return EX_INTERRUPTED
+    finally:
+        # The scratch directory holds two 8 MB disk images; --work keeps it.
+        if b is not None:
+            b.cleanup()
 
+
+def build(b, cmds, outs, args):
     r = b.run(cmds)
     with open(os.path.join(b.workdir, "console.log"), "w",
               encoding="latin-1") as f:
         f.write(r.console)
-    os.makedirs(args.out, exist_ok=True)
-    got = []
-    for o in outs:
-        got += b.extract(o, args.out)
     status = EX_OK
     problems = list(r.problems) + check_console(r.console)
     for p in problems:
@@ -296,20 +401,45 @@ def main(argv):
         say("the build did not complete; the console ended with:")
         print(r.tail(), file=sys.stderr)
         status = EX_FAILED
-    main_out = os.path.join(args.out, outs[0])
-    if not os.path.isfile(main_out):
-        say("no %s was produced" % outs[0])
+
+    # What THIS run left on A:.  Asking the -o directory instead is what let
+    # a rebuild that failed at its first step report success: the output an
+    # earlier build left there was still there.
+    on_disk = set(b.names("A"))
+    main_disk, main_host = outs[0]
+    if main_disk not in on_disk:
+        say("no %s was produced" % main_host)
         status = EX_FAILED
-    elif problems and status == EX_OK:
+    elif problems:
         status = EX_FAILED
+
+    os.makedirs(args.out, exist_ok=True)
+    written, withheld, removed = [], [], []
+    for disk, host in outs:
+        dst = os.path.join(args.out, host)
+        # A failed build's listings say what went wrong; what else it made -
+        # the .COM or .PRL, objects, hex - is not to be mistaken for output.
+        if disk in on_disk and (status == EX_OK or host.endswith(LISTINGS)):
+            with open(dst, "wb") as f:
+                f.write(b.read(disk))
+            written.append(dst)
+            continue
+        if disk in on_disk:
+            withheld.append(host)
+        if os.path.lexists(dst):
+            os.remove(dst)
+            removed.append(dst)
+    if withheld:
+        say("the build failed, so not written: %s" % " ".join(withheld))
+    for p in removed:
+        say("removed %s, left by an earlier build" % p)
     if not args.quiet:
-        for p in got:
+        for p in written:
             print(p)
         say("%s in %.1fs" % ("built" if status == EX_OK else "FAILED",
                              r.seconds))
     if args.work:
         say("images and console.log kept in %s" % b.workdir)
-    b.cleanup()
     return status
 
 

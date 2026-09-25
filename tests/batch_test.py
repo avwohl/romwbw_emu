@@ -6,7 +6,10 @@ Three layers, each skipped when what it needs is not here:
   * the pieces, with no emulator: the $$$.SUB layout DRI's SUBMIT.COM writes,
     the Intel OMF the ISX return module is made of, the compact ISX BIOS the
     tool carries against tools/isxbios.asm assembled now (needs um80/ul80),
-    and ISX's exact-length convention on a disk image (needs cpm_disk.py);
+    ISX's exact-length convention on a disk image (needs cpm_disk.py), and
+    romwbw-plm80's reading of the console and its handling of the -o
+    directory, which reported a failed rebuild as built because the last
+    build's output was still there;
   * batches on the emulator (needs src/romwbw_emu and a cached ROM and
     hd1k_cpm22 - `tools/romwbw-get fetch @rom hd1k_cpm22`): a batch that runs
     to its end, one that does not, and the two programs that found the
@@ -18,14 +21,18 @@ Three layers, each skipped when what it needs is not here:
     it for ever;
   * Intel PL/M-80 under ISX (needs $ISX_TOOLS naming DRI's PLM_WORK
     directory, which this repository does not carry): a program compiled by
-    both ISX modes, and DRI's `CPM` getting back to CP/M from each.
+    both ISX modes, and DRI's `CPM` getting back to CP/M from each; a rebuild
+    that fails reported as failed; and --isx=compact with nothing on B:.
 
 Run: python3 tests/batch_test.py      (from anywhere)
      make -C src test
 """
 
+import argparse
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
 import os
 import shutil
 import subprocess
@@ -58,6 +65,7 @@ def load(name, path):
 
 
 rb = load("romwbw_batch", os.path.join(TOOLS, "romwbw-batch"))
+rp = load("romwbw_plm80", os.path.join(TOOLS, "romwbw-plm80"))
 
 
 # --- the pieces ------------------------------------------------------------------
@@ -198,6 +206,144 @@ def test_exact_lengths(cd):
               "without --exact a file is whole records, as CP/M sees it")
     check(rb.text_bytes(b"a\nb\r\nc\x1a\x1ajunk") == b"a\r\nb\r\nc",
           "text: LF becomes CR LF, and the file ends at its first ^Z")
+
+
+# What the console of a rebuild of HELLO.PLM showed after `$include
+# (common.lit)` was added and COMMON.LIT did not exist - which romwbw-plm80
+# reported as built, because the HELLO.COM the good build had left in -o was
+# still there.
+HELLO_FAILED = (
+    "A>B:ISX\n\n\nISIS-II INTERFACE VERS 1.4\n\n"
+    "0>:F1:PLM80 HELLO.PLM DEBUG PAGEWIDTH(80)\x00\n\n"
+    "ISIS-II PL/M-80 COMPILER V3.1\n\n\n"
+    "PL/M-80 I/O ERROR --\n  FILE: SOURCE\n  NAME: COMMON.LIT     \n"
+    "  ERROR: 13--NO SUCH FILE\nCOMPILATION TERMINATED\n\n\n"
+    "0>:F1:LINK HELLO.OBJ,:F1:X0100,:F1:PLM80.LIB TO HELLO.MOD\x00\n"
+    "ISIS-II OBJECT LINKER V3.0\n :F0:HELLO.OBJ, NO SUCH FILE\n\n"
+    "0>:F1:LOCATE HELLO.MOD CODE(0100H) STACKSIZE(100) MAP PRINT(HELLO.TRA)\x00\n"
+    "ISIS-II OBJECT LOCATER V3.0\n :F0:HELLO.MOD, NO SUCH FILE\n\n"
+    "0>:F1:CPM\x00\n\n\nRetroBrew SBC [SBC_simh_std] Boot Loader\n"
+    "AutoBoot in 0 Seconds (<esc> aborts, <enter> now)...\n\n"
+    "A>B:OBJCPM HELLO\n\nNO OBJECT FILE\nA>TYPE ROMWBW.END\n")
+
+# A good build's console, with everything in it that looks like trouble and
+# is not: the boot loader's "aborts", zero errors, ASM80's NO ERRORS, and a
+# source whose name is a failure word, echoed after the ISX prompt.
+GOOD_CONSOLE = (
+    "AutoBoot in 0 Seconds (<esc> aborts, <enter> now)...\n"
+    "0>:F1:PLM80 INVALID.PLM DEBUG PAGEWIDTH(80)\x00\n"
+    "ISIS-II PL/M-80 COMPILER V3.1\n"
+    "PL/M-80 COMPILATION COMPLETE.      0 PROGRAM ERROR(S)\n"
+    "0>:F1:ASM80 LDRLWR.ASM DEBUG\x00\n"
+    "ISIS-II 8080/8085 MACRO ASSEMBLER, V2.0\nASSEMBLY COMPLETE,  NO ERRORS\n"
+    "A>PIP DIR.HEX=DIR1.HEX,DIR2.HEX\n\nA>B:GENMOD DIR.HEX DIR.PRL\n\n"
+    "REL MOD END  050A\nREL MOD SIZE 05FF\nMODULE CONSTRUCTED\n")
+
+
+def test_plm80_console():
+    check(rp.check_console(GOOD_CONSOLE) == [],
+          "romwbw-plm80: a good build's console reports nothing")
+    p = rp.check_console(HELLO_FAILED)
+    check(any("I/O ERROR" in x and "COMMON.LIT" in x and "NO SUCH FILE" in x
+              and "COMPILATION TERMINATED" in x for x in p),
+          "romwbw-plm80: PL/M-80's I/O error is a failure, reported whole - "
+          "which file, and why")
+    check(":F0:HELLO.OBJ, NO SUCH FILE" in p and "NO OBJECT FILE" in p,
+          "romwbw-plm80: so are LINK's NO SUCH FILE and OBJCPM's NO OBJECT FILE")
+    for text, what in (
+            ("PL/M-80 FATAL ERROR --\n  DYNAMIC STORAGE OVERFLOW\n"
+             "COMPILATION TERMINATED\n", "PL/M-80's fatal error"),
+            ("A>PIP DIR.HEX=DIR1.HEX,DIR2.HEX\n\nNO FILE: DIR1.HEX\n",
+             "PIP's NO FILE"),
+            ("A>B:GENMOD DIR.HEX DIR.PRL\nBAD INPUT RECORD\n", "GENMOD's"),
+            ("ISIS-II OBJECT LINKER V3.0\nUNRESOLVED EXTERNAL NAMES:\n"
+             "    MON1\n", "LINK's unresolved names")):
+        check(rp.check_console(text) != [], "romwbw-plm80: %s is a failure"
+              % what)
+
+
+class FakeBatch(object):
+    """What build() asks of a Batch, with the run's console and disk made up."""
+
+    def __init__(self, workdir, console, files):
+        self.workdir, self.console, self.files = workdir, console, files
+
+    def run(self, commands):
+        r = rb.Result()
+        r.console, r.completed, r.seconds = self.console, True, 0.1
+        return r
+
+    def names(self, drive="A"):
+        return sorted(self.files)
+
+    def read(self, name, drive="A"):
+        return self.files[name]
+
+
+def test_plm80_outputs():
+    args = rp.build_parser().parse_args(["com", "HELLO.PLM"])
+    cmds, outs = rp.build_commands("com", ["HELLO.PLM"], "HELLO", args)
+    names = ["HELLO.COM", "HELLO.SYM", "HELLO.LIN", "HELLO.TRA", "HELLO.LST",
+             "HELLO.OBJ"]
+    check([h for _, h in outs] == names,
+          "romwbw-plm80: com owns NAME.COM, .SYM, .LIN, .TRA and each "
+          "source's .LST and .OBJ")
+
+    def run(console, files):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "out")
+            os.makedirs(out)
+            for n in names:
+                with open(os.path.join(out, n), "wb") as f:
+                    f.write(b"from an earlier build")
+            args.out, args.quiet, args.work = out, True, None
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                status = rp.build(FakeBatch(d, console, files), cmds, outs,
+                                  args)
+            left = {n: open(os.path.join(out, n), "rb").read()
+                    for n in sorted(os.listdir(out))}
+            return status, left, err.getvalue()
+
+    # The rebuild that failed at its first step, with the last build's
+    # output in -o: exit 0 and "built" is what this used to say.
+    status, left, err = run(HELLO_FAILED + "ROMWBW-BATCH-END", {})
+    check(status == 1 and "no HELLO.COM was produced" in err,
+          "romwbw-plm80: a rebuild that made nothing fails, whatever -o holds")
+    check(left == {}, "romwbw-plm80: ...and takes away the earlier build's "
+                      "files, so none of them passes for this one's")
+
+    made = {n: b"this build" for n in names}
+    status, left, err = run(
+        "PL/M-80 COMPILATION COMPLETE.      2 PROGRAM ERROR(S)\n", made)
+    check(status == 1 and sorted(left) == ["HELLO.LST", "HELLO.TRA"] and
+          left["HELLO.LST"] == b"this build",
+          "romwbw-plm80: a compile with errors writes its listings, and not "
+          "the .COM or the objects made from it")
+
+    status, left, err = run(GOOD_CONSOLE, made)
+    check(status == 0 and left == made,
+          "romwbw-plm80: a good build writes all it made")
+
+    # --name is the CP/M name; the ISIS steps use as much of it as ISIS takes.
+    cmds8, outs8 = rp.build_commands("com", ["HELLO.PLM"], "HELLOWLD", args)
+    check("B:OBJCPM HELLOW" in cmds8 and outs8[0] == ("HELLOW.COM",
+                                                      "HELLOWLD.COM"),
+          "romwbw-plm80: com --name HELLOWLD builds HELLOW and writes "
+          "HELLOWLD.COM")
+    pargs = rp.build_parser().parse_args(["prl", "CNS.PLM"])
+    cmdsp, outsp = rp.build_commands("prl", ["CNS.PLM"],
+                                     rp.output_name("console"), pargs)
+    check(":F1:LOCATE CONSO1.MOD CODE(0100H) STACKSIZE(100)" in cmdsp and
+          "B:GENMOD CONSO.HEX CONSOLE.PRL" in cmdsp and
+          outsp[0] == ("CONSOLE.PRL", "CONSOLE.PRL"),
+          "romwbw-plm80: prl --name CONSOLE, as DRI built it from CNS")
+    for bad in ("DSKRESET1", "CONSOLE.PRL", "A-B"):
+        try:
+            rp.output_name(bad)
+            ok = False
+        except rp.rb.UsageError:
+            ok = True
+        check(ok, "romwbw-plm80: --name %s is refused" % bad)
 
 
 # --- batches on the emulator ----------------------------------------------------
@@ -349,9 +495,39 @@ def test_isx(tools_dir):
             built = open(com, "rb").read() if os.path.exists(com) else None
             if mode == "compact":
                 first = built
+                test_isx_rebuild(tools_dir, src, d)
             else:
                 check(built is not None and built == first,
                       "ISX: both modes build the same DIFF1.COM")
+
+    # --isx=compact with every tool on A: and nothing added to B:.  PL/M-80's
+    # work files go to :F1:, and the compact BIOS had no B: to put them on.
+    with tempfile.TemporaryDirectory() as d:
+        r = batch(["--isx", "-a", tools_dir, "-t", src, "-c", "ISX",
+                   "-c", "PLM80 DIFF1.PLM", "-c", "CPM", "-g", "DIFF1.OBJ",
+                   "-o", "out"], d, timeout=600)
+        check(r.returncode == 0 and "Select" not in r.stdout,
+              "ISX (compact): PL/M-80 runs with nothing added to B:")
+
+
+def test_isx_rebuild(tools_dir, src, d):
+    """Rebuild DIFF1 into the same -o after breaking it: an $INCLUDE of a
+    file that is not there.  This said "built" and exited 0, because
+    out/DIFF1.COM from the good build was still there."""
+    with open(src, encoding="latin-1") as f:
+        text = f.read()
+    with open(os.path.join(d, "DIFF1.PLM"), "w", encoding="latin-1") as f:
+        f.write("$include (nosuch.lit)\n" + text)
+    r = run_tool([os.path.join(TOOLS, "romwbw-plm80"), "com", "DIFF1.PLM",
+                  "--tools", tools_dir, "--offline", "-o", "out"], d,
+                 timeout=600)
+    check(r.returncode == 1 and "I/O ERROR" in r.stdout and
+          "NOSUCH.LIT" in r.stdout and "FAILED" in r.stdout,
+          "ISX (compact): a rebuild that cannot open its $INCLUDE fails, and "
+          "says why")
+    check(not os.path.exists(os.path.join(d, "out", "DIFF1.COM")),
+          "ISX (compact): ...and the good build's DIFF1.COM is not left in -o "
+          "to pass for its output")
 
 
 def main():
@@ -368,6 +544,8 @@ def main():
         skip("exact lengths on an image: cpm_disk.py not found")
     if cd:
         test_exact_lengths(cd)
+    test_plm80_console()
+    test_plm80_outputs()
 
     ready = cd is not None
     why = ""

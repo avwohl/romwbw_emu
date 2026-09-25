@@ -197,20 +197,61 @@ between the two images. `--data 1000` passes ED's and PIP's `$1000`,
 individual submit files vary. Several sources are compiled in order and linked
 together; a `.ASM` source is assembled with ASM80.
 
+`--name` is the CP/M name of the result, up to eight characters. ISIS names
+have six, so the ISIS steps use the first six (`com`) or five (`prl`, which
+adds `1` and `2`) - as DRI did, building CONSOLE.PRL from CNS1 and CNS2 and
+renaming it. `--include` names each directory or file of `$INCLUDE` files the
+sources need; one that does not exist is an error, not skipped.
+
 ```bash
 romwbw-plm80 com HELLO.PLM --tools PLM_WORK -o out
 romwbw-plm80 prl DIR.PLM --tools PLM_WORK --tools UTIL9 --include UTIL8 -o out
+romwbw-plm80 prl CNS.PLM --name CONSOLE --tools PLM_WORK --tools UTIL9 \
+    --include UTIL8 -o out
 romwbw-plm80 prl DM.PLM SN.PLM DSE.PLM DSO.PLM DSH.PLM DP.PLM DA.PLM DTS.PLM \
     --name SDIR --x0100 first --stack 50 --no-zero \
     --plm-options "DEBUG PAGEWIDTH(130)" --tools PLM_WORK --tools UTIL9 \
     --include UTIL8 -o out
 romwbw-plm80 com GENSYS.PLM LDRLWR.ASM X0100.ASM --x0100 none \
-    --plm-options DEBUG --tools PLM_WORK -o out
+    --plm-options DEBUG --tools PLM_WORK --include UTIL8 -o out
 ```
 
-It exits 1 when PL/M-80 reports a program error, when a tool reports an error,
-or when the output file is missing; the console log, kept with `--work DIR`,
-says where.
+GENSYS.PLM and MPMLDR.PLM include SYSDAT.LIT, which is in UTIL8. MPMLDR.COM
+is not a route of its own - its PL/M part is linked with an ASM80 module and
+then joined to two MAC assemblies by PIP and LOAD - so it is built with
+`romwbw-batch` from the lines of MPMLDR.SUB that build it, MAC and LOAD taken
+from UTIL9:
+
+```bash
+cat > mpmldr.txt <<'END'
+B:ISX
+:F1:PLM80 MPMLDR.PLM DEBUG
+:F1:ASM80 LDMONX.ASM DEBUG
+:F1:LINK MPMLDR.OBJ,LDMONX.OBJ,:F1:PLM80.LIB TO MPMLDR.MOD
+:F1:LOCATE MPMLDR.MOD STACKSIZE(20) CODE(0100H)
+:F1:OBJHEX MPMLDR TO IMPMLDR.HEX
+:F1:CPM
+B:MAC LDRBDOS
+B:MAC LDRBIOS
+PIP MPMLDR.HEX=IMPMLDR.HEX[I],LDRBDOS.HEX[I],LDRBIOS.HEX[H]
+B:LOAD MPMLDR
+END
+romwbw-batch --isx -a B:PLM_WORK -a B:UTIL9/MAC.COM -a B:UTIL9/LOAD.COM \
+    -t MPMLDR/MPMLDR.PLM -t MPMLDR/LDMONX.ASM -t MPMLDR/LDRBDOS.ASM \
+    -t MPMLDR/LDRBIOS.ASM -t UTIL8 -s mpmldr.txt -g MPMLDR.COM -o out
+```
+
+`romwbw-plm80` exits 1 when PL/M-80 reports a program error, when any tool
+prints one of its failure messages - PL/M-80's I/O and fatal errors, the
+ISIS-II file errors LINK and LOCATE print, OBJCPM's `NO OBJECT FILE`, PIP's
+`NO FILE:`, GENMOD's - or when the run made no output file; the messages are
+repeated on stderr, and the console log, kept with `--work DIR`, has the rest.
+The output directory (`-o`, `.` by default) holds this run's files and no
+other's: each output name the run did not produce is removed from it, so a
+rebuild that fails cannot leave the last good build's .COM and a listing saying
+`0 PROGRAM ERROR(S)` to pass for its own. A failed build writes only its
+listings - each .LST and LOCATE's .TRA - which say what went wrong, and not
+the .COM or .PRL, the objects or the hex it made.
 
 ## Results
 
@@ -292,7 +333,10 @@ um80 DIFF1.MAC && ul80 -o DIFF1.COM DIFF1.REL
 cpmemu intel/DIFF1.COM > intel.out; cpmemu DIFF1.COM > uplm80.out
 ```
 
-Both print the same 66 lines; the programs are 1,664 and 1,792 bytes.
+With uplm80 0.3.7 both print the same 66 lines; the programs are 1,664 and
+1,792 bytes. uplm80 0.3.6 does not: it prints `NOT 0F0H` as FF0FH where Intel's
+gives 000FH, and its SORTED and HORNER3 lines differ - bugs in 0.3.6, which the
+comparison is for finding.
 `tests/batch_test.py` builds DIFF1 with Intel's compiler in both ISX modes when
 `$ISX_TOOLS` names a `PLM_WORK` directory, and checks the two .COM files are
 the same.
