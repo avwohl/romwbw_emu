@@ -18,7 +18,9 @@ Three layers, each skipped when what it needs is not here:
     reaching the CCP and the boot menu, which the boot loader used to eat;
     and, when hd1k_combo is cached too, ZPM3, whose prompt the idle rule
     missed so that the emulator never ended there and held piped input from
-    it for ever;
+    it for ever; and on a pty, ^E at the boot loader's prompt, which took a
+    tenth of a second or more to reach sim> while the CLI looked for it only
+    every 1024th instruction;
   * Intel PL/M-80 under ISX (needs $ISX_TOOLS naming DRI's PLM_WORK
     directory, which this repository does not carry): a program compiled by
     both ISX modes, and DRI's `CPM` getting back to CP/M from each; a rebuild
@@ -418,6 +420,7 @@ def test_batches():
                   "%s" % (boot, "the CCP" if boot == "2" else "the boot menu"))
 
         test_zpm3(emu, rom, d)
+        test_escape_at_prompt(emu, rom)
 
         # ...and MBASIC, which checks for ^C before every statement, ran at a
         # hundred instructions a second and never printed DONE.
@@ -461,6 +464,69 @@ def test_zpm3(emu, rom, d):
         out = ""
     check("Files Found" in out,
           "ZPM3: piped input reaches its prompt, and DIR runs")
+
+
+def test_escape_at_prompt(emu, rom):
+    """^E at a prompt that polls the console, on a terminal: the boot loader's.
+
+    While the console is idle the CLI sleeps 10 ms per poll, and it looked for
+    its escape key only every 1024th instruction.  The boot loader's prompt
+    polls every few dozen instructions, so that was 20 to 40 polls: ^E took
+    0.1 to 0.4 s to reach sim>, where it had taken 0.02, and as long at CP/M
+    3's and Z3PLUS's prompts.  It now looks after every idle poll, before
+    sleeping - a median of 0.003-0.013 s here, against 0.106-0.138 before."""
+    try:
+        import pty
+        import select
+        import signal
+        import time
+    except ImportError:
+        skip("^E at the boot prompt: no pty module here")
+        return
+    pid, fd = pty.fork()
+    if pid == 0:
+        try:
+            os.execv(emu, [emu, "--romwbw=" + rom, "--boot=H", "--no-config"])
+        finally:
+            os._exit(127)
+    buf = bytearray()
+
+    def read_until(want, secs, start=0):
+        end = time.time() + secs
+        while time.time() < end:
+            if want is not None and want in buf[start:]:
+                return True
+            r, _, _ = select.select([fd], [], [], 0.002)
+            if r:
+                try:
+                    buf.extend(os.read(fd, 65536))
+                except OSError:
+                    return False
+        return want is not None and want in buf[start:]
+
+    lat = []
+    try:
+        # --boot=H goes to the prompt, whatever NVRAM holds.
+        if read_until(b"Boot [H=Help]:", 20):
+            read_until(None, 0.5)                 # settle into the poll loop
+            for _ in range(5):
+                start = len(buf)
+                t0 = time.time()
+                os.write(fd, b"\x05")
+                if not read_until(b"sim>", 5, start):
+                    break
+                lat.append(time.time() - t0)
+                os.write(fd, b"c\r")              # continue
+                read_until(None, 0.3)
+    finally:
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+        os.close(fd)
+    lat.sort()
+    median = lat[len(lat) // 2] if len(lat) == 5 else None
+    check(median is not None and median < 0.06,
+          "^E at the boot prompt reaches sim> at once (median of 5: %s)"
+          % ("%.3fs" % median if median is not None else "no sim>"))
 
 
 # --- Intel PL/M-80 under ISX -------------------------------------------------------

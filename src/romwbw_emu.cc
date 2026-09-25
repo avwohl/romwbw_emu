@@ -793,8 +793,13 @@ public:
     // between them a select() per instruction only costs CPU.  ZPM3's prompt
     // runs some 500 instructions per poll, and with the CLI sleeping 10 ms per
     // poll that select was 4% of a core at a prompt that should cost nothing.
-    // While the console is idle, look every 1024th instruction instead - a
-    // poll or two apart at that prompt - and pick up the latched escape then.
+    // So while the console is idle the main loop looks once per poll, just
+    // after the poll that may have latched the key and before it sleeps - see
+    // takeIdlePoll() there - and this looks only every 1024th instruction.
+    // That alone was not enough: the boot loader's prompt and CP/M 3's and
+    // Z3PLUS's poll every few dozen instructions, so 1024 instructions was
+    // 20 to 40 polls - 10 ms each - and ^E took 0.1 to 0.4 s to reach sim>,
+    // where it had taken 0.02.
     if (hbios.isConsoleIdle() && (++idle_escape_tick & 1023) != 0) return;
     // Check for console escape first
     if (emu_console_check_escape(console_escape_char)) {
@@ -1684,7 +1689,14 @@ int main(int argc, char** argv) {
     // poll, near enough) and a hundred-instructions-a-second throttle on
     // anything that had polled eight times without printing.  notePoll() in
     // hbios_dispatch.cc has the measurements.
-    if (emu.getHBIOS()->takeIdlePoll()) {
+    //
+    // Look for the escape key first, and do not sleep if it is there.  The
+    // poll that has just happened is where a ^E typed at a prompt arrives -
+    // emu_console_has_input() latches it - and poll_stdin() looks only every
+    // 1024th instruction while the console is idle.  Once per poll is once
+    // per 10 ms sleep, which is what the select() cost at a prompt before the
+    // sleep moved to per poll.
+    if (emu.getHBIOS()->takeIdlePoll() && !check_console_escape_async()) {
       usleep(10000);
     }
 

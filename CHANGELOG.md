@@ -160,17 +160,22 @@ not measure - and `notePoll()` takes it.
 
 And the CLI sleeps once per poll of an idle console, through the new
 `takeIdlePoll()`, not once per instruction, and while the console is idle it
-looks for its escape key every 1024th instruction rather than after every one -
-the guest's own polls catch the key - so ZPM3's prompt, which runs some 500
-instructions per poll, costs about 1% of a core. At end of piped input a run
-now ends wherever the guest waits for a key, whether it reads the console or
-polls it: measured at the boot prompt, at the prompts of CP/M 2.2, ZSDOS,
-NZCOM, CP/M 3, ZPM3, QPM, Z3PLUS and BPBIOS, and in ZDE, BBC BASIC, TBASIC,
-WordStar, DDTZ, HTALK and MBASIC's `INKEY$`. One working program still counts
-as waiting, as it did under every rule so far: MBASIC running a FOR loop on an
-INTEGER variable polls every 1095 T-states, inside the gap rule, so at end of
-piped input it is cut off, and at a terminal the CLI sleeps on it - 3000 turns
-took 43 seconds (`todo.txt`).
+looks for its escape key once per poll, just before it sleeps - the guest's own
+poll is what reads the key - and otherwise only every 1024th instruction,
+rather than after every one, so ZPM3's prompt, which runs some 500 instructions
+per poll, costs under 1% of a core. A first version looked every 1024th
+instruction instead, and the boot loader's, CP/M 3's and Z3PLUS's prompts poll
+every few dozen instructions and sleep 10 ms after each poll, so ^E took 0.1 to
+0.4 s to reach `sim>` there, against 0.02 s on 0448175; once per poll it takes
+0.02 s or less, at the same idle CPU. At end of piped input a run now ends
+wherever the guest waits for a key, whether it reads the console or polls it:
+measured at the boot prompt, at the prompts of CP/M 2.2, ZSDOS, NZCOM, CP/M 3,
+ZPM3, QPM, Z3PLUS and BPBIOS, and in ZDE, BBC BASIC, TBASIC, WordStar, DDTZ,
+HTALK and MBASIC's `INKEY$`. One working program still counts as waiting, as it
+did under every rule so far: MBASIC running a FOR loop on an INTEGER variable
+polls every 1095 T-states, inside the gap rule, so at end of piped input it is
+cut off, and at a terminal the CLI sleeps on it - 3000 turns took 43 seconds
+(`todo.txt`).
 
 `tests/console_idle.cc` drives the dispatcher with the measured gaps and the
 stores a guest makes between polls - none, the same ones each time, or new ones
