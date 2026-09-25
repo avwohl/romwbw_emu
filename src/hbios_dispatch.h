@@ -565,17 +565,18 @@ public:
 
   // Console idle detection for power management.
   // Returns true when the guest is WAITING for a key: polling console status
-  // (CIOIST/VDAKST) in a tight loop, with nothing else happening in between.
+  // (CIOIST/VDAKST) in a loop that is either tight or goes round doing exactly
+  // the same thing each time, with no output and no disk I/O in between.
   // Host run loop should sleep longer when idle (e.g., 10ms instead of 0.1ms).
   //
-  // "Tight" is the point.  A program that is working also polls - MBASIC
-  // checks for ^C before every statement, PIP between records, the BDOS
-  // before every character it prints - and counting those polls made a busy
-  // program look idle.  See notePoll() for the rule and the measurements.
+  // A program that is working also polls - MBASIC checks for ^C before every
+  // statement, PIP between records, the BDOS before every character it
+  // prints - and counting those polls made a busy program look idle.  See
+  // notePoll() for the rule and the measurements.
   bool isConsoleIdle() const { return idle_poll_count >= IDLE_POLL_THRESHOLD; }
 
   // Hold typed-ahead input back from the guest until it first WAITS for a key:
-  // a CIOIN or VDAKRD, or console polls tight enough to count as idle.  Until
+  // a CIOIN or VDAKRD, or console polls that count as idle.  Until
   // then CIOIST and VDAKST report no key, whatever is queued.  The CLI turns
   // this on when stdin is not a terminal, because a script's first line is
   // meant for whatever first asks for one - and RomWBW's boot loader, which
@@ -679,16 +680,22 @@ private:
   uint16_t main_entry = 0xFFF0;    // Main HBIOS entry point
 
   // Console idle detection: counts consecutive CIOIST/VDAKST polls returning
-  // "no input", each within IDLE_POLL_MAX_GAP cycles of the one before.
-  // Reset when input is consumed, output is written, or disk I/O occurs.
-  // When count >= threshold, isConsoleIdle() returns true.  notePoll() keeps
-  // it.
+  // "no input", each either within IDLE_POLL_MAX_GAP cycles of the one before
+  // or an exact repeat of one of the last IDLE_POLL_PERIOD polls (same gap,
+  // same memory writes, same registers).  Reset when input is consumed,
+  // output is written, or disk I/O occurs.  When count >= threshold,
+  // isConsoleIdle() returns true.  notePoll() keeps it.
   int idle_poll_count = 0;
-  unsigned long long last_idle_poll_cycles = 0;  // cpu->cycles at that poll
+  unsigned long long last_poll_cycles = 0;       // cpu->cycles at the last poll
   bool idle_poll_pending = false;                // for takeIdlePoll()
   bool input_held = false;                       // holdInputUntilWanted()
   static constexpr int IDLE_POLL_THRESHOLD = 8;
   static constexpr unsigned long long IDLE_POLL_MAX_GAP = 1500;  // T-states
+  // A wait loop can poll more than once per turn - MBASIC's INKEY$ loop polls
+  // twice, HTALK the console and then the serial port - so a poll repeats if
+  // it matches any of the last four.
+  static constexpr int IDLE_POLL_PERIOD = 4;
+  uint64_t recent_polls[IDLE_POLL_PERIOD] = {};  // newest first; see notePoll()
   void notePoll(bool has_input);
 
   // Manifest disk write warning - set true on first write to manifest disk (non-suppressed)

@@ -30,18 +30,28 @@ whatever is waiting. A person does not type during a zero-second countdown; a
 pipe has everything waiting before the first instruction runs.
 
 So the CLI now holds piped or redirected stdin back until the guest first
-wants a key: a `CIOIN` or `VDAKRD`, or console polls tight enough to count as
-idle (see "A program that polls the keyboard while it works" below), which is
-what the boot loader's prompt loop is.
-Until then a status poll sees no key. Both scripts above now run as written. A
-terminal is left alone - Esc during a countdown is a person's to press - and
-so is every other front end: `holdInputUntilWanted()` is off unless called.
-Once released, input is never held again, so what CP/M programs do with
-typed-ahead input is unchanged.
+wants a key: a `CIOIN` or `VDAKRD`, or console polls that count as idle (see
+"A program that polls the keyboard while it works" below) - the boot loader's
+prompt loop, a program looping on BDOS function 6, ZPM3's prompt. The autoboot
+countdown is not one: it counts down as it polls. Until then a status poll
+sees no key and `VDAKFL` flushes nothing. Both scripts above now run as
+written. A terminal is left alone - Esc during a countdown is a person's to
+press - and so is every other front end: `holdInputUntilWanted()` is off
+unless called. Once released, input is never held again, so what CP/M
+programs do with typed-ahead input is unchanged.
 
-`tests/console_idle.cc` has the dispatcher half - four checks that fail
-without the hold - and `tests/batch_test.py` pipes both scripts into the
-built CLI.
+**What a script sees differently.** Its first line now runs, where it used to
+vanish, and the lines after it are typed ahead while that one runs - which
+CP/M programs handle as they would a fast typist. DIR stops listing on a key
+and the BDOS keeps the key it sees while printing, so `printf 'DIR\rSTAT\r'`
+lists one file and runs `TAT`, where it used to run just `STAT`, and
+`printf 'DIR\rDIR\r'` on QPM a short DIR and `IR`. `tools/romwbw-batch`
+exists for scripts longer than a line or two.
+
+`tests/console_idle.cc` has the dispatcher half - checks that fail without
+the hold, and one for ZPM3's prompt getting the key - and
+`tests/batch_test.py` pipes both scripts into the built CLI, and `DIR` into
+ZPM3 when `hd1k_combo` is cached.
 
 ### `romwbw-batch` and `romwbw-plm80`: unattended CP/M, and Intel's PL/M-80 under DRI's ISX
 
@@ -111,20 +121,46 @@ the CLI acted on that twice:
   was cut off with a zero-length `DIR.$$$` on the disk, which is how
   `tools/romwbw-batch` found it.
 
-An empty poll now counts only when it follows the previous one within 1500
-T-states. Measured on the real guests, every wait loop polls faster than that
-(the boot prompt every 170, a BDOS function 11 loop every 395 on CP/M 2.2 and
-885 on CP/M 3) and no working program seen does (MBASIC's statement loop 1865
-at the least, PIP 46335). And the CLI sleeps once per poll of an idle console,
-through the new `takeIdlePoll()`, not once per instruction. A wait loop still
-exits at end of piped input and still costs about 1% of a CPU. What is given
-up: MBASIC waiting in an `INKEY$` loop polls at 920-3790 and is no longer idle,
-because nothing distinguishes it from MBASIC computing.
+An empty poll now counts when it follows the previous one within 1500 T-states,
+or when it **repeats** one of the last four polls exactly: the same T-states
+since the poll before it, the same stores to memory in that time, and the same
+registers. The boot prompt polls every 170, a BDOS function 11 loop every 395
+on CP/M 2.2 and 885 on CP/M 3, ZDE every 475 and BBC BASIC every 690; MBASIC's
+statement loop 1865 at the least, PIP 46335. But a gap alone does not make the
+line. ZPM3's command prompt reads the RTC between polls, which puts them 3605
+T-states apart, and under the gap rule alone - the first version of this change
+- it never counted as idle: with stdin at end of file the emulator ran until
+killed, piped input held for the boot loader never reached it, and at a
+terminal the CLI spun at its prompt, 24-39% of a core on a loaded Mac against
+none before. What a wait loop does and a working program does not is go round
+the same way every time: ZPM3 repeats exactly (except once a second, when the
+time it reads changes), MBASIC waiting in `INKEY$` repeats every second poll
+(805, then 2230), HTALK every second (the console, then the serial port), while
+in every MBASIC loop measured, and PIP, no poll repeats, because each stores a
+new value of its loop variable. `banked_mem` keeps a hash of every store for
+this - an exclusive-or and a multiply per store, which an MBASIC benchmark does
+not measure - and `notePoll()` takes it.
 
-`tests/console_idle.cc` drives the dispatcher with the measured gaps; five of
-its checks fail against the old counting rule. It is portable and runs in the
-MSVC job too. Every port compiles `hbios_dispatch.cc`, so the new rule reaches
-their `isConsoleIdle()` batch sleeps as well - see `DOWNSTREAM.md`.
+And the CLI sleeps once per poll of an idle console, through the new
+`takeIdlePoll()`, not once per instruction, and while the console is idle it
+looks for its escape key every 1024th instruction rather than after every one -
+the guest's own polls catch the key - so ZPM3's prompt, which runs some 500
+instructions per poll, costs about 1% of a core. At end of piped input a run
+now ends wherever the guest waits for a key, whether it reads the console or
+polls it: measured at the boot prompt, at the prompts of CP/M 2.2, ZSDOS,
+NZCOM, CP/M 3, ZPM3, QPM, Z3PLUS and BPBIOS, and in ZDE, BBC BASIC, TBASIC,
+WordStar, DDTZ, HTALK and MBASIC's `INKEY$`. One working program still counts
+as waiting, as it did under every rule so far: MBASIC running a FOR loop on an
+INTEGER variable polls every 1095 T-states, inside the gap rule, so at end of
+piped input it is cut off, and at a terminal the CLI sleeps on it - 3000 turns
+took 43 seconds (`todo.txt`).
+
+`tests/console_idle.cc` drives the dispatcher with the measured gaps and the
+stores a guest makes between polls - none, the same ones each time, or new ones
+each time; eleven of its checks fail against the old counting rule, and six
+against the gap rule alone. It is portable and runs in the MSVC job too. Every
+port compiles `hbios_dispatch.cc`, so the new rule reaches their
+`isConsoleIdle()` batch sleeps as well - see `DOWNSTREAM.md`.
 
 ### `cpm_disk.py create --sssd` works now, and the disk docs say so
 

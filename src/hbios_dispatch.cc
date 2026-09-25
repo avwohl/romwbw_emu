@@ -63,6 +63,7 @@ void HBIOSDispatch::reset() {
   waiting_for_host_file = false;
   idle_poll_count = 0;
   idle_poll_pending = false;
+  for (uint64_t& p : recent_polls) p = 0;
   manifest_write_pending = false;  // Clear pending flag
   // Note: manifest_warning_shown is static, persists across resets within session
   emu_state = HBIOS_RUNNING;
@@ -1102,11 +1103,18 @@ static uint8_t get_md_index(uint8_t unit) {
 
 // A console status poll (CIOIST or VDAKST) and what it found.
 //
-// Counted toward "idle" only when it comes within IDLE_POLL_MAX_GAP cycles of
-// the previous empty poll; a longer gap starts the count again at one.  It
-// used to count every empty poll, so a program that polls while it works
-// looked exactly like one waiting at a prompt: eight polls with no output and
-// no disk I/O in between were enough.  Two things followed, both on the CLI:
+// An empty poll counts toward "idle" when it
+//
+//   (a) comes within IDLE_POLL_MAX_GAP T-states of the previous poll, which
+//       found no key either, or
+//   (b) REPEATS one of the last IDLE_POLL_PERIOD polls: the same T-states since
+//       the poll before it, the same guest writes to memory in that time
+//       (banked_mem::take_write_signature()) and the same registers.
+//
+// Anything else starts the count again at one.  It used to count every empty
+// poll, so a program that polls while it works looked exactly like one
+// waiting at a prompt: eight polls with no output and no disk I/O in between
+// were enough.  Two things followed, both on the CLI:
 //
 //   * romwbw_emu.cc slept 10 ms after EVERY instruction while idle, so such a
 //     program ran at about a hundred instructions a second until it next
@@ -1121,32 +1129,80 @@ static uint8_t get_md_index(uint8_t unit) {
 //
 //   waiting   romldr boot prompt 170, BIOS CONST loop 160, BDOS fn 6 loop
 //             370 (CP/M 2.2 and 3) and 425 (ZSDOS), BDOS fn 11 loop 395
-//             (CP/M 2.2), 410 (ZSDOS), 885 (CP/M 3, through its bank switch)
+//             (CP/M 2.2), 410 (ZSDOS), 885 (CP/M 3, through its bank switch),
+//             ZDE 475, BBC BASIC 690 - and ZPM3's command prompt 3605
 //   working   MBASIC FOR/NEXT loop 1865-7380, never two in a row under 1865;
 //             PIP concatenating 46335; the BDOS between printed characters
 //             650, but every one of those follows output, which resets
 //
-// so 1500 sits between the slowest wait loop and the fastest working one.  The
-// price is on the other side of the line: MBASIC waiting in an INKEY$ loop
-// polls at 920-3790 and no longer counts as idle, because nothing tells it
-// from MBASIC computing - both are the interpreter running statements.
+// Rule (a) alone put the line at 1500, and ZPM3 is on the wrong side of it:
+// its prompt reads the RTC between polls.  So it never counted as idle, and
+// on the CLI that meant three things - with stdin at end of file the run
+// never ended, piped input held by holdInputUntilWanted() was never released
+// (ZPM3 reads a key only after a poll has reported one), and at a terminal the
+// CLI span at its prompt instead of sleeping.  No gap tells ZPM3 waiting from
+// MBASIC working, and rule (b) does not try: a guest that goes round a loop
+// taking the same time, writing the same bytes to the same addresses and
+// arriving with the same registers is in the same state each time round, and
+// only a key will change that.  A program at work writes something new each
+// time - a loop variable, a pointer, a count - however fast or slow it polls:
+// in every MBASIC loop measured, and PIP, no two polls repeat.  ZPM3 repeats
+// 3605 T-states apart, except once a second when the time it reads changes;
+// MBASIC in an INKEY$ loop repeats every second poll (805, 2230: the ^C check
+// before the statement, then INKEY$), which rule (a) had also given up on, and
+// HTALK every second poll (the console, then the serial port).
+//
+// Rule (a) stays for wait loops that do change memory each time round, and
+// ZDE and BBC BASIC's are two: neither repeats, both poll well inside 1500.
+// It is also rule (a) that takes MBASIC running a FOR loop on an INTEGER
+// variable, which polls every 1095 T-states: that is working and counts as
+// waiting, as it did under every rule before this one (todo.txt).
 void HBIOSDispatch::notePoll(bool has_input) {
+  unsigned long long now = cpu ? cpu->cycles : 0;
+  unsigned long long gap = now - last_poll_cycles;
+  last_poll_cycles = now;
+  // Taken on every poll, so each covers exactly the writes since the last.
+  uint32_t writes = memory ? memory->take_write_signature() : 0;
   if (has_input) {
     idle_poll_count = 0;
     return;
   }
-  unsigned long long now = cpu ? cpu->cycles : 0;
-  bool close = idle_poll_count > 0 && now - last_idle_poll_cycles <= IDLE_POLL_MAX_GAP;
-  if (!close) {
+
+  // FNV-1a over what the guest looks like at this poll.  PC is always the
+  // dispatch OUT; R counts refreshes and never repeats, so neither is in it.
+  uint64_t state = 14695981039346656037ull;
+  auto mix = [&state](uint64_t v) {
+    state ^= v;
+    state *= 1099511628211ull;
+  };
+  mix(gap);
+  mix(writes);
+  if (cpu) {
+    const qkz80_reg_set& r = cpu->regs;
+    mix(r.AF.get_pair16());  mix(r.BC.get_pair16());  mix(r.DE.get_pair16());
+    mix(r.HL.get_pair16());  mix(r.IX.get_pair16());  mix(r.IY.get_pair16());
+    mix(r.SP.get_pair16());  mix(r.AF_.get_pair16()); mix(r.BC_.get_pair16());
+    mix(r.DE_.get_pair16()); mix(r.HL_.get_pair16());
+  }
+  bool repeat = false;
+  for (int i = 0; i < IDLE_POLL_PERIOD; i++) {
+    if (recent_polls[i] == state) repeat = true;
+  }
+  for (int i = IDLE_POLL_PERIOD - 1; i > 0; i--) recent_polls[i] = recent_polls[i - 1];
+  recent_polls[0] = state;
+
+  bool close = idle_poll_count > 0 && gap <= IDLE_POLL_MAX_GAP;
+  if (!close && !repeat) {
     idle_poll_count = 1;
   } else if (idle_poll_count < IDLE_POLL_THRESHOLD) {
     idle_poll_count++;  // capped: an int counting forever at a prompt wraps
   }
-  last_idle_poll_cycles = now;
   if (idle_poll_count >= IDLE_POLL_THRESHOLD) {
     idle_poll_pending = true;
-    // Polling in a tight loop is waiting for a key, so held input is now
-    // wanted - the boot loader's prompt, a program looping on BDOS fn 6.
+    // A wait loop is waiting for a key, so held input is now wanted - the
+    // boot loader's prompt, a program looping on BDOS fn 6, ZPM3's prompt.
+    // The boot loader's autoboot countdown is not one: it decrements a
+    // counter every time round, so it never repeats.
     input_held = false;
   }
 }
@@ -3028,7 +3084,11 @@ void HBIOSDispatch::handleVDA() {
 
     case HBF_VDAKFL:
       // Flush the keyboard buffer.  Real, cheap, and it was answering
-      // ERR_NOFUNC for a function every driver implements.
+      // ERR_NOFUNC for a function every driver implements.  Not while input
+      // is held (holdInputUntilWanted()): the guest cannot see held input, so
+      // its keyboard buffer is empty, and draining the queue here would throw
+      // away the script the hold is there to keep.
+      if (input_held) break;
       while (emu_console_has_input()) {
         (void)emu_console_read_char();
       }

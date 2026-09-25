@@ -116,3 +116,16 @@ but cannot lift it.  At about 22 million instructions a CPU second (measured
 2026-09-25 on a loaded Mac) it is some seven minutes of guest time.  Either an
 option, or no limit when a timeout is the caller's business; the exit status
 should say which way a run ended either way.
+
+- [ANY] The console idle rule (notePoll() in src/hbios_dispatch.cc) still
+takes one working program for a waiting one: MBASIC running a FOR loop on an
+INTEGER variable - `10 FOR I%=1 TO 3000: NEXT` - polls for ^C every 1095
+T-states, inside IDLE_POLL_MAX_GAP (1500). So at end of piped input the run
+ends mid-loop (tools/romwbw-batch -c "MBASIC PROG" reports it incomplete), and
+at a terminal the CLI sleeps 10 ms per poll of it: on a pty, 3000 turns of
+that loop took 43 seconds, on 0ddea4b and after it alike. Every rule so far
+has done this. The repeat rule does not need the gap and does not take it -
+its stores change every time round - but ZDE (475) and BBC BASIC (690) wait in
+loops that also store something new every time, so dropping the gap rule would
+stop the run ending at their prompts instead. Measured 2026-09-25; the numbers
+are in the notePoll() comment.

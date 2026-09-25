@@ -62,6 +62,10 @@ private:
     // Memory write callback (for Dazzler etc)
     MemoryWriteCallback write_callback;
 
+    // Every store since take_write_signature() last ran, hashed (FNV-1a).
+    static const uint32_t WRITE_SIGNATURE_START = 2166136261u;
+    uint32_t write_signature;
+
 public:
     banked_mem() :
         rom(nullptr), ram(nullptr),
@@ -69,7 +73,8 @@ public:
         rom_protect_start(0),
         bios_trap_start(0), bios_trap_end(0),
         code_bitmap(nullptr), data_read_bitmap(nullptr), data_write_bitmap(nullptr),
-        tracing_enabled(false)
+        tracing_enabled(false),
+        write_signature(WRITE_SIGNATURE_START)
     {
     }
 
@@ -149,6 +154,19 @@ public:
     // Set memory write callback (for Dazzler framebuffer updates)
     void set_write_callback(MemoryWriteCallback cb) { write_callback = cb; }
 
+    // What the guest has stored since the last call: a hash of the address
+    // and value of every store, in order, restarted by each call.  The console
+    // idle detector takes one per console poll, because a guest going round a
+    // wait loop makes the same stores every time and a guest that is working
+    // does not - it has a counter, a variable, a pointer to move on
+    // (HBIOSDispatch::notePoll()).  A multiply and an exclusive-or per store,
+    // here and in write_bank().
+    uint32_t take_write_signature() {
+        uint32_t s = write_signature;
+        write_signature = WRITE_SIGNATURE_START;
+        return s;
+    }
+
     // Memory access
     qkz80_uint8 fetch_mem(qkz80_uint16 addr, bool is_instruction = false) override {
         if (tracing_enabled) {
@@ -175,6 +193,8 @@ public:
     }
 
     void store_mem(qkz80_uint16 addr, qkz80_uint8 byte) override {
+        write_signature = (write_signature ^ (((uint32_t)addr << 8) | byte)) * 16777619u;
+
         if (tracing_enabled) {
             data_write_bitmap[addr >> 3] |= (1 << (addr & 7));
         }
@@ -219,6 +239,9 @@ public:
 
     void write_bank(uint8_t bank_id, uint16_t offset, uint8_t value) {
         if (!banking_enabled || offset >= BANK_SIZE) return;
+        // In the write signature too: HBIOS bank copies come this way.
+        write_signature = (write_signature ^ (((uint32_t)bank_id << 24) |
+                                              ((uint32_t)offset << 8) | value)) * 16777619u;
 
         if (bank_id & 0x80) {
             // RAM bank - write directly, no protection needed

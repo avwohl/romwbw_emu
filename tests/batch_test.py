@@ -13,6 +13,9 @@ Three layers, each skipped when what it needs is not here:
     console idle bug - PIP concatenating files and MBASIC running a loop, both
     of which the emulator used to cut off at end of input - and piped stdin
     reaching the CCP and the boot menu, which the boot loader used to eat;
+    and, when hd1k_combo is cached too, ZPM3, whose prompt the idle rule
+    missed so that the emulator never ended there and held piped input from
+    it for ever;
   * Intel PL/M-80 under ISX (needs $ISX_TOOLS naming DRI's PLM_WORK
     directory, which this repository does not carry): a program compiled by
     both ISX modes, and DRI's `CPM` getting back to CP/M from each.
@@ -268,6 +271,8 @@ def test_batches():
                   "piped stdin with --boot=%s: the script's first line reaches "
                   "%s" % (boot, "the CCP" if boot == "2" else "the boot menu"))
 
+        test_zpm3(emu, rom, d)
+
         # ...and MBASIC, which checks for ^C before every statement, ran at a
         # hundred instructions a second and never printed DONE.
         with open(os.path.join(d, "loop.bas"), "w") as f:
@@ -279,6 +284,37 @@ def test_batches():
             if os.path.exists(os.path.join(d, "m", "console.log")) else ""
         check(r.returncode == 0 and "DONE" in log,
               "MBASIC running a loop finishes and prints DONE")
+
+
+def test_zpm3(emu, rom, d):
+    """ZPM3, slice 4 of hd1k_combo: its prompt reads the RTC between polls,
+    3605 T-states apart, so the tight-poll rule alone never called it idle."""
+    try:
+        combo = rb.resolve_asset("hd1k_combo", offline=True)
+    except rb.BatchError:
+        skip("ZPM3 at end of input: hd1k_combo is not cached "
+             "(tools/romwbw-get fetch hd1k_combo)")
+        return
+    img = os.path.join(d, "combo.img")
+    shutil.copyfile(combo, img)
+    os.chmod(img, 0o644)
+    argv = [emu, "--romwbw=" + rom, "--disk0=" + img, "--boot=2.4",
+            "--no-config"]
+    try:
+        subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=60)
+        ended = True
+    except subprocess.TimeoutExpired:
+        ended = False
+    check(ended, "ZPM3: with stdin at end of file the run ends at its prompt")
+    try:
+        p = subprocess.run(argv, input=b"DIR\r", stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, timeout=60)
+        out = p.stdout.decode("latin-1")
+    except subprocess.TimeoutExpired:
+        out = ""
+    check("Files Found" in out,
+          "ZPM3: piped input reaches its prompt, and DIR runs")
 
 
 # --- Intel PL/M-80 under ISX -------------------------------------------------------

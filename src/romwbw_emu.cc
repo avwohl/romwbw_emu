@@ -788,11 +788,20 @@ public:
     // over: with --escape=none it keeps the guest's keys, and it removes the
     // per-instruction select() this used to cost.
     if (console_escape_char == 0) return;
+    // A guest in a wait loop makes console polls of its own, and each one -
+    // emu_console_has_input() - looks at stdin and latches the escape key, so
+    // between them a select() per instruction only costs CPU.  ZPM3's prompt
+    // runs some 500 instructions per poll, and with the CLI sleeping 10 ms per
+    // poll that select was 4% of a core at a prompt that should cost nothing.
+    // While the console is idle, look every 1024th instruction instead - a
+    // poll or two apart at that prompt - and pick up the latched escape then.
+    if (hbios.isConsoleIdle() && (++idle_escape_tick & 1023) != 0) return;
     // Check for console escape first
     if (emu_console_check_escape(console_escape_char)) {
       console_mode_requested = true;
     }
   }
+  unsigned idle_escape_tick = 0;
 };
 
 // Disk size constants and MBR checking are now in emu_init.h/emu_init.cc
@@ -1515,15 +1524,16 @@ int main(int argc, char** argv) {
   emu_setup_reset_callback(&memory, &cpu, emu.getHBIOS());
 
   // Piped or redirected stdin is a script, and its first line is meant for
-  // whatever first asks for input - CP/M's CCP, or the boot loader's prompt.
+  // whatever first asks for input - CP/M's CCP, ZPM3's prompt, or the boot
+  // loader's.
   // It used to reach the boot loader first even when that asked for nothing:
   // the autoboot countdown (zero seconds under --boot) reads keys up to Enter
   // looking for Esc and drops them, so `printf 'STAT DSK:\rSTAT\r' |
   // romwbw_emu --boot=2` ran only STAT, and the prompt flushes what is
   // waiting, so `printf '2\r' | romwbw_emu --boot=H` booted nothing.  Held
-  // until the guest reads a key or polls for one in a tight loop; see
-  // holdInputUntilWanted().  A terminal is left alone: Esc during the
-  // countdown is a person's to press.
+  // until the guest reads a key or sits in a loop polling for one - console
+  // idle, notePoll() in hbios_dispatch.cc; see holdInputUntilWanted().  A
+  // terminal is left alone: Esc during the countdown is a person's to press.
   if (!isatty(STDIN_FILENO)) {
     emu.getHBIOS()->holdInputUntilWanted();
   }
@@ -1656,8 +1666,9 @@ int main(int argc, char** argv) {
     // (e.g. the romldr boot menu) - console-idle plus EOF means it waits
     // for input that can never come. isConsoleIdle resets on every CIOOUT,
     // so a guest that is still producing output is never cut off, and it
-    // counts only polls in a tight loop, so neither is one that is working
-    // and polls for ^C as it goes (notePoll() in hbios_dispatch.cc).
+    // counts only polls in a wait loop - one tight, or going round the same
+    // way each time - so neither, as a rule, is one that is working and polls
+    // for ^C as it goes (notePoll() in hbios_dispatch.cc has the exception).
     if (emu_console_input_exhausted() ||
         (emu_console_input_eof() && emu.getHBIOS()->isConsoleIdle())) {
       stop_requested = true;

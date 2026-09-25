@@ -14,13 +14,21 @@
  *     how tools/romwbw-batch found it.
  *
  * The rule now is that an empty poll counts only if it follows the previous
- * one within IDLE_POLL_MAX_GAP T-states.  The gaps below are the ones measured
- * on the real guests (see notePoll() in src/hbios_dispatch.cc).  A front end
- * sleeps once per idle poll, via takeIdlePoll(), not per instruction.
+ * one within IDLE_POLL_MAX_GAP T-states, or repeats one of the last few polls
+ * exactly - the same gap, the same stores to memory, the same registers -
+ * which is what a wait loop does and a working program does not.  The second
+ * half is for ZPM3, whose command prompt polls every 3605 T-states: under the
+ * gap rule alone it never counted as waiting, so the CLI never ended a piped
+ * run there, never released held input to it, and span at its prompt.  The
+ * gaps below are the ones measured on the real guests (see notePoll() in
+ * src/hbios_dispatch.cc).  A front end sleeps once per idle poll, via
+ * takeIdlePoll(), not per instruction.
  *
  * The test links the real dispatcher against a stub console, drives HBIOS
- * through handlePortDispatch() as the proxy does, and moves the CPU's cycle
- * counter by hand between calls.
+ * through handlePortDispatch() as the proxy does, moves the CPU's cycle
+ * counter by hand between calls, and makes the stores a guest would make
+ * between polls: none, the same ones every time round (a wait loop), or new
+ * ones every time (a program at work, moving its loop variable on).
  *
  * It also covers the hold on typed-ahead input that the CLI puts on a piped
  * stdin (holdInputUntilWanted()): RomWBW's boot loader used to eat a
@@ -142,9 +150,34 @@ struct Rig {
   uint8_t A() { return cpu.regs.AF.get_high(); }
   uint8_t E() { return cpu.regs.DE.get_low(); }
 
+  // What the guest stores between two polls.  A wait loop stores the same
+  // bytes every time round - return addresses, a status byte, and in ZPM3's
+  // case the time it has just read from the RTC - and a program at work
+  // stores something new: its loop variable, a pointer, a count.
+  enum Work { NOTHING, SAME, COUNTING };
+  Work work = NOTHING;
+  unsigned counter = 0;
+
+  void guest_stores() {
+    switch (work) {
+      case NOTHING:
+        break;
+      case SAME:
+        mem.store_mem(0x9000, 0x17);
+        mem.store_mem(0x9001, 0x52);
+        break;
+      case COUNTING:
+        counter++;
+        mem.store_mem(0x9000, (uint8_t)(counter & 0xFF));
+        mem.store_mem(0x9001, (uint8_t)((counter >> 8) & 0xFF));
+        break;
+    }
+  }
+
   // `gap` T-states of guest work, then one console status poll.
   void poll_after(unsigned gap, uint8_t func = HBF_CIOIST) {
     cpu.cycles += gap;
+    guest_stores();
     call(func);
   }
 
@@ -190,10 +223,44 @@ int main() {
     check(r.hbios.isConsoleIdle(), "VDAKST counts the same way as CIOIST");
   }
 
+  // --- slow wait loops: idle because they repeat ----------------------------
+  {
+    // ZPM3's command prompt reads the RTC between polls, which puts them 3605
+    // T-states apart - slower than MBASIC at work - but every time round it
+    // stores the same time and arrives with the same registers.
+    const unsigned zpm3[] = {3605};
+    Rig r;
+    r.work = Rig::SAME;
+    int sleeps = r.polls(zpm3, 1, 20);
+    check(r.hbios.isConsoleIdle(), "ZPM3's prompt (3605 T, repeating) is idle");
+    // The first poll follows whatever ran before the loop and the second is
+    // the first time round it, so the third is the first repeat, and the
+    // eighth repeat is the ninth poll.
+    check(sleeps == 12, "...and asks for a sleep on each poll from the ninth on");
+    // Once a second the time it reads changes: that poll is new, and the
+    // loop is idle again eight polls later.
+    r.work = Rig::COUNTING;
+    r.poll_after(3605);
+    check(!r.hbios.isConsoleIdle(), "...a poll that stores something new ends it");
+    r.work = Rig::SAME;
+    r.polls(zpm3, 1, 8);
+    check(r.hbios.isConsoleIdle(), "...and it is idle again once it repeats");
+  }
+  {
+    // MBASIC waiting in `10 IF INKEY$="" THEN 10`: two polls each time round,
+    // the ^C check before the statement and INKEY$ itself.
+    const unsigned inkey[] = {805, 2230};
+    Rig r;
+    r.polls(inkey, 2, 20);
+    check(r.hbios.isConsoleIdle(),
+          "MBASIC in an INKEY$ loop (805, 2230, repeating) is idle");
+  }
+
   // --- programs at work: not idle ------------------------------------------
   {
     const unsigned pip[] = {46335};    // PIP concatenating two .HEX files
     Rig r;
+    r.work = Rig::COUNTING;
     int sleeps = r.polls(pip, 1, 200);
     check(!r.hbios.isConsoleIdle(), "PIP polling between records is not idle");
     check(sleeps == 0, "...and never asks for a sleep");
@@ -202,9 +269,32 @@ int main() {
     // MBASIC running FOR I=1 TO 3000: X=X+1: NEXT - the gaps as measured.
     const unsigned mbasic[] = {7380, 4470, 1865, 4180, 1905, 4220, 2010};
     Rig r;
+    r.work = Rig::COUNTING;
     int sleeps = r.polls(mbasic, 7, 500);
     check(!r.hbios.isConsoleIdle(), "MBASIC running a loop is not idle");
     check(sleeps == 0, "...and never asks for a sleep");
+  }
+  {
+    // MBASIC running FOR I=1 TO 3000: NEXT polls every 2075 T-states for a
+    // thousand polls on end - as regular as any wait loop.  Only I moves.
+    const unsigned mbasic[] = {2075};
+    Rig r;
+    r.work = Rig::COUNTING;
+    int sleeps = r.polls(mbasic, 1, 500);
+    check(!r.hbios.isConsoleIdle() && sleeps == 0,
+          "a loop polling at a steady gap but storing a new value each time is "
+          "not idle");
+  }
+  {
+    // The same, with the count kept in a register rather than memory.
+    Rig r;
+    int idle = 0;
+    for (int i = 0; i < 50; i++) {
+      r.cpu.regs.HL.set_pair16((uint16_t)i);
+      r.poll_after(3605);
+      if (r.hbios.isConsoleIdle()) idle++;
+    }
+    check(idle == 0, "...nor one whose registers differ each time round");
   }
   {
     // Seven quick polls, then one after a long gap: the count starts over.
@@ -248,8 +338,11 @@ int main() {
   // countdown it reads keys up to Enter, looking for Esc.  With the input
   // held, a status poll that is not part of a wait loop sees no key.
   {
-    const unsigned countdown[] = {50000};  // romldr polls between delay loops
+    // romldr's countdown polls between 1/64 s delays and decrements its
+    // sub-second counter every time round (acmd_to_64), so no poll repeats.
+    const unsigned countdown[] = {50000};
     Rig r;
+    r.work = Rig::COUNTING;
     g_keys.clear();
     g_keys.push_back('S');
     r.hbios.holdInputUntilWanted();
@@ -257,7 +350,8 @@ int main() {
     check(r.A() == 0, "held: the countdown's status poll sees no key");
     r.polls(countdown, 1, 50);
     check(r.A() == 0 && r.hbios.isInputHeld(),
-          "held: fifty polls far apart still see none - nobody is waiting");
+          "held: fifty countdown polls still see none - it is counting, not "
+          "waiting");
     r.call(HBF_CIOIN);
     check(r.E() == 'S', "held: a CIOIN gets the key at once - it is wanted");
     check(!r.hbios.isInputHeld(), "...and releases the rest of the input");
@@ -286,12 +380,45 @@ int main() {
     g_keys.clear();
   }
   {
+    // ZPM3 reads a key only after a poll reports one, so a hold released by
+    // nothing but a CIOIN or a tight loop kept piped input from it for ever.
+    const unsigned zpm3[] = {3605};
+    Rig r;
+    r.work = Rig::SAME;
+    g_keys.clear();
+    g_keys.push_back('D');
+    r.hbios.holdInputUntilWanted();
+    int seen = 0;
+    for (int i = 0; i < 40 && !seen; i++) {
+      r.poll_after(zpm3[0]);
+      if (r.A() != 0) seen = i + 1;
+    }
+    check(seen == 10, "held: ZPM3's prompt (3605 T apart) gets the key once it "
+                      "counts as waiting, on its tenth poll");
+    g_keys.clear();
+  }
+  {
     Rig r;
     g_keys.clear();
     g_keys.push_back('X');
     r.call(HBF_VDAKST);
     check(r.A() != 0, "not held (a terminal, or any other front end): a queued "
                       "key shows at once");
+    g_keys.clear();
+  }
+  {
+    // VDAKFL flushes the keyboard.  Held input is not in the guest's keyboard
+    // yet, so a flush must not throw it away.
+    Rig r;
+    g_keys.clear();
+    g_keys.push_back('Q');
+    r.hbios.holdInputUntilWanted();
+    r.call(HBF_VDAKFL);
+    check(g_keys.size() == 1, "held: VDAKFL leaves held input alone");
+    r.call(HBF_CIOIN);
+    g_keys.push_back('R');
+    r.call(HBF_VDAKFL);
+    check(g_keys.empty(), "released: VDAKFL flushes what is waiting");
     g_keys.clear();
   }
 

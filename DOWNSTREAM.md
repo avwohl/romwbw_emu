@@ -5,22 +5,39 @@ This document explains how to integrate the RomWBW emulator core into downstream
 **2026-09-25: `holdInputUntilWanted()`, which you need not call.** The CLI
 turns it on for piped stdin so that RomWBW's boot loader, which reads and drops
 typed-ahead keys during its autoboot countdown, does not eat a script's first
-line; until the guest reads a key or polls in a tight loop, CIOIST and VDAKST
-report none. It is off unless a front end calls it, and none of yours feeds
-scripted input, so nothing changes for you.
+line; until the guest reads a key or sits in a loop polling for one (console
+idle, below), CIOIST and VDAKST report none and VDAKFL flushes nothing. It is
+off unless a front end calls it, and none of yours feeds scripted input, so
+nothing changes for you.
 
 **2026-09-25: `isConsoleIdle()` means waiting for a key, not polling while
 working - and needs nothing from you.** It used to turn true after eight
 console status polls that found no key with no output or disk I/O between
 them, which a busy program also produces: MBASIC polls for ^C before every
 statement, PIP between records. It now counts a poll only when it comes within
-1500 T-states of the previous one, which every measured wait loop does and no
-measured working program does; `CHANGELOG.md` has the numbers. If your run
-loop sleeps longer between batches while `isConsoleIdle()` holds, a program
-that was running slowly for that reason now runs at full speed, and MBASIC
-waiting in an `INKEY$` loop no longer earns the longer sleep. There is also a
-new `takeIdlePoll()`, true once per poll of an idle console, for a loop that
-would rather sleep per poll than per batch; the CLI uses it.
+1500 T-states of the previous one, or when it repeats one of the last four
+exactly - the same T-states since the poll before, the same stores to memory,
+the same registers - which a wait loop does however slowly it polls and a
+working program does not, since it has a loop variable to move on.
+`CHANGELOG.md` and `notePoll()` have the numbers. What your `isIdle()` sees:
+
+- a program that was running slowly because it polled for ^C now runs at full
+  speed, as before;
+- ZPM3's command prompt (the combo image's slice 4, and `hd1k_zpm3`) counts as
+  idle, which it did before this change and did not under the first version of
+  it: it reads the RTC between polls, 3605 T-states apart. ioscpm's
+  `isIdle()` and z80cpmw's `EmulatorEngine::isIdle()` sleep there again;
+- MBASIC waiting in an `INKEY$` loop counts as idle, as it did before;
+- MBASIC running a FOR loop on an integer variable still counts as idle while
+  it works, as it always has - it polls every 1095 T-states. `todo.txt` has it.
+
+To see the stores, `banked_mem` in `romwbw_mem.h` now keeps a running hash of
+every `store_mem()` - one exclusive-or and one multiply per store; an MBASIC
+benchmark measured no difference - and `notePoll()` takes it with
+`take_write_signature()`; `write_bank()`, which HBIOS bank copies and disk
+transfers use, adds to it too. There
+is also a new `takeIdlePoll()`, true once per poll of an idle console, for a
+loop that would rather sleep per poll than per batch; the CLI uses it.
 
 **2026-09-19: the RTC was broken on every port with a 32-bit `long`, which is
 z80cpmw and two of cpmdroid's four ABIs.** You get the fix by rebuilding; there
