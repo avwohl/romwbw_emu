@@ -283,7 +283,7 @@ by both and the two programs' output compared. `tests/isx/DIFF1.PLM` is the
 first such program: arithmetic on both widths with wrap-around, MOD and
 division, LOW, HIGH, SHR, ROL, ROR, NOT, relations, SIZE and LAST, a DATA
 table copied, summed and sorted, a BASED variable, DO CASE, a structure, and a
-DO with BY; it prints 69 lines through BDOS functions 2 and 9.
+DO with BY; it prints 66 lines through BDOS functions 2 and 9.
 
 ```bash
 romwbw-plm80 com tests/isx/DIFF1.PLM --tools PLM_WORK -o intel
@@ -292,7 +292,7 @@ um80 DIFF1.MAC && ul80 -o DIFF1.COM DIFF1.REL
 cpmemu intel/DIFF1.COM > intel.out; cpmemu DIFF1.COM > uplm80.out
 ```
 
-Both print the same 69 lines; the programs are 1,664 and 1,792 bytes.
+Both print the same 66 lines; the programs are 1,664 and 1,792 bytes.
 `tests/batch_test.py` builds DIFF1 with Intel's compiler in both ISX modes when
 `$ISX_TOOLS` names a `PLM_WORK` directory, and checks the two .COM files are
 the same.

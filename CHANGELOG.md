@@ -83,7 +83,7 @@ MAC, PIP and LOAD as well. SDIR differs in 526 bytes it never initialises,
 which hold what PIP's buffer left in memory; the text in DRI's copy sits 3072
 bytes further into the hex file than in ours, and 3072 is E400H - D800H, the
 difference between DRI's 62K CP/M and this one's BDOS. A 174-line PL/M program
-compiles in about a second of CPU, and prints the same 69 lines compiled by
+compiles in about a second of CPU, and prints the same 66 lines compiled by
 Intel's compiler and by uplm80 - `tests/isx/DIFF1.PLM`, the start of a
 differential test for uplm80.
 
