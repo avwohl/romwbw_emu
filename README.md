@@ -32,6 +32,10 @@ What changed in each version: [CHANGELOG.md](CHANGELOG.md).
 - **Debugger:** a `sim>` prompt with breakpoints, single-step, register and
   memory dumps, and a symbol table - CLI only, and with no disassembler; `dm`
   prints bytes
+- **Unattended runs:** `tools/romwbw-batch` boots CP/M 2.2, runs a list of
+  commands from a submit file and extracts the results; `tools/romwbw-plm80`
+  uses it to compile PL/M-80 with Intel's own compiler under DRI's ISX - see
+  [docs/BATCH.md](docs/BATCH.md) and [docs/ISX.md](docs/ISX.md)
 - **WebAssembly:** runs in any modern browser
 
 ## Quick Start
@@ -472,12 +476,15 @@ romwbw_emu/
     emu_config.*		JSON settings file (vendored nlohmann in include/)
     r8.asm w8.asm		The CP/M file-transfer utilities
     emu_hbios.asm emu_rom.asm	The Z80 side of the emulator ROM
-  tests/			4 C++, 3 node JS and 1 Python suite (make -C src test)
+  tests/			10 C++, 5 node JS and 2 Python suites (make -C src test)
   web/				makefile, romwbw.html-template (romwbw.html is
 				rendered from it), romwbw_web.cc, and vendor/
 				for xterm, so the page needs no CDN
   tools/
     romwbw-get			Fetches and verifies the ROM and the disk images
+    romwbw-batch		Runs CP/M commands unattended and extracts the results
+    romwbw-plm80		Intel PL/M-80 under DRI's ISX, by DRI's recipes
+    isxbios.asm			The compact BIOS romwbw-batch runs ISX on
     unreleased.sh		What is finished here and not in anyone's hands
   roms/				build_emu_rom.sh and verify_romwbw_pin.sh - no ROM is tracked
   disks/			verify_disk_utils.sh - no image is tracked
@@ -499,6 +506,8 @@ do to take a sync of this core; `docs/DOWNSTREAM_*.md` are the dated notices),
 - [docs/BOOT_CONFIGURATION.md](docs/BOOT_CONFIGURATION.md) - boot options, the boot menu, SYSCONF, NVRAM
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md) - the JSON settings file and its schema
 - [docs/FILE_TRANSFER.md](docs/FILE_TRANSFER.md) - R8/W8 in full
+- [docs/BATCH.md](docs/BATCH.md) - `romwbw-batch`: CP/M commands with nobody at the keyboard
+- [docs/ISX.md](docs/ISX.md) - Intel's ISIS-II tools under DRI's ISX, `romwbw-plm80`, and MP/M II rebuilt byte for byte
 - [docs/DISK_FORMATS.md](docs/DISK_FORMATS.md) - disk formats, SIMH compatibility, and reading images with `cpm_disk.py`
 - [docs/disk-images.md](docs/disk-images.md) - working with disk images by hand
 - [docs/drive_assignment.md](docs/drive_assignment.md) - how CBIOS builds the drive map

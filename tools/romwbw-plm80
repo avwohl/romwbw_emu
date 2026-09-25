@@ -1,0 +1,317 @@
+#!/usr/bin/env python3
+#
+# romwbw-plm80 - compile PL/M-80 with Intel's own compiler, under DRI's ISX,
+# on the emulator.  Built on tools/romwbw-batch.
+#
+#   romwbw-plm80 com HELLO.PLM --tools PLM_WORK -o out          -> out/HELLO.COM
+#   romwbw-plm80 prl DIR.PLM --tools PLM_WORK --tools UTIL9 \
+#                --include UTIL8 -o out                          -> out/DIR.PRL
+#
+# These are Digital Research's own recipes, run the way DRI ran them.  The
+# `com` route is P.SUB / C.SUB from mpm2src/PLM_WORK:
+#
+#     b:is14
+#     :f1:PLM80 $1.PLM debug PAGEWIDTH(80)
+#     :f1:link $1.obj,:f1:x0100,:f1:plm80.lib to $1.mod
+#     :f1:locate $1.mod code(0100H) stacksize(100) map print($1.tra)
+#     :f1:cpm
+#     e:objcpm $1
+#
+# and the `prl` route is PRL.SUB and the PRLA*/PRLB*.SUB files DRI built the
+# MP/M II transients with: link and locate the program twice, at 0100H and at
+# 0200H, turn both into Intel hex with OBJHEX, go back to CP/M, concatenate the
+# two hex files with PIP, clear memory with ZERO and let GENMOD make a page
+# relocatable .PRL out of the differences.
+#
+# The tools stay where the recipes expect them: everything from --tools goes to
+# B:, which ISX calls :F1:, and the sources and $INCLUDE files go to A:, which
+# is :F0: and the default.  None of these binaries is distributed with this
+# repository: --tools names DRI's PLM_WORK directory (ISX.COM, PLM80 and its
+# overlays and library, LINK, LINK.OVL, LOCATE, OBJHEX, X0100, X0200,
+# OBJCPM.COM, ASM80) and, for `prl`, a directory with GENMOD.COM and
+# ZERO.COM (MP/M II's, in mpm2src/UTIL9).  $ISX_TOOLS may list them, colon
+# separated.
+#
+# docs/ISX.md explains ISX and what this machine does for it; docs/BATCH.md
+# explains romwbw-batch.
+#
+# Exit status: 0 built, with no compiler errors; 1 the build failed or
+# reported errors (the console log says where); 2 a tool or file is missing;
+# 64 usage.
+
+import argparse
+import importlib.machinery
+import importlib.util
+import os
+import re
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load_batch():
+    path = os.path.join(HERE, "romwbw-batch")
+    loader = importlib.machinery.SourceFileLoader("romwbw_batch", path)
+    spec = importlib.util.spec_from_loader("romwbw_batch", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+rb = _load_batch()
+
+EX_OK, EX_FAILED, EX_ENV, EX_USAGE = 0, 1, 2, 64
+
+ISIS_TOOLS = ["ISX.COM", "PLM80", "PLM80.OV0", "PLM80.OV1", "PLM80.OV2",
+              "PLM80.OV3", "PLM80.OV4", "PLM80.LIB", "LINK", "LINK.OVL",
+              "LOCATE", "X0100", "OBJCPM.COM"]
+PRL_TOOLS = ["OBJHEX", "X0200", "GENMOD.COM"]
+ASM_TOOLS = ["ASM80"]
+
+
+def say(msg):
+    print("romwbw-plm80: " + msg, file=sys.stderr)
+
+
+class Tools(object):
+    """The ISIS and CP/M binaries a recipe needs, found in --tools dirs."""
+
+    def __init__(self, dirs):
+        self.dirs = [d for d in dirs if d]
+        self.files = {}
+        for d in self.dirs:
+            if not os.path.isdir(d):
+                raise rb.UsageError("--tools %s: not a directory" % d)
+            for fn in sorted(os.listdir(d)):
+                p = os.path.join(d, fn)
+                if os.path.isfile(p):
+                    self.files.setdefault(fn.upper(), p)
+
+    def need(self, names):
+        missing = [n for n in names if n not in self.files]
+        if missing:
+            raise rb.BatchError(
+                "missing from --tools (%s): %s" % (", ".join(self.dirs) or
+                                                   "none given",
+                                                   " ".join(missing)))
+
+    def has(self, name):
+        return name in self.files
+
+
+def isis_name(path_or_name):
+    """The ISIS name a source becomes: 6.3, upper case."""
+    base = os.path.basename(path_or_name).upper()
+    stem, _, ext = base.partition(".")
+    if not re.match(r"^[A-Z0-9]{1,6}$", stem) or len(ext) > 3:
+        raise rb.UsageError("%s: an ISIS name is 1-6 letters or digits and a "
+                            "3-letter type" % path_or_name)
+    return stem, ext
+
+
+def build_commands(route, sources, name, args):
+    """The command lines, and the output files to extract."""
+    f1 = ":F1:"
+    objs, cmds = [], ["B:ISX"]
+    for src in sources:
+        stem, ext = isis_name(src)
+        fname = stem + ("." + ext if ext else "")
+        if ext == "ASM":
+            cmds.append("%sASM80 %s %s" % (f1, fname, args.asm_options))
+        else:
+            cmds.append("%sPLM80 %s %s" % (f1, fname, args.plm_options))
+        objs.append(stem + ".OBJ")
+
+    def link_line(x, mod):
+        parts = list(objs)
+        if args.x0100 != "none":
+            xmod = f1 + x
+            if args.x0100 == "first":
+                parts.insert(0, xmod)
+            else:
+                parts.append(xmod)
+        parts.append(f1 + "PLM80.LIB")
+        return "%sLINK %s TO %s" % (f1, ",".join(parts), mod)
+
+    stack = "STACKSIZE(%s)" % args.stack
+    if route == "com":
+        cmds.append(link_line("X0100", name + ".MOD"))
+        cmds.append("%sLOCATE %s.MOD CODE(0100H) %s MAP PRINT(%s.TRA)"
+                    % (f1, name, stack, name))
+        cmds.append(f1 + "CPM")
+        cmds.append("B:OBJCPM " + name)
+        outs = [name + ".COM", name + ".SYM", name + ".LIN", name + ".TRA"]
+    else:
+        short = name[:5]
+        n1, n2 = short + "1", short + "2"
+        cmds.append(link_line("X0100", n1 + ".MOD"))
+        cmds.append("%sLOCATE %s.MOD CODE(0100H) %s" % (f1, n1, stack))
+        cmds.append("%sOBJHEX %s TO %s.HEX" % (f1, n1, n1))
+        cmds.append(link_line("X0200", n2 + ".MOD"))
+        cmds.append("%sLOCATE %s.MOD CODE(0200H) %s" % (f1, n2, stack))
+        cmds.append("%sOBJHEX %s TO %s.HEX" % (f1, n2, n2))
+        cmds.append(f1 + "CPM")
+        cmds.append("PIP %s.HEX=%s.HEX,%s.HEX" % (short, n1, n2))
+        if not args.no_zero:
+            cmds.append("B:ZERO")
+        gen = "B:GENMOD %s.HEX %s.PRL" % (short, name)
+        if args.data:
+            gen += " $" + args.data
+        cmds.append(gen)
+        outs = [name + ".PRL", n1 + ".HEX", n2 + ".HEX", short + ".HEX"]
+    for src in sources:
+        stem, _ = isis_name(src)
+        outs.append(stem + ".LST")
+        outs.append(stem + ".OBJ")
+    return cmds, outs
+
+
+def check_console(console):
+    """Problems the tools reported on the console, as strings."""
+    problems = []
+    for m in re.finditer(r"COMPILATION COMPLETE\.\s+(\d+) PROGRAM ERROR", console):
+        if int(m.group(1)):
+            problems.append("PL/M-80 reported %s program error(s)" % m.group(1))
+    for m in re.finditer(r"ASSEMBLY COMPLETE,\s+(\d+) ERROR", console):
+        if int(m.group(1)):
+            problems.append("ASM80 reported %s error(s)" % m.group(1))
+    for pat in (r"UNRESOLVED EXTERNAL NAMES?", r"\*\*\* ERROR[^\r\n]*",
+                r"ERROR \d+ [^\r\n]*", r"INVALID[^\r\n]*", r"LOAD ERROR"):
+        for m in re.finditer(pat, console):
+            problems.append(m.group(0).strip())
+    return problems
+
+
+def build_parser():
+    p = rb.Parser(
+        prog="romwbw-plm80",
+        description="Compile PL/M-80 with Intel's PLM80 V3.1 under DRI's ISX "
+                    "on romwbw_emu, by DRI's own recipes.",
+        epilog="docs/ISX.md has the background and the recipes line by line.")
+    p.add_argument("route", choices=["com", "prl"],
+                   help="com: P.SUB, a .COM at 0100H;  prl: PRL.SUB, a page "
+                        "relocatable .PRL via GENMOD")
+    p.add_argument("sources", nargs="+", metavar="SOURCE",
+                   help=".PLM (compiled with PLM80) or .ASM (assembled with "
+                        "ASM80) files, linked in this order")
+    p.add_argument("--tools", action="append", default=[], metavar="DIR",
+                   help="directory holding the ISIS and CP/M tools "
+                        "(repeatable; default $ISX_TOOLS)")
+    p.add_argument("--include", action="append", default=[], metavar="PATH",
+                   help="a file or directory of $INCLUDE files (.LIT) to put "
+                        "beside the sources on A:")
+    p.add_argument("-n", "--name", help="output name (default: the first "
+                                        "source's)")
+    p.add_argument("--plm-options", default="DEBUG PAGEWIDTH(80)",
+                   metavar="OPTS", help="PLM80 controls (default %(default)s)")
+    p.add_argument("--asm-options", default="DEBUG", metavar="OPTS",
+                   help="ASM80 controls (default %(default)s)")
+    p.add_argument("--stack", default="100", metavar="N",
+                   help="LOCATE STACKSIZE (default %(default)s)")
+    p.add_argument("--x0100", choices=["last", "first", "none"],
+                   default="last",
+                   help="where the X0100/X0200 externals module goes in the "
+                        "link: after the objects as P.SUB has it (last), "
+                        "before them as SDIR.SUB has it (first), or not at all "
+                        "when a source supplies them (none)")
+    p.add_argument("--data", metavar="HEX",
+                   help="prl: GENMOD's extra data size, as in ED.SUB's "
+                        "`genmod ed.hex xed.prl $1000`")
+    p.add_argument("--no-zero", action="store_true",
+                   help="prl: skip ZERO before GENMOD, as PIP.SUB and "
+                        "SDIR.SUB did")
+    p.add_argument("-o", "--out", default=".", metavar="DIR")
+    p.add_argument("--timeout", type=int, default=rb.DEFAULT_TIMEOUT)
+    p.add_argument("--rom", default="@rom", metavar="ID|FILE")
+    p.add_argument("--disk", default=rb.DEFAULT_SYSTEM_DISK, metavar="ID|FILE")
+    p.add_argument("--emu", metavar="PATH")
+    p.add_argument("--offline", action="store_true")
+    p.add_argument("--work", metavar="DIR",
+                   help="keep the disk images and console.log here")
+    p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("-q", "--quiet", action="store_true")
+    return p
+
+
+def main(argv):
+    args = build_parser().parse_args(argv)
+    tool_dirs = list(args.tools)
+    if not tool_dirs and os.environ.get("ISX_TOOLS"):
+        tool_dirs = os.environ["ISX_TOOLS"].split(os.pathsep)
+    try:
+        tools = Tools(tool_dirs)
+        need = list(ISIS_TOOLS)
+        if args.route == "prl":
+            need += PRL_TOOLS
+            if not args.no_zero:
+                need.append("ZERO.COM")
+        if any(s.upper().endswith(".ASM") for s in args.sources):
+            need += ASM_TOOLS
+        if args.x0100 == "none":
+            need = [n for n in need if n not in ("X0100", "X0200")]
+        tools.need(need)
+        for s in args.sources:
+            if not os.path.isfile(s):
+                raise rb.UsageError("%s: no such file" % s)
+            isis_name(s)
+        name = (args.name or isis_name(args.sources[0])[0]).upper()
+        isis_name(name)
+        if args.data and not re.match(r"^[0-9A-Fa-f]{1,4}$", args.data):
+            raise rb.UsageError("--data wants a hex number, e.g. 1000")
+        cmds, outs = build_commands(args.route, args.sources, name, args)
+
+        b = rb.Batch(workdir=args.work, rom=args.rom, system=args.disk,
+                     emulator=args.emu, offline=args.offline, isx=True,
+                     timeout=args.timeout, verbose=args.verbose)
+        for n in sorted(tools.files):
+            b.add(tools.files[n], n, drive="B")
+        for inc in args.include:
+            paths = ([os.path.join(inc, f) for f in sorted(os.listdir(inc))]
+                     if os.path.isdir(inc) else [inc])
+            for p in paths:
+                if os.path.isfile(p) and not os.path.basename(p).startswith("."):
+                    b.add(p, None, "A", text=True)
+        for s in args.sources:
+            b.add(s, None, "A", text=True)
+    except rb.UsageError as e:
+        say(str(e))
+        return EX_USAGE
+    except (rb.BatchError, OSError) as e:
+        say(str(e))
+        return EX_ENV
+
+    r = b.run(cmds)
+    with open(os.path.join(b.workdir, "console.log"), "w",
+              encoding="latin-1") as f:
+        f.write(r.console)
+    os.makedirs(args.out, exist_ok=True)
+    got = []
+    for o in outs:
+        got += b.extract(o, args.out)
+    status = EX_OK
+    problems = list(r.problems) + check_console(r.console)
+    for p in problems:
+        say(p)
+    if not r.completed:
+        say("the build did not complete; the console ended with:")
+        print(r.tail(), file=sys.stderr)
+        status = EX_FAILED
+    main_out = os.path.join(args.out, outs[0])
+    if not os.path.isfile(main_out):
+        say("no %s was produced" % outs[0])
+        status = EX_FAILED
+    elif problems and status == EX_OK:
+        status = EX_FAILED
+    if not args.quiet:
+        for p in got:
+            print(p)
+        say("%s in %.1fs" % ("built" if status == EX_OK else "FAILED",
+                             r.seconds))
+    if args.work:
+        say("images and console.log kept in %s" % b.workdir)
+    b.cleanup()
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,174 @@
+/* DIFF1.PLM - one program, two compilers: Intel PL/M-80 V3.1 under ISX,
+   and uplm80.  Both .COM files run under cpmemu and must print the same. */
+DIFF1: DO;
+
+DECLARE CR LITERALLY '0DH', LF LITERALLY '0AH', TRUE LITERALLY '0FFH';
+
+/* A .COM starts at 0100H, and Intel's PL/M-80 puts the main program after
+   the procedures.  DRI's own trick (GENSYS.PLM): the first DATA in the
+   module is a JMP to the main program's first statement, less the 3-byte
+   LXI SP that precedes it. */
+DECLARE START LABEL;
+DECLARE JMP$TO$START STRUCTURE (JMP$INSTR BYTE, JMP$LOCATION ADDRESS) DATA (0C3H, .START-3);
+
+MON1: PROCEDURE (F, A) EXTERNAL;
+    DECLARE F BYTE, A ADDRESS;
+END MON1;
+
+PUTC: PROCEDURE (C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PUTC;
+
+CRLF: PROCEDURE;
+    CALL PUTC(CR);
+    CALL PUTC(LF);
+END CRLF;
+
+PUTS: PROCEDURE (A);
+    DECLARE A ADDRESS;
+    CALL MON1(9, A);
+END PUTS;
+
+PUTDEC: PROCEDURE (V);
+    DECLARE V ADDRESS, BUF(6) BYTE, I BYTE;
+    BUF(5) = '$';
+    I = 5;
+    DO WHILE (I = 5) OR (V <> 0);
+        I = I - 1;
+        BUF(I) = '0' + (V MOD 10);
+        V = V / 10;
+    END;
+    CALL PUTS(.BUF(I));
+END PUTDEC;
+
+PUTHEX: PROCEDURE (V);
+    DECLARE V ADDRESS, (I, D) BYTE;
+    DO I = 1 TO 4;
+        D = HIGH(V) / 16;
+        V = SHL(V, 4);
+        IF D < 10 THEN CALL PUTC('0' + D);
+        ELSE CALL PUTC('A' - 10 + D);
+    END;
+END PUTHEX;
+
+SHOW: PROCEDURE (S, V);
+    DECLARE S ADDRESS, V ADDRESS;
+    CALL PUTS(S);
+    CALL PUTDEC(V);
+    CALL PUTC(' ');
+    CALL PUTHEX(V);
+    CALL CRLF;
+END SHOW;
+
+/* fibonacci, wrapping at 65536 */
+FIB: PROCEDURE (N) ADDRESS;
+    DECLARE N BYTE, (A, B, T) ADDRESS, K BYTE;
+    A = 0; B = 1;
+    DO K = 1 TO N;
+        T = A + B; A = B; B = T;
+    END;
+    RETURN A;
+END FIB;
+
+/* greatest common divisor, by remainders */
+GCD: PROCEDURE (X, Y) ADDRESS;
+    DECLARE (X, Y, R) ADDRESS;
+    DO WHILE Y <> 0;
+        R = X MOD Y; X = Y; Y = R;
+    END;
+    RETURN X;
+END GCD;
+
+DECLARE TABLE (10) BYTE DATA (93, 7, 250, 0, 18, 18, 64, 3, 199, 42);
+DECLARE WORK (10) BYTE;
+DECLARE (I, J, B, C) BYTE, (W, SUM) ADDRESS;
+DECLARE PT ADDRESS, PB BASED PT BYTE;
+DECLARE REC STRUCTURE (TAG BYTE, COUNT ADDRESS, NAME (4) BYTE);
+
+START:
+CALL PUTS(.('DIFF1 START', CR, LF, '$'));
+
+DO I = 0 TO 24;
+    CALL SHOW(.('FIB $'), FIB(I));
+END;
+CALL SHOW(.('FIB25 WRAPS $'), FIB(25));
+
+B = 250; B = B + 10;
+CALL SHOW(.('BYTE 250+10 $'), B);
+B = 3; B = B - 5;
+CALL SHOW(.('BYTE 3-5 $'), B);
+W = 65530; W = W + 10;
+CALL SHOW(.('ADDR 65530+10 $'), W);
+CALL SHOW(.('1000*70 $'), 1000 * 70);
+CALL SHOW(.('60000/7 $'), 60000 / 7);
+CALL SHOW(.('60000 MOD 7 $'), 60000 MOD 7);
+CALL SHOW(.('GCD 1071 462 $'), GCD(1071, 462));
+CALL SHOW(.('GCD 65535 255 $'), GCD(65535, 255));
+CALL SHOW(.('LOW 1234H $'), LOW(1234H));
+CALL SHOW(.('HIGH 1234H $'), HIGH(1234H));
+CALL SHOW(.('SHR 0F0F0H 3 $'), SHR(0F0F0H, 3));
+CALL SHOW(.('ROL 81H 1 $'), ROL(81H, 1));
+CALL SHOW(.('ROR 81H 1 $'), ROR(81H, 1));
+CALL SHOW(.('NOT 0F0H $'), NOT 0F0H);
+CALL SHOW(.('5 > 3 $'), 5 > 3);
+CALL SHOW(.('5 < 3 $'), 5 < 3);
+CALL SHOW(.('SIZE WORK $'), SIZE(WORK));
+CALL SHOW(.('LAST WORK $'), LAST(WORK));
+
+/* copy, sum and sort the table */
+SUM = 0;
+DO I = 0 TO LAST(TABLE);
+    WORK(I) = TABLE(I);
+    SUM = SUM + TABLE(I);
+END;
+CALL SHOW(.('SUM $'), SUM);
+DO I = 0 TO LAST(WORK) - 1;
+    DO J = I + 1 TO LAST(WORK);
+        IF WORK(J) < WORK(I) THEN
+        DO;
+            C = WORK(I); WORK(I) = WORK(J); WORK(J) = C;
+        END;
+    END;
+END;
+DO I = 0 TO LAST(WORK);
+    CALL SHOW(.('SORTED $'), WORK(I));
+END;
+
+/* BASED byte walking the table backwards */
+W = 0;
+DO I = 0 TO LAST(TABLE);
+    PT = .TABLE(LAST(TABLE) - I);
+    W = W * 3 + PB;
+END;
+CALL SHOW(.('HORNER3 $'), W);
+
+/* DO CASE */
+DO I = 0 TO 3;
+    DO CASE I;
+        CALL PUTS(.('CASE ZERO', CR, LF, '$'));
+        CALL PUTS(.('CASE ONE', CR, LF, '$'));
+        CALL PUTS(.('CASE TWO', CR, LF, '$'));
+        CALL PUTS(.('CASE THREE', CR, LF, '$'));
+    END;
+END;
+
+/* structure */
+REC.TAG = 7;
+REC.COUNT = 4660;
+REC.NAME(0) = 'P'; REC.NAME(1) = 'L'; REC.NAME(2) = 'M'; REC.NAME(3) = '$';
+CALL SHOW(.('REC.TAG $'), REC.TAG);
+CALL SHOW(.('REC.COUNT $'), REC.COUNT);
+CALL PUTS(.REC.NAME);
+CALL CRLF;
+
+/* DO BY with a negative-going loop via address arithmetic */
+W = 0;
+DO SUM = 10 TO 1000 BY 99;
+    W = W + SUM;
+END;
+CALL SHOW(.('DO BY 99 $'), W);
+
+CALL PUTS(.('DIFF1 END', CR, LF, '$'));
+CALL MON1(0, 0);
+END DIFF1;

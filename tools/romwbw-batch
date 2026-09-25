@@ -1,0 +1,918 @@
+#!/usr/bin/env python3
+#
+# romwbw-batch - boot CP/M 2.2 on the emulator, run a list of commands with
+# nobody at the keyboard, and take the files back out.
+#
+#   romwbw-batch -a hello.asm -c "ASM HELLO" -c "LOAD HELLO" -g HELLO.COM
+#
+# What it does, in order:
+#
+#   1. copies the CP/M 2.2 system disk (hd1k_cpm22, from `romwbw-get`) to a
+#      scratch image - the cached original is read-only and stays that way;
+#   2. adds the host files you name to A:, and to B: if you ask for B: (see
+#      DRIVES below);
+#   3. writes the commands as A:$$$.SUB, in the layout DRI's SUBMIT.COM writes,
+#      so the CCP runs them at boot exactly as if SUBMIT had been typed;
+#   4. boots with stdin on /dev/null, so the run ends by itself: when the last
+#      command is done the CCP asks the console for a line, finds end of input,
+#      and the emulator winds down (see "EXIT" below);
+#   5. checks that the batch reached its end, and extracts the files you name.
+#
+# WHY $$$.SUB AND NOT PIPED STDIN.  Piped stdin works for a command or two and
+# then loses keystrokes, for reasons that are the guest's and not the
+# emulator's: a real keyboard typed ahead loses them the same way.  Every CP/M
+# 2.2 BDOS console write polls CONST for ^S, a BDOS error waits for "any key",
+# DDT and PIP abort on a key, and RomWBW's boot loader reads (and drops)
+# everything up to the first CR while it counts down to autoboot.  A submit
+# file is read by the CCP one record per command and never races anything.
+#
+# EXIT.  The emulator stops on its own when stdin is at end of file and the
+# guest either reads the console or sits polling it.  That is what happens after
+# the last command, and also what happens when a command fails in a way that
+# waits for a key.  So "the emulator exited" does not mean "the batch finished";
+# the batch ends with `TYPE ROMWBW.END`, a file this tool adds holding a string
+# it made up, and the run counts as complete only if that string reached the
+# console.  An error that aborts a submit file (the CCP's "?" or ISX's) deletes
+# $$$.SUB, so the sentinel never prints and the tool says where it stopped.
+#
+# DRIVES.  A: is slice 0 of the system disk.  B: on a RomWBW disk boot is the
+# RAM disk (MD0), which starts empty and dies with the run; files you add to B:
+# go instead to a second hd1k image attached as --disk1, and the batch's first
+# command is `ASSIGN B:=HDSK1:0,G:=MD0:0`, which swaps it into B:.  (ASSIGN
+# refuses a map in which two letters name one filesystem, hence the swap rather
+# than a plain assignment.)  That is what lets DRI's ISX recipes, which keep
+# the tools on :F1:, run unchanged.
+#
+# ISX (--isx).  DRI's "ISIS-II INTERFACE VERS 1.4" runs Intel's ISIS-II tools
+# under CP/M 2.2.  It carries its own BDOS and calls the BIOS directly, and it
+# needs things from this machine that RomWBW does not give it by default;
+# docs/ISX.md has the full account.  Two ways to run it:
+#
+#   --isx=compact (the default).  ISX runs on tools/isxbios.asm, a 400-byte
+#     CP/M 2.2 BIOS at F600H that talks to HBIOS directly, installed by a few
+#     bytes this tool puts in front of ISX.COM.  ISIS programs get memory up
+#     to F5FFH - enough for PL/M-80 to compile every MP/M II utility, which it
+#     is not at E5FFH.  Its WBOOT asks HBIOS for a reset, so leaving ISX (DRI's
+#     `CPM` jumps through 0001H) reboots CP/M from the same disk, and the CCP
+#     carries on with $$$.SUB.  A reboot rebuilds the CBIOS drive map, so the
+#     tool re-issues the B: swap after every `CPM`.  :F0: and :F1: are --disk0
+#     and --disk1, straight to HBIOS.
+#
+#   --isx=cbios.  ISX runs on RomWBW's own CBIOS, and ISIS programs stop at
+#     E5FFH.  ISX's `CPM` jumps to the BIOS warm boot expecting the BDOS to be
+#     reloaded - ISX lets ISIS programs overwrite it - and RomWBW's warm boot
+#     deliberately reloads only the CCP (cbios.asm: "WE DON'T WANT TO RELOAD
+#     BDOS"), so the machine would hang.  The tool installs its own `CPM`, an
+#     ISIS module that copies the BDOS back from the system tracks, restores
+#     the BIOS cold-boot vector ISX patched, and then warm boots.  ISX also
+#     copies the MDS monitor vector to F800H-F87FH, inside the CBIOS's free
+#     heap; the tool checks after the run that the heap left it free.
+#
+# Either way, exact file lengths: ISX keeps the number of UNUSED bytes in a
+# file's last record in directory byte 13 (S1).  DRI's SETEOF.COM sets it
+# through BDOS close, which a stock CP/M 2.2 BDOS never copies to the
+# directory, so on this machine SETEOF does nothing and PL/M-80 reads the ^Z
+# padding as "UNPRINTABLE ASCII CHARACTER" errors.  --isx (or --exact) writes
+# S1 when adding a file and honours it when extracting one.
+#
+# The files it needs: cpm_disk.py (cpmemu's disk tool - $CPM_DISK, then a
+# sister ../cpmemu checkout, then a `cpm_disk` on PATH), the romwbw_emu binary
+# ($ROMWBW_EMU, ../src/romwbw_emu, then PATH) and, unless --rom and --disk name
+# files, tools/romwbw-get to find the ROM and the system disk.
+#
+# Exit status: 0 the batch completed and every requested file was extracted;
+# 1 it did not complete, or a requested file is missing; 2 something it needs
+# is missing (emulator, ROM, disk, cpm_disk.py); 64 usage.
+
+import argparse
+import fnmatch
+import importlib.machinery
+import importlib.util
+import io
+import os
+import random
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from contextlib import redirect_stdout
+
+EX_OK, EX_FAILED, EX_ENV, EX_USAGE = 0, 1, 2, 64
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+SENTINEL_FILE = "ROMWBW.END"
+DEFAULT_SYSTEM_DISK = "hd1k_cpm22"
+DEFAULT_TIMEOUT = 900
+
+# The CCP's command buffer holds 127 characters; SUBMIT.COM refuses a longer
+# line with "Command Buffer Overflow", and so does this.
+MAX_COMMAND = 125
+
+# RomWBW's CP/M 2.2 memory image, as its CBIOS lays it out: the CCP is 800H
+# bytes at the load address, the BDOS the next 0E00H, and the CBIOS starts
+# where the boot record's entry point says.
+CCP_SIZE = 0x800
+BDOS_SIZE = 0xE00
+
+# ISX's MDS monitor vector: 128 bytes copied from ISX.COM to F800H.
+ISX_MONITOR_LO, ISX_MONITOR_HI = 0xF800, 0xF880
+# cbios.asm: HEAPEND .EQU CBIOS_END - 64 - the heap stops short of a 32-entry
+# stack at the very top of the CBIOS.
+CBIOS_STACK = 64
+
+ISX_MODES = ("compact", "cbios")
+
+# tools/isxbios.asm, assembled at F600H (um80, then ul80 -p F600) - F600H to
+# the end of its variables.  tests/batch_test.py re-assembles the source and
+# compares, so an edit to one without the other fails the suite.
+ISXBIOS_ORG = 0xF600
+ISXBIOS = bytes.fromhex(
+    "C33FF6C33FF6C344F6C34DF6C353F6C358F6C358F6C35CF6C35FF6C374F6C362"
+    "F6C367F6C36CF6C38AF6C399F6C359F6C371F602020300000000000000008E01"
+    "01F0CF76018002CFB7C83EFFC9018000CF7BC959018001CFC93EFFC93E1AC901"
+    "0000ED4384F7C9793286F7C9ED4387F7C96069C92100003A33F64779B8D03283"
+    "F72163F7B7C82173F7C9CDAEF6C0ED5B87F7018000EDB0AFC9CDAEF6C0EB2A87"
+    "F7018000EDB00614CD30F7C818793A83F75F16002134F6197E3289F72136F619"
+    "191919E52A84F7292929293A86F70F0FE60FB56FEBE17E83328AF7237E8A328B"
+    "F7237ECE00328CF7237ECE00328DF72189F7118EF706051ABE2006231310F818"
+    "122189F7118EF7010500EDB00613CD30F720143A86F7E6030F6FE6805F7DE601"
+    "572100FB19AFC93EFF328EF73E01B7C9C53A8EF74F2A8FF7ED5B91F7CBFA0612"
+    "CFC1B7C03A8EF74F3A3EF6571E012100FBCFB7C94000051F01FB07FF03FF0000"
+    "000200000000000000000080FA54F7000080F8000000000000000080FA54F700"
+    "0080F90000000080000000000000FF00000000")
+# The patch bytes after its jump table (isxbios.asm: ndrive, units, lbabas,
+# bank).
+ISXBIOS_NDRIVE, ISXBIOS_UNITS, ISXBIOS_LBA, ISXBIOS_BANK = 0x33, 0x34, 0x36, 0x3E
+
+# ISX.COM as DRI shipped it: 0100H-31FFH, starting JMP 3000H.
+ISX_SIGNATURE = b"ISIS-II INTERFACE VERS 1.4"
+ISX_SIZE = 0x3100
+
+
+class BatchError(Exception):
+    """The batch could not be set up: a missing tool, file or image."""
+
+
+class UsageError(Exception):
+    pass
+
+
+def say(msg):
+    print("romwbw-batch: " + msg, file=sys.stderr)
+
+
+# --- finding the pieces --------------------------------------------------------
+
+def load_module(path, name):
+    """Import a Python file by path - cpm_disk.py, or a script with no .py."""
+    loader = importlib.machinery.SourceFileLoader(name, path)
+    spec = importlib.util.spec_from_loader(name, loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def find_cpm_disk():
+    """cpm_disk.py, found the way disks/verify_disk_utils.sh finds it."""
+    cands = []
+    env = os.environ.get("CPM_DISK")
+    if env:
+        cands.append(env)
+    root = os.path.dirname(HERE)
+    cands += [os.path.join(root, os.pardir, "cpmemu", "util", "cpm_disk.py"),
+              os.path.join(root, "cpmemu", "util", "cpm_disk.py")]
+    for c in cands:
+        if os.path.isfile(c):
+            return load_module(os.path.abspath(c), "cpm_disk")
+    installed = shutil.which("cpm_disk")
+    if installed:
+        return load_module(installed, "cpm_disk")
+    raise BatchError(
+        "cpm_disk.py not found.  It is cpmemu's util/cpm_disk.py: set "
+        "$CPM_DISK to it, keep a cpmemu checkout beside this one, or run "
+        "cpmemu's `make install`.")
+
+
+def find_emulator(explicit=None):
+    if explicit:
+        if os.path.isfile(explicit):
+            return os.path.abspath(explicit)
+        raise BatchError("no emulator at %s" % explicit)
+    env = os.environ.get("ROMWBW_EMU")
+    if env and os.path.isfile(env):
+        return env
+    for cand in (os.path.join(HERE, "romwbw_emu"),
+                 os.path.join(HERE, os.pardir, "src", "romwbw_emu")):
+        if os.path.isfile(cand):
+            return os.path.abspath(cand)
+    found = shutil.which("romwbw_emu")
+    if found:
+        return found
+    raise BatchError("no romwbw_emu binary found.  Build it with "
+                     "`make -C src`, or pass --emu=PATH.")
+
+
+def romwbw_get_path(ident, offline=False):
+    """The cached, hash-verified file behind a catalog id (read-only)."""
+    tool = os.path.join(HERE, "romwbw-get")
+    if not os.path.isfile(tool):
+        tool = shutil.which("romwbw-get")
+    if not tool:
+        raise BatchError("romwbw-get not found, so %s cannot be resolved; "
+                         "name a file instead" % ident)
+    argv = [sys.executable, tool] + (["--offline"] if offline else []) + \
+           ["--quiet", "path", ident]
+    p = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       universal_newlines=True)
+    if p.returncode != 0:
+        raise BatchError("romwbw-get path %s failed:\n%s"
+                         % (ident, p.stderr.strip()))
+    return p.stdout.strip().splitlines()[-1]
+
+
+def resolve_asset(what, offline=False):
+    """A file path as given, or a catalog id resolved through romwbw-get."""
+    if os.path.isfile(what):
+        return os.path.abspath(what)
+    return romwbw_get_path(what, offline)
+
+
+# --- CP/M names ----------------------------------------------------------------
+
+_NAME_OK = re.compile(r"^[A-Z0-9$#@!%&'()\-{}~^_`]{1,8}(\.[A-Z0-9$#@!%&'()\-{}~^_`]{0,3})?$")
+
+
+def cpm_name(name):
+    """Upper-case and check an 8.3 name, or raise UsageError."""
+    n = name.upper()
+    if n.endswith("."):
+        n = n[:-1]
+    if not _NAME_OK.match(n):
+        raise UsageError("%r is not a CP/M 8.3 file name" % name)
+    return n
+
+
+def default_cpm_name(host_path):
+    base = os.path.basename(host_path)
+    try:
+        return cpm_name(base)
+    except UsageError:
+        raise UsageError("%s: give it a CP/M name, as %s=NAME.EXT"
+                         % (host_path, host_path))
+
+
+# --- $$$.SUB -------------------------------------------------------------------
+
+def submit_file(commands):
+    """The bytes DRI's SUBMIT.COM would write for these command lines.
+
+    One 128-byte record per line, LAST line first: the CCP reads the file's
+    final record, then shortens the file by one, so the order is reversed on
+    disk.  Each record is a length byte, the text, a 00 and a '$' - measured
+    by dumping a $$$.SUB that RomWBW's SUBMIT.COM wrote.  Both terminators
+    matter: the CCP echoes the line up to the 00, and ISX echoes it with BDOS
+    function 9, which prints up to the '$'.  A record without the '$' has ISX
+    print whatever follows in memory until it happens on one.
+    """
+    out = bytearray()
+    for line in reversed(commands):
+        text = line.encode("ascii")
+        if len(text) > MAX_COMMAND:
+            raise UsageError("command longer than %d characters: %s"
+                             % (MAX_COMMAND, line))
+        rec = bytes([len(text)]) + text + b"\x00$"
+        out += rec + bytes(128 - len(rec))
+    return bytes(out)
+
+
+# --- the system tracks ---------------------------------------------------------
+
+class SystemImage(object):
+    """The OS image a RomWBW boot record describes, read off the system tracks.
+
+    Sector 2 of the slice holds the boot record: signature 5A A5 at 180H, a
+    '$'-terminated label at 1E7H, and at 1FAH-1FFH the load address, the end
+    address and the entry point.  The image itself starts at sector 3 and is
+    loaded at the load address - for hd1k_cpm22 on 3.6.0, "CP/M 2.2", D000H
+    to FE00H, entry E600H, which is what the boot loader prints.
+    """
+
+    RECORD = 0x400          # sector 2 of 512-byte sectors
+    IMAGE = 0x600           # sector 3
+
+    def __init__(self, slice_bytes):
+        rec = slice_bytes[self.RECORD:self.RECORD + 0x200]
+        if len(rec) < 0x200 or rec[0x180] != 0x5A or rec[0x181] != 0xA5:
+            raise BatchError("no RomWBW boot record on the system disk")
+        lab = rec[0x1E7:0x1F7]
+        self.label = lab.split(b"$")[0].decode("ascii", "replace").strip()
+        self.load = rec[0x1FA] | rec[0x1FB] << 8
+        self.end = rec[0x1FC] | rec[0x1FD] << 8
+        self.entry = rec[0x1FE] | rec[0x1FF] << 8
+        size = (self.end - self.load) & 0xFFFF
+        self.image = bytes(slice_bytes[self.IMAGE:self.IMAGE + size])
+        if len(self.image) != size:
+            raise BatchError("system image runs past the system tracks")
+
+    def mem(self, addr, n):
+        off = addr - self.load
+        return self.image[off:off + n]
+
+    def cpm22_layout(self):
+        """(bdos base, bios base), or raise if this is not a CP/M 2.2 image."""
+        bdos = self.load + CCP_SIZE
+        if self.entry != bdos + BDOS_SIZE:
+            raise BatchError(
+                "the system disk's image (%s, %04XH-%04XH, entry %04XH) is not "
+                "laid out as CCP 800H + BDOS 0E00H + BIOS; --isx needs CP/M "
+                "2.2" % (self.label, self.load, self.end, self.entry))
+        return bdos, self.entry
+
+
+# --- Intel OMF, for the ISX return module --------------------------------------
+
+def omf_record(rtype, content):
+    body = bytes([rtype]) + (len(content) + 1).to_bytes(2, "little") + content
+    return body + bytes([(-sum(body)) & 0xFF])
+
+
+def omf_absolute(name, origin, image, entry):
+    """An absolute ISIS-II load module: what LOCATE writes and ISIS LOAD reads."""
+    nm = name.encode("ascii")
+    # Module header: name, then TRN id and version as DRI's own CPM module
+    # carries them (01, 31H), and no segment definitions - absolute code.
+    out = omf_record(0x02, bytes([len(nm)]) + nm + b"\x01\x31")
+    for off in range(0, len(image), 256):
+        chunk = image[off:off + 256]
+        out += omf_record(0x06, b"\x00" + (origin + off).to_bytes(2, "little")
+                          + chunk)
+    out += omf_record(0x04, b"\x01\x00" + entry.to_bytes(2, "little"))
+    out += omf_record(0x0E, b"")
+    return out
+
+
+def isx_return_module(system):
+    """ISX's `CPM` command, made safe for a BIOS that does not reload the BDOS.
+
+    DRI's CPM (in mpm2src/PLM_WORK) is 13 bytes at 3680H: set SP, push a
+    halt, jump through (0001) to the BIOS warm boot.  This one first copies
+    the BDOS back from the system image, and puts back the BIOS cold-boot
+    vector that ISX pointed at its own BDOS (ISX's start-up writes 0103H into
+    BIOS+1).  Then it does exactly what DRI's does.
+    """
+    bdos, bios = system.cpm22_layout()
+    org = 0x3680                         # where ISIS loads user programs
+    data = 0x36C0
+    boot_vec = system.mem(bios + 1, 2)
+    c = bytearray()
+    c += b"\x31" + (data).to_bytes(2, "little")          # LXI SP,data
+    c += b"\x21" + data.to_bytes(2, "little")            # LXI H,data
+    c += b"\x11" + bdos.to_bytes(2, "little")            # LXI D,bdos
+    c += b"\x01" + BDOS_SIZE.to_bytes(2, "little")       # LXI B,0E00H
+    loop = org + len(c)
+    c += b"\x7E\x12\x23\x13\x0B\x78\xB1"                 # MOV A,M ... ORA C
+    c += b"\xC2" + loop.to_bytes(2, "little")            # JNZ loop
+    c += b"\x21" + boot_vec                              # LXI H,<old vector>
+    c += b"\x22" + (bios + 1).to_bytes(2, "little")      # SHLD bios+1
+    halt = org + len(c) + 8
+    c += b"\x21" + halt.to_bytes(2, "little")            # LXI H,halt
+    c += b"\xE5"                                         # PUSH H
+    c += b"\x2A\x01\x00"                                 # LHLD 0001
+    c += b"\xE9"                                         # PCHL
+    c += b"\xFB\x76"                                     # halt: EI; HLT
+    if org + len(c) > data - 8:
+        raise AssertionError("return module code overlaps its stack")
+    c += bytes(data - org - len(c))
+    c += system.mem(bdos, BDOS_SIZE)
+    return omf_absolute("CPM", org, bytes(c), org)
+
+
+def is_isx14(data):
+    """True for DRI's ISX.COM, VERS 1.4, as shipped."""
+    return (len(data) >= ISX_SIZE and data[:3] == b"\xC3\x00\x30"
+            and ISX_SIGNATURE in data[:ISX_SIZE])
+
+
+def isx_compact(isx, ndrive, lba_a=0, lba_b=0):
+    """ISX.COM with tools/isxbios.asm installed in front of it.
+
+    The image is ISX's own 3100H bytes, with its first instruction (JMP 3000H,
+    to its initialisation) pointed instead at a few bytes appended at 3200H.
+    Those ask HBIOS for the user bank id, copy the compact BIOS to F600H, point
+    0001H at its warm boot entry, put ISX's JMP 3000H back and jump to it.
+    ISX's initialisation then finds a BIOS below F700H, leaves it where it is,
+    and sets 0006H - and so the top of ISIS memory - to F600H.
+    """
+    bios = bytearray(ISXBIOS)
+    bios[ISXBIOS_NDRIVE] = ndrive
+    bios[ISXBIOS_LBA:ISXBIOS_LBA + 4] = lba_a.to_bytes(4, "little")
+    bios[ISXBIOS_LBA + 4:ISXBIOS_LBA + 8] = lba_b.to_bytes(4, "little")
+    org = 0x0100 + ISX_SIZE                              # 3200H
+    c = bytearray()
+    c += b"\x01\xF2\xF8"                                   # LD BC,0F8F2H
+    c += b"\xCF"                                           # RST 08: SYSGET BNKINFO
+    c += b"\x7B"                                           # LD A,E: user bank
+    bank_at = len(c) + 1
+    c += b"\x32\x00\x00"                                   # LD (blob+BANK),A
+    src_at = len(c) + 1
+    c += b"\x21\x00\x00"                                   # LD HL,blob
+    c += b"\x11" + ISXBIOS_ORG.to_bytes(2, "little")       # LD DE,0F600H
+    c += b"\x01" + len(bios).to_bytes(2, "little")         # LD BC,len
+    c += b"\xED\xB0"                                       # LDIR
+    c += b"\x21" + (ISXBIOS_ORG + 3).to_bytes(2, "little") # LD HL,0F603H
+    c += b"\x22\x01\x00"                                   # LD (0001H),HL
+    c += b"\x3E\xC3\x32\x00\x01"                           # LD A,0C3H; LD (0100H),A
+    c += b"\x21\x00\x30\x22\x01\x01"                       # LD HL,3000H; LD (0101H),HL
+    c += b"\xC3\x00\x01"                                   # JP 0100H
+    blob = org + len(c)
+    c[bank_at:bank_at + 2] = (blob + ISXBIOS_BANK).to_bytes(2, "little")
+    c[src_at:src_at + 2] = blob.to_bytes(2, "little")
+    image = bytearray(isx[:ISX_SIZE])
+    image[0:3] = b"\xC3" + org.to_bytes(2, "little")      # JMP 3200H
+    return bytes(image + c + bios)
+
+
+def returns_from_isx(command):
+    """`CPM`, however spelt: the ISX command that leaves for CP/M."""
+    return re.match(r"^\s*(:[Ff]\d:)?[Cc][Pp][Mm]\s*$", command) is not None
+
+
+# --- the disk images -----------------------------------------------------------
+
+class Drive(object):
+    """One CP/M filesystem: slice 0 of an image file, edited in memory."""
+
+    def __init__(self, cpm_disk, path, exact=False):
+        self.cd = cpm_disk
+        self.path = path
+        self.exact = exact
+        with open(path, "rb") as f:
+            self.data = bytearray(f.read())
+        self.disk = cpm_disk.get_disk_object(self.data)
+        if not hasattr(self.disk, "DIR_ENTRIES"):
+            raise BatchError("%s is not an hd1k image" % path)
+
+    def save(self):
+        with open(self.path, "wb") as f:
+            f.write(self.data)
+
+    def slice_bytes(self):
+        base = getattr(self.disk, "base", 0)
+        return self.data[base:base + 0x4000]
+
+    def _entries(self, name, user=0):
+        want = self.cd.filename_to_name83(name)
+        for i in range(self.disk.DIR_ENTRIES):
+            off = self.disk.DIR_START + 32 * i
+            e = self.data[off:off + 32]
+            if e[0] == user and self.cd.entry_name83(e) == want:
+                yield off, e
+
+    def _last_extent(self, name):
+        best = None
+        for off, e in self._entries(name):
+            ext = e[12] | e[14] << 5
+            if best is None or ext > best[0]:
+                best = (ext, off)
+        return best[1] if best else None
+
+    def add(self, name, data, length=None):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            ok = self.disk.add_file(name, data)
+        if not ok:
+            raise BatchError("could not add %s to %s: %s"
+                             % (name, self.path, buf.getvalue().strip()))
+        if self.exact:
+            off = self._last_extent(name)
+            self.data[off + 13] = (-(len(data) if length is None else length)) % 128
+
+    def names(self):
+        return sorted(n for (u, n) in self.disk.list_files() if u == 0)
+
+    def read(self, name):
+        data = self.disk.extract_file(name)
+        if data is None:
+            return None
+        if self.exact and data:
+            off = self._last_extent(name)
+            unused = self.data[off + 13]
+            if 0 < unused < 128:
+                data = data[:len(data) - unused]
+        return data
+
+    def has(self, name):
+        return any(True for _ in self._entries(name))
+
+
+def text_bytes(raw):
+    """A host text file as CP/M holds one: CR LF lines, ^Z padded.
+
+    Trailing ^Z (a CP/M file's padding, carried over by a copy) is dropped,
+    and so is anything after an embedded ^Z, which is end of file to every
+    CP/M text reader.  A bare LF becomes CR LF.
+    """
+    cut = raw.find(b"\x1a")
+    if cut >= 0:
+        raw = raw[:cut]
+    raw = re.sub(rb"(?<!\r)\n", b"\r\n", raw)
+    return raw
+
+
+def pad_ctrl_z(data):
+    if len(data) % 128:
+        data += b"\x1a" * (128 - len(data) % 128)
+    return data
+
+
+# --- a batch -------------------------------------------------------------------
+
+class Result(object):
+    def __init__(self):
+        self.completed = False
+        self.timed_out = False
+        self.console = ""
+        self.stderr = ""
+        self.seconds = 0.0
+        self.returncode = None
+        self.problems = []
+
+    def tail(self, n=25):
+        lines = self.console.replace("\r", "").split("\n")
+        return "\n".join(lines[-n:])
+
+
+class Batch(object):
+    """Build the disks, run the commands, read the results.
+
+        b = Batch(isx=True)
+        b.add("t1.plm", text=True)
+        b.add_dir("/path/to/PLM_WORK", drive="B")
+        r = b.run(["ISX", "PLM80 T1.PLM", "CPM"])
+        data = b.read("T1.OBJ")
+    """
+
+    def __init__(self, workdir=None, rom="@rom", system=DEFAULT_SYSTEM_DISK,
+                 emulator=None, offline=False, isx=False, exact=False,
+                 timeout=DEFAULT_TIMEOUT, verbose=False, keep=False):
+        self.cd = find_cpm_disk()
+        self.emulator = find_emulator(emulator)
+        self.offline = offline
+        self.rom = resolve_asset(rom, offline)
+        self.system_src = resolve_asset(system, offline)
+        if isx is True:
+            isx = "compact"
+        if isx and isx not in ISX_MODES:
+            raise UsageError("--isx is one of %s" % ", ".join(ISX_MODES))
+        self.isx = isx or None
+        self.exact = exact or bool(isx)
+        self.timeout = timeout
+        self.verbose = verbose
+        self.keep = keep or workdir is not None
+        if workdir is None:
+            workdir = tempfile.mkdtemp(prefix="romwbw-batch-")
+        os.makedirs(workdir, exist_ok=True)
+        self.workdir = os.path.abspath(workdir)
+        self.drives = {}
+        self.result = None
+
+        a = os.path.join(self.workdir, "a.img")
+        shutil.copyfile(self.system_src, a)
+        os.chmod(a, 0o644)
+        self.drives["A"] = Drive(self.cd, a, self.exact)
+        # The OS image on the system tracks: only --isx=cbios needs it, to
+        # put the BDOS back, so only it refuses a disk without one - and it
+        # refuses now, not after the boot.
+        self.system = None
+        if self.isx == "cbios":
+            self.system = SystemImage(self.drives["A"].slice_bytes())
+            self.system.cpm22_layout()
+        self.isx_files = []                 # (drive, name) of each ISX.COM
+
+    def drive(self, letter):
+        letter = letter.upper()
+        if letter not in self.drives:
+            if letter != "B":
+                raise UsageError("files go on A: or B:, not %s:" % letter)
+            path = os.path.join(self.workdir, "b.img")
+            with open(path, "wb") as f:
+                f.write(self.cd.create_hd1k_disk())
+            self.drives["B"] = Drive(self.cd, path, self.exact)
+        return self.drives[letter]
+
+    def add(self, src, name=None, drive="A", text=False):
+        """Add a host file (a path) or bytes; text=True makes it CP/M text."""
+        if isinstance(src, (bytes, bytearray)):
+            data = bytes(src)
+            if name is None:
+                raise UsageError("bytes need a name")
+        else:
+            with open(src, "rb") as f:
+                data = f.read()
+            if name is None:
+                name = default_cpm_name(src)
+        name = cpm_name(name)
+        length = len(data)
+        if text:
+            data = text_bytes(data)
+            length = len(data)
+            # ^Z-padded even when the exact length goes in S1, so that a CP/M
+            # program reading the file finds end of file where it is.
+            data = pad_ctrl_z(data)
+        self.drive(drive).add(name, data, length)
+        if self.isx == "compact" and is_isx14(data):
+            self.isx_files.append((drive.upper(), name, data))
+        return name
+
+    def add_dir(self, directory, drive="A", skip=()):
+        """Every regular file in a directory, under its own name."""
+        added = []
+        for fn in sorted(os.listdir(directory)):
+            p = os.path.join(directory, fn)
+            if not os.path.isfile(p) or fn.startswith("."):
+                continue
+            n = cpm_name(fn)
+            if n in skip:
+                continue
+            self.add(p, n, drive)
+            added.append(n)
+        return added
+
+    def run(self, commands):
+        commands = [c.rstrip("\r\n") for c in commands]
+        nonce = "%08X" % random.getrandbits(32)
+        marker = "ROMWBW-BATCH-END-" + nonce
+        a = self.drive("A")
+        swap = "ASSIGN B:=HDSK1:0,G:=MD0:0"
+        seq = []
+        if "B" in self.drives:
+            seq.append(swap)
+        for c in commands:
+            seq.append(c)
+            # A compact-BIOS ISX leaves by rebooting, which rebuilds the
+            # CBIOS drive map and so undoes the swap.
+            if self.isx == "compact" and "B" in self.drives and \
+                    returns_from_isx(c):
+                seq.append(swap)
+        seq.append("TYPE " + SENTINEL_FILE)
+        a.add(SENTINEL_FILE, pad_ctrl_z((marker + "\r\n").encode()))
+        a.add("$$$.SUB", submit_file(seq))
+        if self.isx == "compact":
+            base_a = getattr(a.disk, "base", 0) // 512
+            for letter, name, original in self.isx_files:
+                self.drive(letter).add(
+                    name, isx_compact(original, len(self.drives), base_a, 0))
+        elif self.isx == "cbios":
+            mod = isx_return_module(self.system)
+            for letter in self.drives:
+                self.drives[letter].add("CPM", mod)
+        for d in self.drives.values():
+            d.save()
+
+        argv = [self.emulator, "--romwbw=" + self.rom,
+                "--disk0=" + self.drives["A"].path]
+        if "B" in self.drives:
+            argv.append("--disk1=" + self.drives["B"].path)
+        argv += ["--boot=2", "--no-config"]
+
+        res = Result()
+        out, err = [], []
+        t0 = time.time()
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                cwd=self.workdir)
+
+        def pump(stream, sink, echo):
+            while True:
+                chunk = os.read(stream.fileno(), 65536)
+                if not chunk:
+                    break
+                sink.append(chunk)
+                if echo:
+                    sys.stdout.buffer.write(chunk)
+                    sys.stdout.flush()
+
+        th = [threading.Thread(target=pump, args=(proc.stdout, out, self.verbose)),
+              threading.Thread(target=pump, args=(proc.stderr, err, False))]
+        for t in th:
+            t.daemon = True
+            t.start()
+        try:
+            proc.wait(timeout=self.timeout)
+        except subprocess.TimeoutExpired:
+            res.timed_out = True
+            proc.kill()
+            proc.wait()
+        for t in th:
+            t.join(5)
+        res.seconds = time.time() - t0
+        res.returncode = proc.returncode
+        res.console = b"".join(out).decode("latin-1")
+        res.stderr = b"".join(err).decode("latin-1", "replace")
+        res.completed = marker in res.console and not res.timed_out
+
+        # Reload: the guest wrote to the images.
+        for letter in list(self.drives):
+            self.drives[letter] = Drive(self.cd, self.drives[letter].path,
+                                        self.exact)
+
+        if res.timed_out:
+            res.problems.append("timed out after %ds" % self.timeout)
+        if "Reached instruction limit" in res.stderr:
+            res.problems.append("the emulator stopped at its instruction limit")
+        if self.isx == "cbios":
+            p = self._isx_heap_problem(res.console)
+            if p:
+                res.problems.append(p)
+        self.result = res
+        return res
+
+    def _isx_heap_problem(self, console):
+        m = re.search(r"(\d+) Disk Buffer Bytes Free", console)
+        if not m:
+            return None
+        free = int(m.group(1))
+        heap_end = self.system.end - CBIOS_STACK
+        heap_low = heap_end - free
+        if heap_low > ISX_MONITOR_LO:
+            return ("ISX writes its monitor vector to %04XH-%04XH, but the "
+                    "CBIOS heap is in use up to %04XH (%d bytes free): ISX "
+                    "has overwritten CBIOS data" % (ISX_MONITOR_LO,
+                                                    ISX_MONITOR_HI - 1,
+                                                    heap_low - 1, free))
+        return None
+
+    def names(self, drive="A"):
+        return self.drive(drive).names()
+
+    def read(self, name, drive="A"):
+        return self.drive(drive).read(cpm_name(name))
+
+    def extract(self, pattern, outdir, drive="A"):
+        """Files matching a CP/M wildcard, written under their CP/M names."""
+        pat = pattern.upper()
+        got = [n for n in self.names(drive) if fnmatch.fnmatchcase(n, pat)
+               or fnmatch.fnmatchcase(n, pat + ".")]
+        os.makedirs(outdir, exist_ok=True)
+        paths = []
+        for n in got:
+            data = self.read(n, drive)
+            p = os.path.join(outdir, n)
+            with open(p, "wb") as f:
+                f.write(data)
+            paths.append(p)
+        return paths
+
+    def cleanup(self):
+        if not self.keep:
+            shutil.rmtree(self.workdir, ignore_errors=True)
+
+
+# --- command line ----------------------------------------------------------------
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(EX_USAGE, "%s: error: %s\n" % (self.prog, message))
+
+
+def split_spec(spec):
+    """[D:]PATH[=NAME] -> (drive, path, name)."""
+    drive = "A"
+    if len(spec) > 2 and spec[1] == ":" and spec[0].isalpha() and \
+            not os.path.exists(spec):
+        drive, spec = spec[0].upper(), spec[2:]
+    name = None
+    if "=" in spec and not os.path.exists(spec):
+        spec, name = spec.rsplit("=", 1)
+    return drive, spec, name
+
+
+def build_parser():
+    p = Parser(
+        prog="romwbw-batch",
+        description="Boot CP/M 2.2 on romwbw_emu, run commands from a submit "
+                    "file with nobody at the keyboard, and extract the results.",
+        epilog="Files: -a/-t take [B:]PATH[=NAME]; a directory adds every file "
+               "in it.  B: is a second disk swapped in with ASSIGN.  "
+               "See docs/BATCH.md.")
+    p.add_argument("-a", "--add", action="append", default=[], metavar="SPEC",
+                   help="add a host file (binary) to A: or B:")
+    p.add_argument("-t", "--add-text", action="append", default=[],
+                   metavar="SPEC",
+                   help="add a host text file: LF becomes CR LF, ^Z-padded")
+    p.add_argument("-c", "--cmd", action="append", default=[], metavar="LINE",
+                   help="a command line, run in order (repeatable)")
+    p.add_argument("-s", "--script", metavar="FILE",
+                   help="command lines from a file, one per line; lines "
+                        "starting with ; or # are skipped")
+    p.add_argument("-g", "--get", action="append", default=[],
+                   metavar="[B:]PATTERN",
+                   help="extract matching files after the run (wildcards)")
+    p.add_argument("-o", "--out", default=".", metavar="DIR",
+                   help="where extracted files go (default .)")
+    p.add_argument("--isx", nargs="?", const="compact", choices=ISX_MODES,
+                   help="set the machine up for DRI's ISX (implies --exact): "
+                        "compact (the default) runs it on a small BIOS at "
+                        "F600H so ISIS programs get memory to F5FFH; cbios "
+                        "runs it on RomWBW's CBIOS, to E5FFH")
+    p.add_argument("--exact", action="store_true",
+                   help="record exact file lengths in directory byte 13 as "
+                        "ISX does, and trim extracted files by it")
+    p.add_argument("--rom", default="@rom", metavar="ID|FILE",
+                   help="ROM image (default: romwbw-get's @rom)")
+    p.add_argument("--disk", default=DEFAULT_SYSTEM_DISK, metavar="ID|FILE",
+                   help="CP/M 2.2 system disk to copy and boot "
+                        "(default hd1k_cpm22)")
+    p.add_argument("--emu", metavar="PATH", help="the romwbw_emu binary")
+    p.add_argument("--offline", action="store_true",
+                   help="pass --offline to romwbw-get")
+    p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
+                   metavar="SECS", help="kill the run after this long "
+                                        "(default %d)" % DEFAULT_TIMEOUT)
+    p.add_argument("--work", metavar="DIR",
+                   help="keep the images and console.log here")
+    p.add_argument("--log", metavar="FILE", help="write the console here")
+    p.add_argument("-v", "--verbose", action="store_true",
+                   help="show the console as it runs")
+    p.add_argument("-q", "--quiet", action="store_true",
+                   help="no summary line on success")
+    return p
+
+
+def read_script(path):
+    with open(path) as f:
+        lines = [l.rstrip("\r\n") for l in f]
+    return [l for l in lines if l.strip() and not l.lstrip().startswith((";", "#"))]
+
+
+def main(argv):
+    args = build_parser().parse_args(argv)
+    commands = list(args.cmd)
+    try:
+        if args.script:
+            commands += read_script(args.script)
+        if not commands:
+            raise UsageError("no commands: give -c LINE or --script FILE")
+        b = Batch(workdir=args.work, rom=args.rom, system=args.disk,
+                  emulator=args.emu, offline=args.offline, isx=args.isx,
+                  exact=args.exact, timeout=args.timeout,
+                  verbose=args.verbose)
+        for specs, text in ((args.add, False), (args.add_text, True)):
+            for spec in specs:
+                drive, path, name = split_spec(spec)
+                if os.path.isdir(path):
+                    for fn in sorted(os.listdir(path)):
+                        fp = os.path.join(path, fn)
+                        if os.path.isfile(fp) and not fn.startswith("."):
+                            b.add(fp, None, drive, text)
+                else:
+                    b.add(path, name, drive, text)
+    except UsageError as e:
+        say(str(e))
+        return EX_USAGE
+    except (BatchError, OSError) as e:
+        say(str(e))
+        return EX_ENV
+
+    r = b.run(commands)
+    if args.log:
+        with open(args.log, "w", encoding="latin-1") as f:
+            f.write(r.console)
+    with open(os.path.join(b.workdir, "console.log"), "w",
+              encoding="latin-1") as f:
+        f.write(r.console)
+
+    status = EX_OK
+    for p in r.problems:
+        say(p)
+    if not r.completed:
+        say("the batch did not complete; the console ended with:")
+        print(r.tail(), file=sys.stderr)
+        status = EX_FAILED
+
+    for spec in args.get:
+        drive = "A"
+        if len(spec) > 2 and spec[1] == ":":
+            drive, spec = spec[0].upper(), spec[2:]
+        got = b.extract(spec, args.out, drive)
+        if not got:
+            say("no file matches %s:%s" % (drive, spec))
+            status = EX_FAILED
+        elif not args.quiet:
+            for p in got:
+                print(p)
+    if status == EX_OK and not args.quiet:
+        say("completed in %.1fs" % r.seconds)
+    if args.work:
+        say("images and console.log kept in %s" % b.workdir)
+    b.cleanup()
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

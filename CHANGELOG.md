@@ -19,6 +19,58 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+### `romwbw-batch` and `romwbw-plm80`: unattended CP/M, and Intel's PL/M-80 under DRI's ISX
+
+`tools/romwbw-batch` boots CP/M 2.2 from a scratch copy of `hd1k_cpm22`, adds
+host files to A: (and to B:, a second disk swapped in with `ASSIGN`), runs a
+list of commands as `A:$$$.SUB` - written in DRI's SUBMIT.COM layout, measured
+from a file SUBMIT wrote - with stdin on /dev/null, and extracts the results.
+A run counts as complete only when the `TYPE` of a file holding a made-up
+string reaches the console, since the emulator also exits when a command fails
+and waits for a key. `tools/romwbw-plm80` builds on it to run Digital
+Research's own recipes for Intel's PL/M-80 V3.1, LINK, LOCATE and OBJHEX under
+ISX, the ISIS-II interface DRI built MP/M II with: P.SUB's .COM route and
+PRL.SUB's two-link, OBJHEX, PIP, ZERO, GENMOD route to a .PRL.
+[docs/BATCH.md](docs/BATCH.md) and [docs/ISX.md](docs/ISX.md).
+
+**ISX needed three things RomWBW does not give it**, all read out of ISX.COM
+and none of them an emulator defect:
+
+- **Exact file lengths.** ISX keeps the count of unused bytes in a file's last
+  record in directory byte 13. DRI's SETEOF.COM sets it through BDOS close,
+  which a stock CP/M 2.2 BDOS never writes back, so PL/M-80 read the `^Z`
+  padding as 77 errors. The tools write the byte themselves.
+- **A warm boot that reloads the BDOS**, which ISX lets ISIS programs
+  overwrite. RomWBW's reloads only the CCP, on purpose, and the machine hung
+  after PL/M-80. `--isx=cbios` gives ISX a `CPM` that copies the BDOS back
+  from the system tracks first.
+- **Memory.** ISIS programs get everything up to the BIOS, which on RomWBW is
+  E600H, and PL/M-80 runs out compiling SET, SHOW, STAT, ED and PIP there.
+  `--isx=compact`, the default, runs ISX on `tools/isxbios.asm`, a 403-byte
+  CP/M 2.2 BIOS at F600H over HBIOS, and leaves ISX by resetting to the boot
+  loader, which boots CP/M again and lets the CCP carry on with `$$$.SUB`.
+
+**Proved on MP/M II.** From `mpm2src`, each program built by the route its own
+submit file uses and compared as a whole file with DRI's binary beside the
+source: 23 of 24 are byte for byte identical - DIR, ERA, ERAQ, REN, SET, SHOW,
+STAT, TYPE, ABORT, CONSOLE, DSKRESET, PRINTER, PRLCOM, SUBMIT, TOD, USER,
+SCHED, SPOOL, MPMSTAT, STOPSPLR, ED, PIP, GENSYS.COM, and MPMLDR.COM through
+MAC, PIP and LOAD as well. SDIR differs in 526 bytes it never initialises,
+which hold what PIP's buffer left in memory; the text in DRI's copy sits 3072
+bytes further into the hex file than in ours, and 3072 is E400H - D800H, the
+difference between DRI's 62K CP/M and this one's BDOS. A 174-line PL/M program
+compiles in about a second of CPU, and prints the same 69 lines compiled by
+Intel's compiler and by uplm80 - `tests/isx/DIFF1.PLM`, the start of a
+differential test for uplm80.
+
+`tests/batch_test.py` (in `make test`) checks the pieces with no emulator -
+the submit layout, the OMF, `tools/isxbios.asm` against the bytes the tool
+carries - then batches on the emulator when a ROM and `hd1k_cpm22` are cached,
+including the PIP run that found the console idle bug below and an MBASIC
+loop the same bug stopped, and
+Intel PL/M-80 in both ISX modes when `$ISX_TOOLS` names a `PLM_WORK`
+directory. None of DRI's or Intel's binaries is in this repository.
+
 ### A program that polls the keyboard while it works is no longer "idle"
 
 The console idle detector counted every console status poll that found no key

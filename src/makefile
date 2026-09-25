@@ -197,14 +197,22 @@ test: romwbw_emu $(addprefix test_,$(TESTS))
 	fi; \
 	if command -v python3 >/dev/null 2>&1; then \
 	  python3 $(THIS_DIR)../tests/catalog_client_test.py || status=1; echo; \
+	  python3 $(THIS_DIR)../tests/batch_test.py || status=1; echo; \
 	else \
-	  echo "SKIP  catalog client test (python3 not on PATH)"; echo; \
+	  echo "SKIP  catalog client and batch tests (python3 not on PATH)"; echo; \
 	fi; \
 	sh $(THIS_DIR)../disks/verify_disk_utils.sh || status=1; echo; \
 	sh $(THIS_DIR)../roms/verify_romwbw_pin.sh || status=1; echo; \
 	if [ $$status -ne 0 ]; then echo "TESTS FAILED"; exit 1; fi; \
 	echo "ALL TESTS PASSED"
 
+# tests/batch_test.py checks tools/romwbw-batch and tools/romwbw-plm80 in
+# three layers and skips each whose inputs are missing: the pieces need
+# nothing (um80 for one check), the emulator runs need a cached ROM and
+# hd1k_cpm22, and the Intel PL/M-80 runs need $ISX_TOOLS, because DRI's and
+# Intel's binaries are not in this repository.  It uses the romwbw_emu this
+# target has just built.
+#
 # tests/catalog_client_test.py runs tools/romwbw-get against a catalog it
 # builds and serves itself on 127.0.0.1, so it needs no network and no
 # romwbw_disks checkout.  It is in `test` and not in a separate target because
