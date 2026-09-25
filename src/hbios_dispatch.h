@@ -574,6 +574,17 @@ public:
   // program look idle.  See notePoll() for the rule and the measurements.
   bool isConsoleIdle() const { return idle_poll_count >= IDLE_POLL_THRESHOLD; }
 
+  // Hold typed-ahead input back from the guest until it first WAITS for a key:
+  // a CIOIN or VDAKRD, or console polls tight enough to count as idle.  Until
+  // then CIOIST and VDAKST report no key, whatever is queued.  The CLI turns
+  // this on when stdin is not a terminal, because a script's first line is
+  // meant for whatever first asks for one - and RomWBW's boot loader, which
+  // asks for nothing, used to eat it: its autoboot countdown reads keys up to
+  // Enter looking for Esc, and its prompt flushes what is waiting.  Once
+  // released, input is never held again.
+  void holdInputUntilWanted(bool hold = true) { input_held = hold; }
+  bool isInputHeld() const { return input_held; }
+
   // True once for each console poll the guest has made while idle, cleared by
   // the call.  A front end that sleeps to save power should sleep HERE - once
   // per poll of a waiting guest - and not on every instruction for as long as
@@ -675,6 +686,7 @@ private:
   int idle_poll_count = 0;
   unsigned long long last_idle_poll_cycles = 0;  // cpu->cycles at that poll
   bool idle_poll_pending = false;                // for takeIdlePoll()
+  bool input_held = false;                       // holdInputUntilWanted()
   static constexpr int IDLE_POLL_THRESHOLD = 8;
   static constexpr unsigned long long IDLE_POLL_MAX_GAP = 1500;  // T-states
   void notePoll(bool has_input);

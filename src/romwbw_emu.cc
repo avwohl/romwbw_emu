@@ -1514,6 +1514,20 @@ int main(int argc, char** argv) {
   // Register reset callback for SYSRESET (ROM reboot command 'R')
   emu_setup_reset_callback(&memory, &cpu, emu.getHBIOS());
 
+  // Piped or redirected stdin is a script, and its first line is meant for
+  // whatever first asks for input - CP/M's CCP, or the boot loader's prompt.
+  // It used to reach the boot loader first even when that asked for nothing:
+  // the autoboot countdown (zero seconds under --boot) reads keys up to Enter
+  // looking for Esc and drops them, so `printf 'STAT DSK:\rSTAT\r' |
+  // romwbw_emu --boot=2` ran only STAT, and the prompt flushes what is
+  // waiting, so `printf '2\r' | romwbw_emu --boot=H` booted nothing.  Held
+  // until the guest reads a key or polls for one in a tight loop; see
+  // holdInputUntilWanted().  A terminal is left alone: Esc during the
+  // countdown is a person's to press.
+  if (!isatty(STDIN_FILENO)) {
+    emu.getHBIOS()->holdInputUntilWanted();
+  }
+
   // Enable tracing if requested
   if (!trace_file.empty()) {
     memory.enable_tracing(true);

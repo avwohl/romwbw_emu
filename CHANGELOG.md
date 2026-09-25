@@ -19,6 +19,30 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+### A script's first line no longer goes to the boot loader
+
+Piped into the CLI, `printf 'STAT DSK:\rSTAT\r' | romwbw_emu ... --boot=2` ran
+only `STAT`, and `printf '2\rSTAT\r' | romwbw_emu ... --boot=H` booted nothing.
+RomWBW's boot loader did it, as designed: during the autoboot countdown -
+zero seconds under `--boot`, but it still looks once - `romldr.asm` reads keys
+up to Enter watching for Esc and drops them, and at its prompt it flushes
+whatever is waiting. A person does not type during a zero-second countdown; a
+pipe has everything waiting before the first instruction runs.
+
+So the CLI now holds piped or redirected stdin back until the guest first
+wants a key: a `CIOIN` or `VDAKRD`, or console polls tight enough to count as
+idle (see "A program that polls the keyboard while it works" below), which is
+what the boot loader's prompt loop is.
+Until then a status poll sees no key. Both scripts above now run as written. A
+terminal is left alone - Esc during a countdown is a person's to press - and
+so is every other front end: `holdInputUntilWanted()` is off unless called.
+Once released, input is never held again, so what CP/M programs do with
+typed-ahead input is unchanged.
+
+`tests/console_idle.cc` has the dispatcher half - four checks that fail
+without the hold - and `tests/batch_test.py` pipes both scripts into the
+built CLI.
+
 ### `romwbw-batch` and `romwbw-plm80`: unattended CP/M, and Intel's PL/M-80 under DRI's ISX
 
 `tools/romwbw-batch` boots CP/M 2.2 from a scratch copy of `hd1k_cpm22`, adds

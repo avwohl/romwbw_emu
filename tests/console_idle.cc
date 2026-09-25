@@ -22,6 +22,11 @@
  * through handlePortDispatch() as the proxy does, and moves the CPU's cycle
  * counter by hand between calls.
  *
+ * It also covers the hold on typed-ahead input that the CLI puts on a piped
+ * stdin (holdInputUntilWanted()): RomWBW's boot loader used to eat a
+ * script's first line, reading keys up to Enter during its autoboot
+ * countdown and flushing them at its prompt.
+ *
  * Build and run:  make -C src test
  */
 
@@ -134,6 +139,9 @@ struct Rig {
     hbios.handlePortDispatch();
   }
 
+  uint8_t A() { return cpu.regs.AF.get_high(); }
+  uint8_t E() { return cpu.regs.DE.get_low(); }
+
   // `gap` T-states of guest work, then one console status poll.
   void poll_after(unsigned gap, uint8_t func = HBF_CIOIST) {
     cpu.cycles += gap;
@@ -232,6 +240,59 @@ int main() {
     check(r.hbios.isConsoleIdle(), "idle");
     check(!r.hbios.takeIdlePoll(),
           "with no new poll there is nothing to sleep for, idle or not");
+  }
+
+  // --- piped input is held until the guest wants it -----------------------------
+  //
+  // RomWBW's boot loader ate a script's first line: during the autoboot
+  // countdown it reads keys up to Enter, looking for Esc.  With the input
+  // held, a status poll that is not part of a wait loop sees no key.
+  {
+    const unsigned countdown[] = {50000};  // romldr polls between delay loops
+    Rig r;
+    g_keys.clear();
+    g_keys.push_back('S');
+    r.hbios.holdInputUntilWanted();
+    r.poll_after(countdown[0]);
+    check(r.A() == 0, "held: the countdown's status poll sees no key");
+    r.polls(countdown, 1, 50);
+    check(r.A() == 0 && r.hbios.isInputHeld(),
+          "held: fifty polls far apart still see none - nobody is waiting");
+    r.call(HBF_CIOIN);
+    check(r.E() == 'S', "held: a CIOIN gets the key at once - it is wanted");
+    check(!r.hbios.isInputHeld(), "...and releases the rest of the input");
+    g_keys.push_back('T');
+    r.poll_after(50000);
+    check(r.A() != 0, "released: a status poll sees the next key");
+    g_keys.clear();
+  }
+  {
+    // The boot loader's prompt: it flushes what is waiting, then polls in a
+    // loop.  The flush must find nothing and the loop must get the key.
+    const unsigned prompt[] = {170};
+    Rig r;
+    g_keys.clear();
+    g_keys.push_back('2');
+    r.hbios.holdInputUntilWanted();
+    r.poll_after(170);
+    check(r.A() == 0, "held: the prompt's flush finds nothing to throw away");
+    int seen = 0;
+    for (int i = 0; i < 20 && !seen; i++) {
+      r.poll_after(prompt[0]);
+      if (r.A() != 0) seen = i + 2;
+    }
+    check(seen == 9, "held: the prompt's poll loop gets the key once it counts "
+                     "as waiting, on its ninth poll");
+    g_keys.clear();
+  }
+  {
+    Rig r;
+    g_keys.clear();
+    g_keys.push_back('X');
+    r.call(HBF_VDAKST);
+    check(r.A() != 0, "not held (a terminal, or any other front end): a queued "
+                      "key shows at once");
+    g_keys.clear();
   }
 
   printf("------------------------------------------------------------\n");

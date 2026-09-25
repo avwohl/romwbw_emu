@@ -885,6 +885,7 @@ void HBIOSDispatch::handleCIO() {
   switch (func) {
     case HBF_CIOIN: {
       // Read character - behavior depends on dispatch mode and platform
+      input_held = false;  // the guest is asking for a key: that is "wanted"
       if (!blocking_allowed && !emu_console_has_input()) {
         // Non-blocking mode (web/WASM) - no input available
         // Rewind PC to re-execute OUT instruction when input arrives
@@ -952,7 +953,7 @@ void HBIOSDispatch::handleCIO() {
       // to anything testing the sign. HTALK.COM ships on the combo image and
       // does exactly that ("JP M,..."), so it never reached BF_CIOIN, never saw
       // the ^C that is its only exit, and span forever.
-      bool has_input = emu_console_has_input();
+      bool has_input = !input_held && emu_console_has_input();
       result = has_input ? 1 : 0;  // Count of characters waiting
       cpu->regs.DE.set_low(has_input ? 1 : 0);  // E = pending count
       notePoll(has_input);
@@ -1142,7 +1143,12 @@ void HBIOSDispatch::notePoll(bool has_input) {
     idle_poll_count++;  // capped: an int counting forever at a prompt wraps
   }
   last_idle_poll_cycles = now;
-  if (idle_poll_count >= IDLE_POLL_THRESHOLD) idle_poll_pending = true;
+  if (idle_poll_count >= IDLE_POLL_THRESHOLD) {
+    idle_poll_pending = true;
+    // Polling in a tight loop is waiting for a key, so held input is now
+    // wanted - the boot loader's prompt, a program looping on BDOS fn 6.
+    input_held = false;
+  }
 }
 
 void HBIOSDispatch::handleDIO() {
@@ -2957,7 +2963,7 @@ void HBIOSDispatch::handleVDA() {
       // much was queued and a guest polling this device never read one.
       // Same as BF_CIOIST above, and wrong the same way until 2026-09-06: a
       // count, not a flag, and 0xFF reads as a negative error code.
-      bool has_key = emu_console_has_input();
+      bool has_key = !input_held && emu_console_has_input();
       result = has_key ? 1 : 0;                    // A = count waiting
       cpu->regs.DE.set_low(has_key ? 1 : 0);       // E = pending count
       notePoll(has_key);
@@ -2965,6 +2971,7 @@ void HBIOSDispatch::handleVDA() {
     }
 
     case HBF_VDAKRD: {
+      input_held = false;  // as CIOIN: a read is the guest wanting a key
       // Keyboard read - the VDA twin of HBF_CIOIN, and handles a missing key
       // the same way. It used to set waiting_for_input and return without
       // rewinding PC, but dispatch is a 2-byte OUT (0xEF),A followed by the

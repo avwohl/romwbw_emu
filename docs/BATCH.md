@@ -34,10 +34,11 @@ string reaches the console. A command the CCP cannot find (`NOSUCH?`) deletes
 `$$$.SUB`, as does an ISX error, so the string never comes and the tool prints
 where the console stopped.
 
-**Why not piped stdin.** It loses keystrokes: RomWBW's boot loader reads and
-drops everything up to the first Enter while it counts down to autoboot, the
-BDOS keeps any key it sees while printing, DDT stops a listing on one. A submit
-file races nothing. [ISX.md](ISX.md#piped-stdin) has the detail.
+**Why not piped stdin.** Programs read ahead: the BDOS keeps any key it sees
+while printing, DDT stops a listing on one, a BDOS error takes the next key as
+"any key". A submit file races nothing. [ISX.md](ISX.md#piped-stdin) has the
+detail, including the boot loader's appetite for typed-ahead input, which the
+emulator now holds back.
 
 ## Options
 

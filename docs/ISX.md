@@ -298,17 +298,19 @@ the same.
 ## Piped stdin
 
 `romwbw-batch` does not type at the guest; it writes `$$$.SUB`. Typing at it
-through a pipe works for a line or two and then loses keystrokes, and none of
-the losses is the emulator's - a keyboard typed ahead loses them the same way:
+through a pipe works for short scripts, with two things to know:
 
 - **RomWBW's boot loader reads what is waiting.** During the autoboot countdown
   - `--boot` sets one of zero seconds - `romldr.asm` reads keys until Enter or
-  Esc and drops the rest, so the first line of piped input is gone before CP/M
-  starts; at its prompt it flushes everything waiting. `printf 'STAT DSK:\rSTAT\r'
-  | romwbw_emu --boot=2` runs only `STAT`.
-- **CP/M programs read ahead.** The BDOS checks for ^S before each character it
-  prints and keeps the key it finds; DDT abandons a `D` listing on any key;
-  after a BDOS error, the next key is taken as the "any key".
+  Esc and drops the rest, and at its prompt it flushes everything waiting. So
+  `printf 'STAT DSK:\rSTAT\r' | romwbw_emu --boot=2` ran only `STAT`, and
+  `printf '2\rSTAT\r' | romwbw_emu --boot=H` booted nothing. That was the
+  emulator's to fix, and it is fixed: the CLI now holds piped input back until
+  the guest first reads a key or polls for one in a tight loop, so both
+  scripts run as written.
+- **CP/M programs read ahead**, as they would a fast typist. The BDOS checks
+  for ^S before each character it prints and keeps the key it finds; DDT
+  abandons a `D` listing on any key; after a BDOS error the next key is taken
+  as the "any key". That is the guest's behaviour, the same on real hardware.
 
-Leading a pipe with an empty line gets past the boot loader. A submit file gets
-past all of it.
+A submit file gets past all of it.

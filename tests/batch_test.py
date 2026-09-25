@@ -11,7 +11,8 @@ Three layers, each skipped when what it needs is not here:
     hd1k_cpm22 - `tools/romwbw-get fetch @rom hd1k_cpm22`): a batch that runs
     to its end, one that does not, and the two programs that found the
     console idle bug - PIP concatenating files and MBASIC running a loop, both
-    of which the emulator used to cut off at end of input;
+    of which the emulator used to cut off at end of input - and piped stdin
+    reaching the CCP and the boot menu, which the boot loader used to eat;
   * Intel PL/M-80 under ISX (needs $ISX_TOOLS naming DRI's PLM_WORK
     directory, which this repository does not carry): a program compiled by
     both ISX modes, and DRI's `CPM` getting back to CP/M from each.
@@ -243,6 +244,29 @@ def test_batches():
         check(r.returncode == 0 and cat.startswith(
             "".join(":%04X\r\n" % i for i in range(600)).encode()),
             "PIP concatenating two files is not cut off at end of input")
+
+        # Piped stdin, without the batch tool: the boot loader used to read
+        # the script's first line during its autoboot countdown and drop it,
+        # and flush everything at its prompt.  The CLI now holds piped input
+        # until the guest first asks for a key.
+        emu = rb.find_emulator()
+        rom = rb.resolve_asset("@rom", offline=True)
+        img = os.path.join(d, "pipe.img")
+        shutil.copyfile(rb.resolve_asset(rb.DEFAULT_SYSTEM_DISK, offline=True),
+                        img)
+        os.chmod(img, 0o644)
+        for boot, script, want in (
+                ("2", b"STAT DSK:\rSTAT\r", ["A>STAT DSK:", "Drive Characteristics",
+                                             "A>STAT\n"]),
+                ("H", b"2\rSTAT\r", ["Boot [H=Help]: 2", "A>STAT\n"])):
+            p = subprocess.run([emu, "--romwbw=" + rom, "--disk0=" + img,
+                                "--boot=" + boot, "--no-config"], input=script,
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                               timeout=60)
+            out = p.stdout.decode("latin-1").replace("\r", "")
+            check(all(w in out for w in want),
+                  "piped stdin with --boot=%s: the script's first line reaches "
+                  "%s" % (boot, "the CCP" if boot == "2" else "the boot menu"))
 
         # ...and MBASIC, which checks for ^C before every statement, ran at a
         # hundred instructions a second and never printed DONE.

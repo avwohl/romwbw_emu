@@ -2,6 +2,13 @@
 
 This document explains how to integrate the RomWBW emulator core into downstream projects (iOS, macOS, Windows, etc.).
 
+**2026-09-25: `holdInputUntilWanted()`, which you need not call.** The CLI
+turns it on for piped stdin so that RomWBW's boot loader, which reads and drops
+typed-ahead keys during its autoboot countdown, does not eat a script's first
+line; until the guest reads a key or polls in a tight loop, CIOIST and VDAKST
+report none. It is off unless a front end calls it, and none of yours feeds
+scripted input, so nothing changes for you.
+
 **2026-09-25: `isConsoleIdle()` means waiting for a key, not polling while
 working - and needs nothing from you.** It used to turn true after eight
 console status polls that found no key with no output or disk I/O between
