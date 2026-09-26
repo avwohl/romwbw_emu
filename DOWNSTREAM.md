@@ -53,8 +53,13 @@ call before it jumps, or `HBF_SYSBOOT`. Not at the handover itself, because
 CP/M 3's CPMLDR, NZCOM's loader and Z3PLUS's start poll the console and take
 what they find; 120M is seven times the slowest start measured (NZCOM, 16.4M)
 and 30 seconds at the 4 MHz the HBIOS reports. A warm or cold `SYSRESET`
-forgets the handover, since the loader runs again. It is off unless a front
-end calls it, and none of yours does - see above.
+forgets the handover, since the loader runs again. One key gets through
+early, and only if the front end passes a second argument, a function
+answering the next byte of input without taking it (the CLI's
+`emu_console_peek_char()`): an Esc at the front of the input before the
+handover, which romldr's autoboot countdown stops on - CIOIN takes it and the
+rest stays held. It is off unless a front end calls it, and none of yours
+does - see above.
 
 **2026-09-25: `isConsoleIdle()` means waiting for a key, not polling while
 working - and needs nothing from you.** It used to turn true after eight

@@ -365,7 +365,9 @@ through a pipe works for short scripts, with two things to know:
   emulator's to fix, and it is fixed: the CLI now holds piped input back until
   the guest first reads a key or sits in a loop polling for one - or, if it
   does neither, until about a second after the boot loader hands over to the
-  OS it booted - so both scripts run as written.
+  OS it booted - so both scripts run as written. An Esc the script starts
+  with still gets to the countdown, which stops on it, and the rest of the
+  script goes to the loader's prompt: `printf '\033D\r'` lists the devices.
 - **CP/M programs read ahead**, as they would a fast typist. The BDOS checks
   for ^S before each character it prints and keeps the key it finds; DIR stops
   listing on any key, so `printf 'DIR\rSTAT\r'` lists one file and then runs

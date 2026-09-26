@@ -35,10 +35,10 @@ program that polls the keyboard while it works" below): the boot loader's
 prompt loop, a program looping on BDOS function 6, ZPM3's prompt - or, failing
 both, until a bounded time after the boot loader hands over to what it booted.
 The autoboot countdown is none of these: it counts down as it polls. Until then
-a status poll sees no key and `VDAKFL` flushes nothing. Both scripts above now
-run as written. A terminal is left alone - Esc during a countdown is a person's
-to press - and so is every other front end: `holdInputUntilWanted()` is off
-unless called. Once released, input is never held again, so what CP/M programs
+a status poll sees no key - bar a leading Esc, below - and `VDAKFL` flushes
+nothing. Both scripts above now run as written. A terminal is left alone - Esc
+during a countdown is a person's to press - and so is every other front end:
+`holdInputUntilWanted()` is off unless called. Once released, input is never held again, so what CP/M programs
 do with typed-ahead input is unchanged.
 
 **The bounded release.** A first version released the input only on a key read
@@ -61,9 +61,18 @@ disk's OS that prints a dot, polls and spins, 60,000 times, now gets a piped
 into the boot matrix of 18 systems and slices, with and without input, every
 prompt got what it did before.
 
-**One thing a pipe can no longer do: stop the countdown with Esc.** The
-countdown never sees piped input, Esc included; a script that wants the
-loader's prompt starts with `--boot=H`, as the test below does.
+**A leading Esc still stops the countdown.** The hold first kept the Esc
+too, so `(printf '\033'; sleep 1.5; printf 'D\r') | romwbw_emu ... --boot=2`,
+which on 0448175 stopped at the loader's prompt and listed the devices,
+booted CP/M instead and its CCP got `^[D`. Now, until the loader hands over,
+an Esc at the front of the input shows to `CIOIST`, and `CIOIN` hands it over
+without letting go of the rest - so the prompt it leads to flushes nothing,
+and its wait loop gets the next line: `printf '\033D\r'` works without the
+pause, which on 0448175 the prompt flushed. The CLI gives the hold a peek at
+the next byte for this (`holdInputUntilWanted(true, peek)`); without one, as on
+every other front end, an Esc is held like any key. The Esc has to be in the
+pipe when the countdown looks, a fraction of a second in, as it did on
+0448175; `--boot=H` starts at the prompt with no race.
 
 **What a script sees differently.** Its first line now runs, where it used to
 vanish, and the lines after it are typed ahead while that one runs - which
@@ -76,9 +85,14 @@ exists for scripts longer than a line or two.
 `tests/console_idle.cc` has the dispatcher half - checks that fail without the
 hold, one for ZPM3's prompt getting the key, and the bounded release: not at
 the handover, not 1000 T-states short of the bound, at it, and not after a
-reset has put the loader back. `tests/batch_test.py` pipes both scripts into
-the built CLI, a `K` into that dot-printing program, booted from a scratch copy
-of `hd1k_cpm22` whose boot record it replaces, and, when `hd1k_combo` is
+reset has put the loader back - and the Esc: shown to the countdown, taken with
+the rest still held, the next line reaching the prompt's wait loop; held
+without a peek, behind another key, or after the handover; seen again after a
+reset. `tests/cli_console.cc` checks the CLI's peek takes nothing.
+`tests/batch_test.py` pipes both scripts into the built CLI, Esc and `D` into
+`--boot=2` with and without the pause (both fail against e5d61f0, the second
+against 0448175), a `K` into that dot-printing program, booted from a scratch
+copy of `hd1k_cpm22` whose boot record it replaces, and, when `hd1k_combo` is
 cached, `DIR` into ZPM3, CP/M 3 and NZ-COM - the last two fail against a
 release at the handover itself.
 

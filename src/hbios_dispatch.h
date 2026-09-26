@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include <utility>
 
 //=============================================================================
 // HBIOS Function Codes (from RomWBW hbios.inc)
@@ -588,7 +589,20 @@ public:
   // anything reads a key and prints between polls, which neither reads nor
   // waits (releaseHeldInputIfDue()).  Once released, input is never held
   // again.
-  void holdInputUntilWanted(bool hold = true) { input_held = hold; }
+  //
+  // One byte gets through: an Esc at the front of the input before the boot
+  // loader has handed over, which is how a script stops the autoboot
+  // countdown - romldr's countdown takes Esc to mean "go to my prompt".
+  // CIOIST reports it and CIOIN hands it over, and the rest stays held, so
+  // the prompt's flush finds nothing and the prompt's wait gets the next
+  // line.  Seeing it takes `peek`, which answers the next byte of input
+  // without taking it, or -1 for none; a front end that passes none gets
+  // no exception (heldEscapeWaiting()).
+  using InputPeekFn = std::function<int()>;
+  void holdInputUntilWanted(bool hold = true, InputPeekFn peek = nullptr) {
+    input_held = hold;
+    held_input_peek = std::move(peek);
+  }
   bool isInputHeld() const { return input_held; }
 
   // True once for each console poll the guest has made while idle, cleared by
@@ -694,12 +708,14 @@ private:
   unsigned long long last_poll_cycles = 0;       // cpu->cycles at the last poll
   bool idle_poll_pending = false;                // for takeIdlePoll()
   bool input_held = false;                       // holdInputUntilWanted()
+  InputPeekFn held_input_peek;                   // holdInputUntilWanted()
   // cpu->cycles when the boot loader last handed over, or 0 for "it has not
   // since the last reset"; see releaseHeldInputIfDue().
   unsigned long long handover_at = 0;
   static constexpr unsigned long long HOLD_AFTER_HANDOVER = 120000000ull;
   void noteHandover();
   void releaseHeldInputIfDue();
+  bool heldEscapeWaiting() const;
   static constexpr int IDLE_POLL_THRESHOLD = 8;
   static constexpr unsigned long long IDLE_POLL_MAX_GAP = 1500;  // T-states
   // A wait loop can poll more than once per turn - MBASIC's INKEY$ loop polls

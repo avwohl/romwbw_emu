@@ -263,6 +263,21 @@ bool emu_console_has_input() {
   return true;
 }
 
+// The byte emu_console_read_char() would return next, left where it is, or -1
+// if none has arrived.  CLI only, and not part of emu_io.h: nothing in the
+// core calls it.  romwbw_emu.cc gives it to holdInputUntilWanted(), which
+// lets an Esc a script leads with through to the boot loader's countdown.
+// The LF rewrite is read_char's, so the answer is what the guest would get.
+int emu_console_peek_char() {
+  if (input_queue.empty() && peek_char < 0 && !emu_console_has_input()) {
+    return -1;
+  }
+  int ch = !input_queue.empty() ? input_queue.front() : peek_char;
+  if (ch < 0) return -1;
+  if (!stdin_is_tty && ch == '\n') ch = '\r';  // as emu_console_read_char()
+  return ch;
+}
+
 int emu_console_read_char() {
   // Check queued input first. emu_console_queue_char() has no CLI caller
   // (only the web frontend uses it), but emu_console_check_escape() parks a

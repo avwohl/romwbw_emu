@@ -26,11 +26,11 @@
 # 2.2 BDOS console write polls CONST for ^S, a BDOS error waits for "any key",
 # DDT and PIP abort on a key.  (RomWBW's boot loader, which read and dropped
 # everything up to the first CR while it counted down to autoboot, no longer
-# sees piped input: the emulator holds it until the guest first asks for a
-# key, or for a while after the loader hands over.)  A submit file is read by
-# the CCP one record per command and never races anything - and a key waiting
-# when the CCP reads a record would abort it, as a key pressed during SUBMIT
-# does.
+# sees piped input but a leading Esc: the emulator holds it until the guest
+# first asks for a key, or for a while after the loader hands over.)  A
+# submit file is read by the CCP one record per command and never races
+# anything - and a key waiting when the CCP reads a record would abort it, as
+# a key pressed during SUBMIT does.
 #
 # EXIT.  The emulator stops on its own when stdin is at end of file and the
 # guest either reads the console or sits polling it.  That is what happens after

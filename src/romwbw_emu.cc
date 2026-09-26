@@ -44,6 +44,10 @@
 // Build date from version.cc (recompiled on every relink)
 extern const char* emu_build_date;
 
+// emu_io_cli.cc's, and the CLI's alone, so not in emu_io.h: the next byte of
+// console input without taking it, or -1.  See holdInputUntilWanted() below.
+int emu_console_peek_char();
+
 // Global for signal handler to request stop
 static volatile bool stop_requested = false;
 
@@ -1570,11 +1574,13 @@ int main(int argc, char** argv) {
   // idle, notePoll() in hbios_dispatch.cc - or, failing both, a bounded time
   // after the boot loader hands over to what it booted; see
   // holdInputUntilWanted().  A terminal is left alone: Esc during the
-  // countdown is a person's to press.  A pipe's cannot be - the countdown
-  // never sees the input, Esc included - and `--boot=H` is the way for a
-  // script to start at the loader's prompt.
+  // countdown is a person's to press.  A script's Esc is the one thing the
+  // countdown still sees: led with one, the script stops at the loader's
+  // prompt, and the rest of it goes there, as 0448175 let it with a pause
+  // after the Esc - which is why the hold is given the peek.  `--boot=H`
+  // starts at the prompt too.
   if (!isatty(STDIN_FILENO)) {
-    emu.getHBIOS()->holdInputUntilWanted();
+    emu.getHBIOS()->holdInputUntilWanted(true, emu_console_peek_char);
   }
 
   // Enable tracing if requested

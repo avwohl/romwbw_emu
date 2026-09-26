@@ -886,7 +886,11 @@ void HBIOSDispatch::handleCIO() {
   switch (func) {
     case HBF_CIOIN: {
       // Read character - behavior depends on dispatch mode and platform
-      input_held = false;  // the guest is asking for a key: that is "wanted"
+      // The guest is asking for a key: that is "wanted" - unless the key is
+      // the Esc the hold lets through to the boot loader's countdown, which
+      // takes it and nothing more.  The rest stays held from the prompt the
+      // Esc leads to, which flushes what is waiting.
+      if (!heldEscapeWaiting()) input_held = false;
       if (!blocking_allowed && !emu_console_has_input()) {
         // Non-blocking mode (web/WASM) - no input available
         // Rewind PC to re-execute OUT instruction when input arrives
@@ -955,7 +959,9 @@ void HBIOSDispatch::handleCIO() {
       // does exactly that ("JP M,..."), so it never reached BF_CIOIN, never saw
       // the ^C that is its only exit, and span forever.
       releaseHeldInputIfDue();
-      bool has_input = !input_held && emu_console_has_input();
+      // Held input shows nothing but an Esc for the boot loader's countdown.
+      bool has_input = input_held ? heldEscapeWaiting()
+                                  : emu_console_has_input();
       result = has_input ? 1 : 0;  // Count of characters waiting
       cpu->regs.DE.set_low(has_input ? 1 : 0);  // E = pending count
       notePoll(has_input);
@@ -1239,6 +1245,23 @@ void HBIOSDispatch::releaseHeldInputIfDue() {
       cpu->cycles - handover_at >= HOLD_AFTER_HANDOVER) {
     input_held = false;
   }
+}
+
+// The one byte the hold lets through: an Esc at the front of the input while
+// the boot loader still has the machine.  romldr's autoboot countdown looks
+// for a key once a 1/64 s tick - once in all under --boot, which counts from
+// zero - and takes Esc to mean "stop, and go to my prompt".  0448175 let a
+// pipe do that, `(printf '\033'; sleep 1.5; printf 'D\r') | romwbw_emu
+// --boot=2` stopping at the prompt and listing the devices, and the hold took
+// it away: CP/M booted and its CCP got `^[D`.  So a held Esc shows to CIOIST,
+// and CIOIN takes it without letting go of the rest: the prompt the Esc leads
+// to flushes whatever is waiting (romldr.asm: prompt, flush), and held, what
+// is waiting is kept for the prompt's wait loop - so `printf '\033D\r'`
+// needs no sleep.  Not after the handover: an OS's start takes what it finds,
+// and a script's Esc is for the loader.
+bool HBIOSDispatch::heldEscapeWaiting() const {
+  return input_held && handover_at == 0 && held_input_peek &&
+         held_input_peek() == 0x1B;
 }
 
 void HBIOSDispatch::handleDIO() {

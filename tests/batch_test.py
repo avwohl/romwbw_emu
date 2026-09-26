@@ -17,8 +17,9 @@ Three layers, each skipped when what it needs is not here:
     console idle bug - PIP concatenating files and MBASIC running a loop, both
     of which the emulator used to cut off at end of input - and piped stdin
     reaching the CCP and the boot menu, which the boot loader used to eat,
-    and the instruction limit, which used to end a run with exit status 0,
-    and a program booted from the disk that prints between polls and never
+    and a script's leading Esc still stopping the autoboot countdown, which
+    the hold on piped input took away, and the instruction limit, which used
+    to end a run with exit status 0, and a program booted from the disk that prints between polls and never
     waits, which the hold on piped input starved; and, when hd1k_combo is
     cached too, ZPM3, whose prompt the idle rule missed so that the emulator
     never ended there and held piped input from it for ever, and CP/M 3 and
@@ -48,6 +49,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -521,6 +523,7 @@ def test_batches():
                   "piped stdin with --boot=%s: the script's first line reaches "
                   "%s" % (boot, "the CCP" if boot == "2" else "the boot menu"))
 
+        test_escape_stops_countdown(emu, rom, img)
         test_zpm3(emu, rom, d)
         test_os_starts(emu, rom, d)
         test_boot_image_polls(emu, rom, d)
@@ -538,6 +541,49 @@ def test_batches():
             if os.path.exists(os.path.join(d, "m", "console.log")) else ""
         check(r.returncode == 0 and "DONE" in log,
               "MBASIC running a loop finishes and prints DONE")
+
+
+def test_escape_stops_countdown(emu, rom, img):
+    """A script led with Esc stops the autoboot countdown, as it did before
+    the CLI held piped input: `(printf '\\033'; sleep 1.5; printf 'D\\r') |
+    romwbw_emu --boot=2` stopped at the loader's prompt and listed the
+    devices on 0448175, and booted CP/M on e5d61f0, whose CCP got `^[D`.
+    Now a held Esc shows to the countdown and the rest stays held, so the
+    prompt's flush finds nothing and the pause is not needed either.
+
+    The Esc is in stdin before the emulator starts: the countdown looks once,
+    early, and a pipe written after the start can miss it - as 0448175's
+    could."""
+    argv = [emu, "--romwbw=" + rom, "--disk0=" + img, "--boot=2",
+            "--no-config"]
+
+    def listed(out):
+        return ("Boot [H=Help]: D" in out and "Capacity/Mode" in out and
+                "CP/M-80" not in out)
+
+    r, w = os.pipe()
+    os.write(w, b"\x1b")
+    p = subprocess.Popen(argv, stdin=r, stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL)
+    os.close(r)
+    time.sleep(1.5)
+    os.write(w, b"D\r")
+    os.close(w)
+    try:
+        out = p.communicate(timeout=60)[0].decode("latin-1").replace("\r", "")
+    except subprocess.TimeoutExpired:
+        p.kill()
+        out = p.communicate()[0].decode("latin-1")
+    check(listed(out), "piped Esc, a pause, then D: the countdown stops and "
+                       "the loader lists the devices")
+    with tempfile.TemporaryFile() as f:
+        f.write(b"\x1bD\r")
+        f.seek(0)
+        p = subprocess.run(argv, stdin=f, stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, timeout=60)
+    out = p.stdout.decode("latin-1").replace("\r", "")
+    check(listed(out), "Esc and D in one go: the countdown stops, and the D "
+                       "is not flushed at the prompt")
 
 
 def test_zpm3(emu, rom, d):

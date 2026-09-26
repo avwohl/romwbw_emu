@@ -36,7 +36,8 @@
  * countdown and flushing them at its prompt.  And the hold's other end: a
  * bounded time after the loader hands over to what it booted, it lets go, so
  * a program that prints between polls before anything reads a key still gets
- * its input.
+ * its input.  And the one key it lets through early: an Esc a script leads
+ * with, which stops the autoboot countdown as it did before the hold.
  *
  * Build and run:  make -C src test
  */
@@ -74,6 +75,9 @@ int emu_console_read_char() {
   g_keys.pop_front();
   return ch;
 }
+
+// What the CLI gives holdInputUntilWanted(): the next key, left queued.
+static int peek_key() { return g_keys.empty() ? -1 : g_keys.front(); }
 
 void emu_console_write_char(uint8_t) {}
 
@@ -475,6 +479,90 @@ int main() {
     check(r.A() == 0 && r.hbios.isInputHeld(),
           "held: after a reset the loader's countdown sees no key, however "
           "long ago an OS started");
+    g_keys.clear();
+  }
+  // --- ...but a script's leading Esc still stops the autoboot countdown -------
+  //
+  // romldr's countdown takes Esc to mean "go to my prompt", and 0448175 let a
+  // pipe press it: `(printf '\033'; sleep 1.5; printf 'D\r') | romwbw_emu
+  // --boot=2` stopped at the prompt and listed the devices.  Held, the
+  // countdown never saw it, CP/M booted and its CCP got `^[D`.  The CLI now
+  // gives the hold a way to see the next byte, and an Esc at the front gets
+  // through until the loader hands over.
+  {
+    const unsigned countdown[] = {50000};
+    const unsigned prompt[] = {170};
+    Rig r;
+    r.work = Rig::COUNTING;
+    g_keys.clear();
+    g_keys.push_back(0x1B);
+    g_keys.push_back('D');
+    g_keys.push_back('\r');
+    r.hbios.holdInputUntilWanted(true, peek_key);
+    r.poll_after(countdown[0]);
+    check(r.A() != 0, "held: a leading Esc shows to the countdown's status "
+                      "poll");
+    r.call(HBF_CIOIN);
+    check(r.E() == 0x1B && r.hbios.isInputHeld(),
+          "held: the countdown's CIOIN gets the Esc, and the rest stays held");
+    r.work = Rig::NOTHING;
+    r.poll_after(prompt[0]);
+    check(r.A() == 0, "held: the prompt's flush then finds nothing to throw "
+                      "away");
+    int seen = 0;
+    for (int i = 0; i < 20 && !seen; i++) {
+      r.poll_after(prompt[0]);
+      if (r.A() != 0) seen = i + 2;
+    }
+    check(seen == 9, "held: the prompt's poll loop gets the line after the "
+                     "Esc once it counts as waiting");
+    r.call(HBF_CIOIN);
+    check(r.E() == 'D' && !r.hbios.isInputHeld(),
+          "released: ...and reads it, which lets go of the rest");
+    g_keys.clear();
+  }
+  {
+    // Every other front end holds, if at all, without a peek, and the Esc
+    // is held with the rest.
+    Rig r;
+    r.work = Rig::COUNTING;
+    g_keys.clear();
+    g_keys.push_back(0x1B);
+    r.hbios.holdInputUntilWanted();
+    r.poll_after(50000);
+    check(r.A() == 0, "held without a peek: a leading Esc is held like any "
+                      "key");
+    g_keys.clear();
+  }
+  {
+    // Only a leading Esc: one behind the first line is that line's business.
+    Rig r;
+    r.work = Rig::COUNTING;
+    g_keys.clear();
+    g_keys.push_back('D');
+    g_keys.push_back(0x1B);
+    r.hbios.holdInputUntilWanted(true, peek_key);
+    r.poll_after(50000);
+    check(r.A() == 0, "held: an Esc behind another key does not show");
+    g_keys.clear();
+  }
+  {
+    // Once the loader has handed over, an OS is starting, and CP/M 3's
+    // CPMLDR and NZCOM's loader take what a poll shows them.  The Esc was
+    // for the loader.
+    Rig r;
+    r.work = Rig::COUNTING;
+    g_keys.clear();
+    g_keys.push_back(0x1B);
+    r.hbios.holdInputUntilWanted(true, peek_key);
+    r.call(HBF_SYSSET, SYSSET_BOOTINFO);
+    r.poll_after(50000);
+    check(r.A() == 0 && r.hbios.isInputHeld(),
+          "held: after the handover a leading Esc is held like any key");
+    r.call(HBF_SYSRESET, 0x01);            // warm boot: the loader again
+    r.poll_after(50000);
+    check(r.A() != 0, "held: after a reset the loader's countdown sees it "
+                      "again");
     g_keys.clear();
   }
   {

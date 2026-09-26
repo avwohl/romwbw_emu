@@ -26,6 +26,11 @@
  *   4. The reserved escape key is consumed on a tty and not on a pipe. One
  *      press of ^E used to both move the WordStar cursor and open sim>.
  *
+ *   5. emu_console_peek_char(), the CLI's own, answers the byte a read
+ *      would return and leaves it there. The hold on piped input looks
+ *      through it for a leading Esc, which it lets through to the boot
+ *      loader's autoboot countdown.
+ *
  * Each case runs in a forked child so the statics in emu_io_cli.cc start
  * clean, and because raw mode has to be established before the parent writes
  * anything - the line discipline processes input as it arrives, so bytes sent
@@ -36,6 +41,9 @@
  */
 
 #include "emu_io.h"
+
+// emu_io_cli.cc's, and not in emu_io.h: nothing in the core calls it.
+int emu_console_peek_char();
 
 #include <cerrno>
 #include <cstdio>
@@ -305,6 +313,18 @@ static void body_pipe_reserves_nothing() {
   expect('x', "the byte after it is undisturbed");
 }
 
+// 5. Peek answers what a read would, and takes nothing.
+static void body_pipe_peek() {
+  check(emu_console_peek_char() == 0x1B, "peek sees a piped Esc");
+  check(emu_console_peek_char() == 0x1B,
+        "...and leaves it there: a second peek sees it again");
+  expect(0x1B, "a read then takes it");
+  check(emu_console_peek_char() == 0x0D,
+        "peek answers a piped LF as the CR a read returns");
+  expect(0x0D, "...and the read returns it");
+  check(emu_console_peek_char() == -1, "at end of input peek answers -1");
+}
+
 // 2. The case the whole asymmetry exists for.
 static void body_tty_enter_vs_ctrl_j() {
   expect(0x0D, "Enter on a tty arrives as CR - ICRNL is cleared, so the "
@@ -420,6 +440,9 @@ int main() {
     run_on_pipe("A pipe reserves no key for the emulator",
                 body_pipe_reserves_nothing, data, sizeof(data));
   }
+
+  run_on_pipe("Peeking at piped input takes nothing", body_pipe_peek,
+              "\x1b\n", 2);
 
   {
     const unsigned char data[] = {0x0D, 0x0A};
