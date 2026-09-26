@@ -10,7 +10,8 @@ Three layers, each skipped when what it needs is not here:
     romwbw-plm80's reading of the console and its handling of the -o
     directory, which reported a failed rebuild as built because the last
     build's output was still there, and of the system disk's own files, one
-    of which it took for a failed build's output;
+    of which it took for a failed build's output, and both tools refusing a
+    bad argument before they resolve the ROM;
   * batches on the emulator (needs src/romwbw_emu and a cached ROM and
     hd1k_cpm22 - `tools/romwbw-get fetch @rom hd1k_cpm22`): a batch that runs
     to its end, one that does not, -g of a system disk file the batch left
@@ -454,6 +455,39 @@ def test_plm80_produced():
 
 
 # --- batches on the emulator ----------------------------------------------------
+
+def test_arguments_first():
+    """Both tools refuse a bad argument before they look for anything.
+
+    `romwbw-plm80 --max-instructions -5` was refused only once romwbw-get had
+    resolved the ROM and the disk, some four seconds in, and `romwbw-batch -a
+    NOPE.COM` got as far and then exited 2 with Python's `[Errno 2] No such
+    file or directory: 'NOPE.COM'`.  A ROM that cannot be resolved shows
+    which comes first: checked first, the argument is what is reported."""
+    with tempfile.TemporaryDirectory() as d:
+        bad_rom = ["--rom", os.path.join(d, "no.rom"), "--offline"]
+        r = run_tool([os.path.join(TOOLS, "romwbw-batch"), "-a", "NOPE.COM",
+                      "-c", "DIR"] + bad_rom, d, timeout=60)
+        check(r.returncode == 64 and
+              "-a NOPE.COM: no such file or directory" in r.stdout and
+              "Errno" not in r.stdout,
+              "romwbw-batch -a NOPE.COM: refused first, plainly, as usage "
+              "(exit %s)" % r.returncode)
+        r = run_tool([os.path.join(TOOLS, "romwbw-batch"), "-t", "B:NOPE.TXT",
+                      "-c", "DIR"] + bad_rom, d, timeout=60)
+        check(r.returncode == 64 and "-t NOPE.TXT: no such file" in r.stdout,
+              "romwbw-batch -t B:NOPE.TXT: the same")
+        r = run_tool([os.path.join(TOOLS, "romwbw-batch"), "-c", "DIR",
+                      "--max-instructions", "-5"] + bad_rom, d, timeout=60)
+        check(r.returncode == 64 and "not a count of instructions" in r.stdout,
+              "romwbw-batch --max-instructions -5: refused first (exit %s)"
+              % r.returncode)
+        r = run_tool([os.path.join(TOOLS, "romwbw-plm80"), "com", "X.PLM",
+                      "--max-instructions", "-5"] + bad_rom, d, timeout=60)
+        check(r.returncode == 64 and "not a count of instructions" in r.stdout,
+              "romwbw-plm80 --max-instructions -5: refused first (exit %s)"
+              % r.returncode)
+
 
 def run_tool(argv, cwd, timeout=300):
     return subprocess.run([sys.executable] + argv, cwd=cwd, timeout=timeout,
@@ -1031,6 +1065,7 @@ def main():
     test_plm80_console()
     test_plm80_outputs()
     test_plm80_produced()
+    test_arguments_first()
 
     ready = cd is not None
     why = ""

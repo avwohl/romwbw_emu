@@ -98,7 +98,9 @@
 #
 # Exit status: 0 the batch completed and every requested file was extracted;
 # 1 it did not complete, or a requested file is missing; 2 something it needs
-# is missing (emulator, ROM, disk, cpm_disk.py); 64 usage; 130 interrupted.
+# is missing (emulator, ROM, disk, cpm_disk.py); 64 usage, a file to add that
+# is not there among it; 130 interrupted.  The arguments are checked before
+# anything is looked for.
 # The scratch directory is removed on every exit but --work.
 
 import argparse
@@ -584,21 +586,24 @@ class Batch(object):
                  emulator=None, offline=False, isx=False, exact=False,
                  timeout=DEFAULT_TIMEOUT, verbose=False, keep=False,
                  max_instructions=None):
+        # The arguments first, before anything is looked for: a bad one was
+        # refused only once romwbw-get had resolved the ROM and the disk,
+        # seconds later.
+        if isx is True:
+            isx = "compact"
+        if isx and isx not in ISX_MODES:
+            raise UsageError("--isx is one of %s" % ", ".join(ISX_MODES))
+        # None: the emulator's own limit.  0: none.
+        if max_instructions is not None and max_instructions < 0:
+            raise UsageError("--max-instructions is a count, or 0 for no limit")
         self.cd = find_cpm_disk()
         self.emulator = find_emulator(emulator)
         self.offline = offline
         self.rom = resolve_asset(rom, offline)
         self.system_src = resolve_asset(system, offline)
-        if isx is True:
-            isx = "compact"
-        if isx and isx not in ISX_MODES:
-            raise UsageError("--isx is one of %s" % ", ".join(ISX_MODES))
         self.isx = isx or None
         self.exact = exact or bool(isx)
         self.timeout = timeout
-        # None: the emulator's own limit.  0: none.
-        if max_instructions is not None and max_instructions < 0:
-            raise UsageError("--max-instructions is a count, or 0 for no limit")
         self.max_instructions = max_instructions
         self.verbose = verbose
         self.keep = keep or workdir is not None
@@ -862,6 +867,53 @@ def split_spec(spec):
     return drive, spec, name
 
 
+def instruction_count(text):
+    """--max-instructions, for argparse: a count, or 0 for no limit."""
+    try:
+        n = int(text)
+    except ValueError:
+        n = -1
+    if n < 0:
+        raise argparse.ArgumentTypeError(
+            "%s is not a count of instructions (0 for no limit)" % text)
+    return n
+
+
+def os_error(e):
+    """An OSError as `PATH: reason`, not Python's `[Errno 2] ...: 'PATH'`."""
+    if e.strerror and e.filename:
+        return "%s: %s" % (e.filename, e.strerror)
+    return e.strerror or str(e)
+
+
+def planned_adds(specs, text, flag):
+    """The files -a or -t names, as (path, name, drive, text), each checked
+    before anything is resolved or copied: a spec naming no file used to get
+    as far as the ROM and the disk, seconds in, and then end with Python's
+    `[Errno 2] No such file or directory: 'NOPE.COM'`."""
+    plan = []
+    for spec in specs:
+        drive, path, name = split_spec(spec)
+        if drive not in ("A", "B"):
+            raise UsageError("%s %s: files go on A: or B:, not %s:"
+                             % (flag, spec, drive))
+        if os.path.isdir(path):
+            for fn in sorted(os.listdir(path)):
+                fp = os.path.join(path, fn)
+                if os.path.isfile(fp) and not fn.startswith("."):
+                    default_cpm_name(fp)
+                    plan.append((fp, None, drive, text))
+        elif os.path.isfile(path):
+            if name is None:
+                default_cpm_name(path)
+            else:
+                cpm_name(name)
+            plan.append((path, name, drive, text))
+        else:
+            raise UsageError("%s %s: no such file or directory" % (flag, path))
+    return plan
+
+
 def build_parser():
     p = Parser(
         prog="romwbw-batch",
@@ -904,7 +956,7 @@ def build_parser():
     p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
                    metavar="SECS", help="kill the run after this long "
                                         "(default %d)" % DEFAULT_TIMEOUT)
-    p.add_argument("--max-instructions", type=int, metavar="N",
+    p.add_argument("--max-instructions", type=instruction_count, metavar="N",
                    help="the emulator stops the run after N Z80 instructions "
                         "(default: its own, ten billion); 0 for no limit")
     p.add_argument("--work", metavar="DIR",
@@ -930,29 +982,28 @@ def main(argv):
     try:
         try:
             if args.script:
+                if not os.path.isfile(args.script):
+                    raise UsageError("--script %s: no such file" % args.script)
                 commands += read_script(args.script)
             if not commands:
                 raise UsageError("no commands: give -c LINE or --script FILE")
+            plan = planned_adds(args.add, False, "-a") + \
+                planned_adds(args.add_text, True, "-t")
             b = Batch(workdir=args.work, rom=args.rom, system=args.disk,
                       emulator=args.emu, offline=args.offline, isx=args.isx,
                       exact=args.exact, timeout=args.timeout,
                       verbose=args.verbose,
                       max_instructions=args.max_instructions)
-            for specs, text in ((args.add, False), (args.add_text, True)):
-                for spec in specs:
-                    drive, path, name = split_spec(spec)
-                    if os.path.isdir(path):
-                        for fn in sorted(os.listdir(path)):
-                            fp = os.path.join(path, fn)
-                            if os.path.isfile(fp) and not fn.startswith("."):
-                                b.add(fp, None, drive, text)
-                    else:
-                        b.add(path, name, drive, text)
+            for path, name, drive, text in plan:
+                b.add(path, name, drive, text)
         except UsageError as e:
             say(str(e))
             return EX_USAGE
-        except (BatchError, OSError) as e:
+        except BatchError as e:
             say(str(e))
+            return EX_ENV
+        except OSError as e:
+            say(os_error(e))
             return EX_ENV
         return run_batch(b, commands, args)
     except KeyboardInterrupt:

@@ -69,11 +69,12 @@ emulator now holds back.
 A command may be 125 characters; the CCP's buffer is 127 and SUBMIT.COM
 refuses longer. Commands are passed as written; the CCP upper-cases them.
 
-Exit status: **0** the batch completed and every `-g` matched something;
-**1** it did not complete, or a `-g` matched nothing; **2** something it needs
-is missing - the emulator, the ROM, the disk, `cpm_disk.py`; **64** usage;
-**130** interrupted. The scratch directory, with its disk images, is removed
-however the tool exits, unless `--work` named it.
+Exit status: **0** the batch completed and every `-g` matched something; **1**
+it did not complete, or a `-g` matched nothing; **2** something it needs is
+missing - the emulator, the ROM, the disk, `cpm_disk.py`; **64** usage, a file
+to add or a `--script` that is not there among it, all checked before the ROM
+and the disk are looked for; **130** interrupted. The scratch directory, with
+its disk images, is removed however the tool exits, unless `--work` named it.
 
 It needs `cpm_disk.py`, cpmemu's disk tool, found as the rest of this
 repository finds it: `$CPM_DISK`, then a sister `../cpmemu` checkout, then a

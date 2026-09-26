@@ -196,9 +196,15 @@ back RomWBW's STAT.COM, said nothing and exited 0; the exit status is as it
 was, as the stock file may be what was wanted. `--name` takes a CP/M name of up
 to eight characters - CONSOLE, DSKRESET, STOPSPLR - and gives the ISIS steps
 the first six or five, as DRI did; a missing `--include` is an error rather
-than skipped. Both tools remove their scratch directory on every exit, `^C` and
-setup errors included, and `romwbw-batch --isx=compact` attaches B: even when
-nothing is added to it, since ISIS programs put their work files on `:F1:`.
+than skipped. Both tools check their arguments before they look for the ROM and
+the disk, which `romwbw-get` takes seconds to resolve: `--max-instructions -5`
+was refused only after that, and `romwbw-batch -a NOPE.COM` got as far and then
+exited 2 with Python's `[Errno 2] No such file or directory: 'NOPE.COM'`. Both
+are now usage errors at once (exit 64), the second as `-a NOPE.COM: no such
+file or directory`. Both tools remove their scratch directory on every exit,
+`^C` and setup errors included, and `romwbw-batch --isx=compact` attaches B:
+even when nothing is added to it, since ISIS programs put their work files on
+`:F1:`.
 
 `tests/batch_test.py` (in `make test`) checks the pieces with no emulator - the
 submit layout, the OMF, `tools/isxbios.asm` against the bytes the tool carries,
