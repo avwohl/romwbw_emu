@@ -150,21 +150,26 @@ compiles in about a second of CPU, and prints the same 66 lines compiled by
 Intel's compiler and by uplm80 - `tests/isx/DIFF1.PLM`, the start of a
 differential test for uplm80.
 
-**A failed build says so.** `romwbw-plm80` fails a build on any of the
-failure messages the tools print - PL/M-80's I/O and fatal errors, the ISIS-II
-file errors of LINK and LOCATE, OBJCPM's `NO OBJECT FILE`, PIP's `NO FILE:`,
+**A failed build says so.** `romwbw-plm80` fails a build on any of the failure
+messages the tools print - PL/M-80's I/O and fatal errors, the ISIS-II file
+errors of LINK and LOCATE, OBJCPM's `NO OBJECT FILE`, PIP's `NO FILE:`,
 GENMOD's - each read out of the binary that prints it, and none seen in the
 console of any good build. It used to decide by whether the output file was in
 the `-o` directory, which is `.` by default, so a rebuild that could not open
 an `$INCLUDE` file reported `built` and exited 0 beside the last build's .COM.
 Now each run owns its output names in `-o`: it writes what it produced, removes
-what it did not, and of a failed build writes only the listings.
-`--name` takes a CP/M name of up to eight characters - CONSOLE, DSKRESET,
-STOPSPLR - and gives the ISIS steps the first six or five, as DRI did; a
-missing `--include` is an error rather than skipped. Both tools remove their
-scratch directory on every exit, `^C` and setup errors included, and
-`romwbw-batch --isx=compact` attaches B: even when nothing is added to it,
-since ISIS programs put their work files on `:F1:`.
+what it did not, and of a failed build writes only the listings. And what it
+produced is what the run made on A:, not what A: holds afterwards: A: is a copy
+of `hd1k_cpm22`, with 95 files of RomWBW's own in 3.6.0, and `--name ED --stack
+XYZ` - LOCATE cannot read the stack size - reported ED.COM made, RomWBW's. Each
+output name is erased from A: before the run, except ASSIGN.COM, which the
+batch runs to swap B: in and which counts only if the run changed it; an
+`--include` named like an output is refused. `--name` takes a CP/M name of up
+to eight characters - CONSOLE, DSKRESET, STOPSPLR - and gives the ISIS steps
+the first six or five, as DRI did; a missing `--include` is an error rather
+than skipped. Both tools remove their scratch directory on every exit, `^C` and
+setup errors included, and `romwbw-batch --isx=compact` attaches B: even when
+nothing is added to it, since ISIS programs put their work files on `:F1:`.
 
 `tests/batch_test.py` (in `make test`) checks the pieces with no emulator -
 the submit layout, the OMF, `tools/isxbios.asm` against the bytes the tool

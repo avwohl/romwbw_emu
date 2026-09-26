@@ -523,6 +523,10 @@ class Drive(object):
     def has(self, name):
         return any(True for _ in self._entries(name))
 
+    def remove(self, name):
+        """Erase a file, as ERA would; True if there was one."""
+        return self.disk.delete_file(name, 0, exact=True) > 0
+
 
 def text_bytes(raw):
     """A host text file as CP/M holds one: CR LF lines, ^Z padded.
@@ -793,6 +797,10 @@ class Batch(object):
 
     def read(self, name, drive="A"):
         return self.drive(drive).read(cpm_name(name))
+
+    def remove(self, name, drive="A"):
+        """Erase a file before the run - one of the system disk's own, say."""
+        return self.drive(drive).remove(cpm_name(name))
 
     def extract(self, pattern, outdir, drive="A"):
         """Files matching a CP/M wildcard, written under their CP/M names."""

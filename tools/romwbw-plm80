@@ -43,6 +43,13 @@
 # its listings (.LST, and LOCATE's .TRA), which say what went wrong - not the
 # .COM or .PRL, objects or hex it made.
 #
+# "Produced" is judged on A:, which is a copy of the system disk and holds
+# 95 files of RomWBW's own (3.6.0) - ED.COM, PIP.COM, STAT.COM, LOAD.COM,
+# DUMP.COM, SUBMIT.COM.  So before the run each output name is erased from A:
+# (the build would replace it anyway), and a file of that name afterwards is
+# this run's.  ASSIGN.COM, which the batch runs to swap B: in, cannot go; an
+# output of that name counts as produced only if the run changed it.
+#
 # Exit status: 0 built, with no compiler errors; 1 the build failed or
 # reported errors (the console log says where); 2 a tool or file is missing;
 # 64 usage; 130 interrupted.
@@ -316,6 +323,34 @@ def build_parser():
     return p
 
 
+# The system disk's files the batch itself runs while it builds, which an
+# output of the same name cannot displace: ASSIGN swaps B: in, first and after
+# every `CPM`.  (The prl route also runs PIP, but writes only .PRL and .HEX.)
+RUNS_FROM_A = ("ASSIGN.COM",)
+
+
+def clear_outputs(b, outs):
+    """Erase the output names from A: before the run, so that what is there
+    afterwards is what the run made.
+
+    A: is a copy of the system disk, and an output named like one of its
+    files was taken for built when the build made nothing: `--name ED` with
+    a LOCATE that failed reported ED.COM produced, and wrote RomWBW's ED.COM
+    to -o.  Each such file is erased - the build would replace it anyway -
+    except one the batch runs itself, which is kept and returned, name to
+    contents, for build() to compare."""
+    kept = {}
+    have = set(b.names("A"))
+    for disk, _ in outs:
+        if disk not in have:
+            continue
+        if disk in RUNS_FROM_A:
+            kept[disk] = b.read(disk)
+        else:
+            b.remove(disk)
+    return kept
+
+
 def include_files(includes):
     """The files --include names: each a file, or a directory of them."""
     files = []
@@ -365,6 +400,12 @@ def main(argv):
                 raise rb.UsageError("--data wants a hex number, e.g. 1000")
             cmds, outs = build_commands(args.route, args.sources, name, args)
             includes = include_files(args.include)
+            owned = {d for d, _ in outs}
+            for p in includes:
+                n = rb.cpm_name(os.path.basename(p))
+                if n in owned:
+                    raise rb.UsageError("--include: %s is a name this build "
+                                        "writes itself" % n)
 
             b = rb.Batch(workdir=args.work, rom=args.rom, system=args.disk,
                          emulator=args.emu, offline=args.offline, isx=True,
@@ -376,13 +417,14 @@ def main(argv):
                 b.add(p, None, "A", text=True)
             for s in args.sources:
                 b.add(s, None, "A", text=True)
+            kept = clear_outputs(b, outs)
         except rb.UsageError as e:
             say(str(e))
             return EX_USAGE
         except (rb.BatchError, OSError) as e:
             say(str(e))
             return EX_ENV
-        return build(b, cmds, outs, args)
+        return build(b, cmds, outs, args, kept)
     except KeyboardInterrupt:
         say("interrupted")
         return EX_INTERRUPTED
@@ -392,7 +434,10 @@ def main(argv):
             b.cleanup()
 
 
-def build(b, cmds, outs, args):
+def build(b, cmds, outs, args, kept=None):
+    """Run the build and write its outputs.  `kept` is clear_outputs()'s:
+    output names A: still held when the run began, with their contents."""
+    kept = kept or {}
     r = b.run(cmds)
     with open(os.path.join(b.workdir, "console.log"), "w",
               encoding="latin-1") as f:
@@ -406,13 +451,22 @@ def build(b, cmds, outs, args):
         print(r.tail(), file=sys.stderr)
         status = EX_FAILED
 
-    # What THIS run left on A:.  Asking the -o directory instead is what let
+    # What THIS run made on A:.  Asking the -o directory instead is what let
     # a rebuild that failed at its first step report success: the output an
-    # earlier build left there was still there.
+    # earlier build left there was still there.  And asking only whether A:
+    # has the name let RomWBW's own ED.COM pass for a failed `--name ED`;
+    # clear_outputs() erased those, and a name it had to keep counts only if
+    # the run changed it.
     on_disk = set(b.names("A"))
+    made = set(d for d, _ in outs if d in on_disk and
+               (d not in kept or b.read(d) != kept[d]))
     main_disk, main_host = outs[0]
-    if main_disk not in on_disk:
-        say("no %s was produced" % main_host)
+    if main_disk not in made:
+        if main_disk in kept and main_disk in on_disk:
+            say("no %s was produced: A: already had %s, which the build runs, "
+                "and the run left it as it was" % (main_host, main_disk))
+        else:
+            say("no %s was produced" % main_host)
         status = EX_FAILED
     elif problems:
         status = EX_FAILED
@@ -423,12 +477,12 @@ def build(b, cmds, outs, args):
         dst = os.path.join(args.out, host)
         # A failed build's listings say what went wrong; what else it made -
         # the .COM or .PRL, objects, hex - is not to be mistaken for output.
-        if disk in on_disk and (status == EX_OK or host.endswith(LISTINGS)):
+        if disk in made and (status == EX_OK or host.endswith(LISTINGS)):
             with open(dst, "wb") as f:
                 f.write(b.read(disk))
             written.append(dst)
             continue
-        if disk in on_disk:
+        if disk in made:
             withheld.append(host)
         if os.path.lexists(dst):
             os.remove(dst)

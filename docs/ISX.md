@@ -253,6 +253,16 @@ rebuild that fails cannot leave the last good build's .COM and a listing saying
 listings - each .LST and LOCATE's .TRA - which say what went wrong, and not
 the .COM or .PRL, the objects or the hex it made.
 
+What the run produced is what it made on A:, and A: starts as a copy of the
+system disk, which has 95 files of its own in 3.6.0 - ED.COM, PIP.COM,
+STAT.COM, LOAD.COM, DUMP.COM, SUBMIT.COM and the rest. So each of the run's
+output names is erased from A: before it starts, and a file of that name
+afterwards is this run's: `--name ED` builds an ED.COM, or fails with "no
+ED.COM was produced" - never passes RomWBW's ED.COM off as its own. ASSIGN.COM
+is the exception, because the batch runs it to swap B: in: `--name ASSIGN`
+keeps RomWBW's on A:, and the output counts only if the run changed it. An
+`--include` file named like one of the outputs is refused.
+
 ## Results
 
 Every PL/M program in `mpm2src` with a binary beside it, built from its source

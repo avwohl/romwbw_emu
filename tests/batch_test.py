@@ -9,7 +9,8 @@ Three layers, each skipped when what it needs is not here:
     ISX's exact-length convention on a disk image (needs cpm_disk.py), and
     romwbw-plm80's reading of the console and its handling of the -o
     directory, which reported a failed rebuild as built because the last
-    build's output was still there;
+    build's output was still there, and of the system disk's own files, one
+    of which it took for a failed build's output;
   * batches on the emulator (needs src/romwbw_emu and a cached ROM and
     hd1k_cpm22 - `tools/romwbw-get fetch @rom hd1k_cpm22`): a batch that runs
     to its end, one that does not, and the two programs that found the
@@ -28,7 +29,9 @@ Three layers, each skipped when what it needs is not here:
   * Intel PL/M-80 under ISX (needs $ISX_TOOLS naming DRI's PLM_WORK
     directory, which this repository does not carry): a program compiled by
     both ISX modes, and DRI's `CPM` getting back to CP/M from each; a rebuild
-    that fails reported as failed; and --isx=compact with nothing on B:.
+    that fails reported as failed; a build named ED, as the system disk's
+    editor is, that fails and one that does not; and --isx=compact with
+    nothing on B:.
 
 Run: python3 tests/batch_test.py      (from anywhere)
      make -C src test
@@ -270,21 +273,33 @@ def test_plm80_console():
 
 
 class FakeBatch(object):
-    """What build() asks of a Batch, with the run's console and disk made up."""
+    """What build() asks of a Batch, with the run's console and disk made up.
 
-    def __init__(self, workdir, console, files):
+    `files` is A: after the run; `before`, if given, is A: before it, which
+    clear_outputs() looks at and edits."""
+
+    def __init__(self, workdir, console, files, before=None):
         self.workdir, self.console, self.files = workdir, console, files
+        self.a = dict(before) if before is not None else dict(files)
+        self.ran = False
 
     def run(self, commands):
+        self.ran = True
         r = rb.Result()
         r.console, r.completed, r.seconds = self.console, True, 0.1
         return r
 
+    def _disk(self):
+        return self.files if self.ran else self.a
+
     def names(self, drive="A"):
-        return sorted(self.files)
+        return sorted(self._disk())
 
     def read(self, name, drive="A"):
-        return self.files[name]
+        return self._disk()[name]
+
+    def remove(self, name, drive="A"):
+        return self.a.pop(name, None) is not None
 
 
 def test_plm80_outputs():
@@ -351,6 +366,88 @@ def test_plm80_outputs():
         except rp.rb.UsageError:
             ok = True
         check(ok, "romwbw-plm80: --name %s is refused" % bad)
+
+
+# A: as hd1k_cpm22 has it, in part: RomWBW's own ED.COM, ASSIGN.COM and more.
+SYSTEM_A = {"ED.COM": b"RomWBW's ED", "ASSIGN.COM": b"RomWBW's ASSIGN",
+            "PIP.COM": b"RomWBW's PIP", "STAT.COM": b"RomWBW's STAT",
+            "HELLO.PLM": b"the source"}
+
+LOCATE_FAILED = (
+    "0>:F1:LOCATE ED.MOD CODE(0100H) STACKSIZE(XYZ) MAP PRINT(ED.TRA)\x00\n"
+    "ISIS-II OBJECT LOCATER V3.0\n\n"
+    "A>B:OBJCPM ED\n\nNO OBJECT FILE\nA>TYPE ROMWBW.END\n")
+
+
+def test_plm80_produced():
+    """An output named like a file of the system disk's own is not taken for
+    built: `romwbw-plm80 com HELLO.PLM --name ED --stack XYZ` failed in
+    LOCATE and reported ED.COM produced, because A: - a copy of hd1k_cpm22 -
+    had RomWBW's ED.COM."""
+    def run(name, console, made, route="com", before=SYSTEM_A):
+        args = rp.build_parser().parse_args([route, "HELLO.PLM"])
+        cmds, outs = rp.build_commands(route, ["HELLO.PLM"], name, args)
+        b = FakeBatch(None, console, None, before)
+        kept = rp.clear_outputs(b, outs)
+        after = dict(b.a)
+        after.update(made)
+        b.files = after
+        with tempfile.TemporaryDirectory() as d:
+            b.workdir = d
+            args.out, args.quiet, args.work = os.path.join(d, "out"), True, None
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                status = rp.build(b, cmds, outs, args, kept)
+            left = {n: open(os.path.join(args.out, n), "rb").read()
+                    for n in sorted(os.listdir(args.out))}
+        return status, left, err.getvalue(), b, kept
+
+    status, left, err, b, kept = run("ED", LOCATE_FAILED, {})
+    check("ED.COM" not in b.a and "STAT.COM" in b.a and kept == {},
+          "romwbw-plm80: RomWBW's ED.COM is erased from A: before a build "
+          "that writes ED.COM, and nothing else is")
+    check(status == 1 and "no ED.COM was produced" in err and
+          "ED.COM" not in left,
+          "romwbw-plm80: --name ED whose LOCATE fails is not built, and "
+          "RomWBW's ED.COM does not reach -o")
+    status, left, err, b, kept = run("ED", GOOD_CONSOLE,
+                                     {"ED.COM": b"this build"})
+    check(status == 0 and left.get("ED.COM") == b"this build",
+          "romwbw-plm80: --name ED that builds writes this build's ED.COM")
+
+    # ASSIGN.COM swaps B: in, so it stays on A:, and must change to count.
+    status, left, err, b, kept = run("ASSIGN", LOCATE_FAILED, {})
+    check(kept == {"ASSIGN.COM": b"RomWBW's ASSIGN"} and
+          "ASSIGN.COM" in b.a,
+          "romwbw-plm80: ASSIGN.COM, which the batch runs, is kept on A:")
+    check(status == 1 and "no ASSIGN.COM was produced: A: already had" in err
+          and "ASSIGN.COM" not in left,
+          "romwbw-plm80: ...and a build that leaves it unchanged produced "
+          "nothing")
+    status, left, err, b, kept = run("ASSIGN", GOOD_CONSOLE,
+                                     {"ASSIGN.COM": b"this build"})
+    check(status == 0 and left.get("ASSIGN.COM") == b"this build",
+          "romwbw-plm80: ...and one that replaces it did")
+    status, left, err, b, kept = run("PIP", LOCATE_FAILED, {})
+    check("PIP.COM" not in b.a and status == 1 and "PIP.COM" not in left,
+          "romwbw-plm80: PIP.COM is erased for com --name PIP, which does not "
+          "run it, and not passed off as built")
+
+    # --include cannot name a file the build writes: it would be erased.
+    with tempfile.TemporaryDirectory() as d:
+        tools = os.path.join(d, "tools")
+        os.makedirs(tools)
+        for n in rp.ISIS_TOOLS:
+            open(os.path.join(tools, n), "wb").close()
+        open(os.path.join(d, "HELLO.PLM"), "w").close()
+        open(os.path.join(d, "HELLO.LST"), "w").close()
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            status = rp.main(["com", os.path.join(d, "HELLO.PLM"), "--tools",
+                              tools, "--include", os.path.join(d, "HELLO.LST"),
+                              "--offline"])
+        check(status == 64 and "HELLO.LST is a name this build writes" in
+              err.getvalue(),
+              "romwbw-plm80: an --include named like one of the build's "
+              "outputs is refused")
 
 
 # --- batches on the emulator ----------------------------------------------------
@@ -735,6 +832,7 @@ def test_isx(tools_dir):
             if mode == "compact":
                 first = built
                 test_isx_rebuild(tools_dir, src, d)
+                test_isx_system_names(tools_dir, src, first)
             else:
                 check(built is not None and built == first,
                       "ISX: both modes build the same DIFF1.COM")
@@ -747,6 +845,28 @@ def test_isx(tools_dir):
                    "-o", "out"], d, timeout=600)
         check(r.returncode == 0 and "Select" not in r.stdout,
               "ISX (compact): PL/M-80 runs with nothing added to B:")
+
+
+def test_isx_system_names(tools_dir, src, built):
+    """DIFF1 built as ED.COM, a name hd1k_cpm22 has a file of its own under.
+    With a stack size LOCATE cannot read, the build fails - and it used to
+    report ED.COM produced, and write RomWBW's ED.COM to -o."""
+    with tempfile.TemporaryDirectory() as d:
+        r = run_tool([os.path.join(TOOLS, "romwbw-plm80"), "com", src,
+                      "--name", "ED", "--stack", "XYZ", "--tools", tools_dir,
+                      "--offline", "-o", "out"], d, timeout=600)
+        check(r.returncode == 1 and "no ED.COM was produced" in r.stdout and
+              not os.path.exists(os.path.join(d, "out", "ED.COM")),
+              "ISX (compact): --name ED --stack XYZ fails in LOCATE, and "
+              "RomWBW's ED.COM is not taken for its output")
+        r = run_tool([os.path.join(TOOLS, "romwbw-plm80"), "com", src,
+                      "--name", "ED", "--tools", tools_dir, "--offline",
+                      "-o", "out"], d, timeout=600)
+        com = os.path.join(d, "out", "ED.COM")
+        got = open(com, "rb").read() if os.path.exists(com) else None
+        check(r.returncode == 0 and got is not None and got == built,
+              "ISX (compact): --name ED that builds writes DIFF1's code as "
+              "ED.COM")
 
 
 def test_isx_rebuild(tools_dir, src, d):
@@ -785,6 +905,7 @@ def main():
         test_exact_lengths(cd)
     test_plm80_console()
     test_plm80_outputs()
+    test_plm80_produced()
 
     ready = cd is not None
     why = ""
