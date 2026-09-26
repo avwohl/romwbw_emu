@@ -10,6 +10,11 @@ tools/romwbw-batch -t hello.asm -c "ASM HELLO" -c "LOAD HELLO" -g HELLO.COM
 It is the harness under [ISX.md](ISX.md)'s Intel PL/M-80 recipes, and it is
 general: anything you would type at `A>` in a CP/M 2.2 session, it can run.
 
+Installed from the .deb or the .rpm, it is `romwbw-batch` on PATH, beside
+`romwbw_emu`, `romwbw-get` and `romwbw-plm80`, and this file, [ISX.md](ISX.md)
+and `isxbios.asm` are in `/usr/share/doc/romwbw-emu/`. The examples here are
+written for a checkout, as `tools/romwbw-batch`.
+
 ## What it does
 
 1. **Copies the system disk.** `hd1k_cpm22` from the selected RomWBW release,
@@ -57,7 +62,7 @@ emulator now holds back.
 | `--isx[=compact\|cbios]` | set the machine up for DRI's ISX - [ISX.md](ISX.md) |
 | `--exact` | record exact file lengths the way ISX does, and trim by them on the way out |
 | `--rom ID\|FILE`, `--disk ID\|FILE` | the ROM, and the CP/M 2.2 system disk to copy |
-| `--emu PATH` | the emulator (default `$ROMWBW_EMU`, `src/romwbw_emu`, then PATH) |
+| `--emu PATH` | the emulator (default `$ROMWBW_EMU`, the `romwbw_emu` beside the tool, `src/romwbw_emu`, then PATH) |
 | `--offline` | pass `--offline` to `romwbw-get` |
 | `--timeout SECS` | kill the run after this long (default 900) |
 | `--max-instructions N` | have the emulator stop the run after N Z80 instructions (default ten billion, the emulator's own for a run whose stdin is not a terminal); 0 for no limit |
@@ -76,9 +81,16 @@ to add or a `--script` that is not there among it, all checked before the ROM
 and the disk are looked for; **130** interrupted. The scratch directory, with
 its disk images, is removed however the tool exits, unless `--work` named it.
 
-It needs `cpm_disk.py`, cpmemu's disk tool, found as the rest of this
-repository finds it: `$CPM_DISK`, then a sister `../cpmemu` checkout, then a
-`cpm_disk` on PATH.
+It needs `cpm_disk.py`, cpmemu's disk tool, and looks for it in this order:
+`$CPM_DISK`; a cpmemu checkout beside this one, as the rest of this
+repository finds it; the copy the .deb and .rpm install for it,
+`/usr/share/romwbw_emu/cpm_disk.py` (found beside the tool's own directory,
+as `../share/romwbw_emu/`); then a `cpm_disk` on PATH, which cpmemu's own
+package and `make install` put there. The packaged copy comes before PATH
+because it is the one the release was built with: a cpm_disk.py without
+`delete_file(..., exact=)`, which came with cpmemu 4.10.0, is refused by name
+rather than failing half way through a batch. Found nowhere, the error says
+where it looked.
 
 ## Drives
 

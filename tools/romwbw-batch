@@ -85,9 +85,10 @@
 # S1 when adding a file and honours it when extracting one.
 #
 # The files it needs: cpm_disk.py (cpmemu's disk tool - $CPM_DISK, then a
-# sister ../cpmemu checkout, then a `cpm_disk` on PATH), the romwbw_emu binary
-# ($ROMWBW_EMU, ../src/romwbw_emu, then PATH) and, unless --rom and --disk name
-# files, tools/romwbw-get to find the ROM and the system disk.
+# sister ../cpmemu checkout, then the copy the .deb and .rpm install in
+# /usr/share/romwbw_emu, then a `cpm_disk` on PATH), the romwbw_emu binary
+# ($ROMWBW_EMU, beside this script, ../src/romwbw_emu, then PATH) and, unless
+# --rom and --disk name files, romwbw-get to find the ROM and the system disk.
 #
 # LIMITS.  --timeout kills a run after that many seconds of wall clock, and the
 # emulator stops one after --max-instructions Z80 instructions - its own
@@ -107,6 +108,7 @@ import argparse
 import fnmatch
 import importlib.machinery
 import importlib.util
+import inspect
 import io
 import os
 import random
@@ -190,33 +192,96 @@ def say(msg):
 # --- finding the pieces --------------------------------------------------------
 
 def load_module(path, name):
-    """Import a Python file by path - cpm_disk.py, or a script with no .py."""
+    """Import a Python file by path - cpm_disk.py, or a script with no .py.
+
+    With no bytecode cache written: installed, the file is in /usr/share or
+    /usr/bin, and run as root this left a __pycache__ there that no package
+    owns (and the release workflow's own check of the staged tools put one
+    in the package)."""
     loader = importlib.machinery.SourceFileLoader(name, path)
     spec = importlib.util.spec_from_loader(name, loader)
     mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
+    saved = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        loader.exec_module(mod)
+    finally:
+        sys.dont_write_bytecode = saved
+    return mod
+
+
+# Where the .deb and the .rpm put their copy of cpm_disk.py, relative to the
+# directory this script is installed in (/usr/bin): /usr/share/romwbw_emu/.
+PACKAGED_CPM_DISK = os.path.join(os.pardir, "share", "romwbw_emu",
+                                 "cpm_disk.py")
+
+
+def cpm_disk_candidates():
+    """Where find_cpm_disk() looks, in order, as (path, what it is).
+
+    $CPM_DISK; a cpmemu checkout beside this one, as disks/verify_disk_utils.sh
+    looks; the copy a package installs beside the tools; then `cpm_disk` on
+    PATH, which is what cpmemu's own package and `make install` put there.
+    The packaged copy comes before PATH because it is the one this release was
+    built with - a cpmemu installed separately may be older than the tools
+    need (check_cpm_disk())."""
+    cands = []
+    env = os.environ.get("CPM_DISK")
+    if env:
+        cands.append((env, "$CPM_DISK"))
+    root = os.path.dirname(HERE)
+    cands += [(os.path.join(root, os.pardir, "cpmemu", "util", "cpm_disk.py"),
+               "a cpmemu checkout beside this one"),
+              (os.path.join(root, "cpmemu", "util", "cpm_disk.py"),
+               "a cpmemu checkout inside this one"),
+              (os.path.normpath(os.path.join(HERE, PACKAGED_CPM_DISK)),
+               "the package's copy")]
+    installed = shutil.which("cpm_disk")
+    cands.append((installed or "cpm_disk", "cpm_disk on PATH"))
+    return cands
+
+
+def check_cpm_disk(mod, path):
+    """Refuse a cpm_disk.py that lacks what this tool calls, by name, rather
+    than fail half way through a batch with Python's AttributeError or
+    TypeError: `delete_file(..., exact=True)` came with cpmemu 4.10.0."""
+    missing = [n for n in ("get_disk_object", "create_hd1k_disk",
+                           "filename_to_name83", "entry_name83", "Hd1kDisk")
+               if not hasattr(mod, n)]
+    if not missing:
+        disk = mod.Hd1kDisk
+        missing = [n for n in ("add_file", "extract_file", "list_files",
+                               "delete_file") if not hasattr(disk, n)]
+    if not missing:
+        try:
+            params = inspect.signature(mod.Hd1kDisk.delete_file).parameters
+        except (TypeError, ValueError):
+            params = {}
+        if "exact" not in params:
+            missing = ["delete_file(exact=)"]
+    if missing:
+        raise BatchError(
+            "%s is too old for this tool: it has no %s.  It is cpmemu's "
+            "util/cpm_disk.py, and this needs 4.10.0's or later: set "
+            "$CPM_DISK to a newer one, or update cpmemu."
+            % (path, ", ".join(missing)))
     return mod
 
 
 def find_cpm_disk():
-    """cpm_disk.py, found the way disks/verify_disk_utils.sh finds it."""
-    cands = []
-    env = os.environ.get("CPM_DISK")
-    if env:
-        cands.append(env)
-    root = os.path.dirname(HERE)
-    cands += [os.path.join(root, os.pardir, "cpmemu", "util", "cpm_disk.py"),
-              os.path.join(root, "cpmemu", "util", "cpm_disk.py")]
-    for c in cands:
+    """cpm_disk.py, from the first of cpm_disk_candidates() that exists."""
+    cands = cpm_disk_candidates()
+    for c, _ in cands:
         if os.path.isfile(c):
-            return load_module(os.path.abspath(c), "cpm_disk")
-    installed = shutil.which("cpm_disk")
-    if installed:
-        return load_module(installed, "cpm_disk")
+            c = os.path.abspath(c)
+            return check_cpm_disk(load_module(c, "cpm_disk"), c)
     raise BatchError(
-        "cpm_disk.py not found.  It is cpmemu's util/cpm_disk.py: set "
-        "$CPM_DISK to it, keep a cpmemu checkout beside this one, or run "
-        "cpmemu's `make install`.")
+        "cpm_disk.py not found.  It is cpmemu's util/cpm_disk.py, which the "
+        ".deb and .rpm install as /usr/share/romwbw_emu/cpm_disk.py; set "
+        "$CPM_DISK to it, keep a cpmemu checkout beside this one, or install "
+        "cpmemu (its package or `make install` puts `cpm_disk` on PATH).  "
+        "Looked for:\n" +
+        "\n".join("  %s (%s)" % (c, what) for c, what in cands))
 
 
 def find_emulator(explicit=None):

@@ -454,6 +454,104 @@ def test_plm80_produced():
               "outputs is refused")
 
 
+def test_installed_layout(cd):
+    """The tools as the .deb and .rpm install them: /usr/bin/romwbw-batch and
+    /usr/bin/romwbw-plm80, and cpmemu's cpm_disk.py as
+    /usr/share/romwbw_emu/cpm_disk.py, with no cpmemu checkout beside them,
+    no $CPM_DISK and no cpm_disk on PATH.  Up to 1.48 the packages carried
+    neither tool, and a tool copied to /usr/bin found no cpm_disk.py."""
+    saved = {k: os.environ.get(k) for k in ("CPM_DISK", "PATH")}
+    saved_dwb = sys.dont_write_bytecode
+    with tempfile.TemporaryDirectory() as d:
+        usr = os.path.join(d, "usr")
+        bindir = os.path.join(usr, "bin")
+        share = os.path.join(usr, "share", "romwbw_emu")
+        os.makedirs(bindir)
+        os.makedirs(share)
+        for tool in ("romwbw-batch", "romwbw-plm80"):
+            shutil.copy2(os.path.join(TOOLS, tool), bindir)
+        packaged = os.path.join(share, "cpm_disk.py")
+        shutil.copy2(cd.__file__, packaged)
+        empty = os.path.join(d, "empty")
+        os.makedirs(empty)
+        os.environ.pop("CPM_DISK", None)
+        os.environ["PATH"] = empty
+        try:
+            # Run as a user runs them.  romwbw-plm80 loads romwbw-batch, and
+            # romwbw-batch cpm_disk.py, as modules - which wrote a __pycache__
+            # beside each, in /usr/bin and /usr/share/romwbw_emu, and put one
+            # in the package when the release workflow ran them staged.
+            env = dict(os.environ)
+            env.pop("PYTHONDONTWRITEBYTECODE", None)
+            p = subprocess.run([sys.executable,
+                                os.path.join(bindir, "romwbw-plm80"), "--help"],
+                               env=env, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT)
+            q = subprocess.run([sys.executable,
+                                os.path.join(bindir, "romwbw-batch"), "-c",
+                                "DIR", "--rom", os.path.join(d, "no.rom"),
+                                "--emu", os.path.join(d, "no_emu")],
+                               env=env, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT,
+                               universal_newlines=True)
+            caches = [os.path.join(r, n) for r, dirs, files in os.walk(usr)
+                      for n in dirs + files
+                      if n == "__pycache__" or n.endswith(".pyc")]
+            check(p.returncode == 0 and q.returncode == 2 and
+                  "no emulator at" in q.stdout and not caches,
+                  "installed: the tools run, and leave no bytecode cache in "
+                  "/usr (%s)" % (", ".join(caches) or "none"))
+            sys.dont_write_bytecode = True
+            inst = load("romwbw_batch_installed",
+                        os.path.join(bindir, "romwbw-batch"))
+            found = inst.find_cpm_disk()
+            check(os.path.realpath(found.__file__) ==
+                  os.path.realpath(packaged),
+                  "installed: romwbw-batch finds the package's cpm_disk.py "
+                  "in /usr/share/romwbw_emu")
+            plm = load("romwbw_plm80_installed",
+                       os.path.join(bindir, "romwbw-plm80"))
+            check(os.path.realpath(plm.rb.__file__) ==
+                  os.path.realpath(os.path.join(bindir, "romwbw-batch")),
+                  "installed: romwbw-plm80 loads the romwbw-batch beside it")
+            os.remove(packaged)
+            try:
+                inst.find_cpm_disk()
+                msg = ""
+            except inst.BatchError as e:
+                msg = str(e)
+            check("/usr/share/romwbw_emu/cpm_disk.py" in msg and
+                  "Looked for:" in msg and packaged in msg,
+                  "installed without it: the error says where the package "
+                  "puts it, and where it looked")
+            with open(packaged, "w") as f:
+                f.write("def get_disk_object(d): pass\n"
+                        "def create_hd1k_disk(): pass\n"
+                        "def filename_to_name83(n): pass\n"
+                        "def entry_name83(e): pass\n"
+                        "class Hd1kDisk(object):\n"
+                        "    def add_file(self, n, d): pass\n"
+                        "    def extract_file(self, n): pass\n"
+                        "    def list_files(self): pass\n"
+                        "    def delete_file(self, n, user=0): pass\n")
+            try:
+                inst.find_cpm_disk()
+                msg = ""
+            except inst.BatchError as e:
+                msg = str(e)
+            check("too old" in msg and "delete_file(exact=)" in msg and
+                  "4.10.0" in msg,
+                  "a cpm_disk.py older than 4.10.0 is refused by name, not "
+                  "met half way through a batch")
+        finally:
+            sys.dont_write_bytecode = saved_dwb
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+
 # --- batches on the emulator ----------------------------------------------------
 
 def test_arguments_first():
@@ -1148,6 +1246,10 @@ def main():
     test_plm80_console()
     test_plm80_outputs()
     test_plm80_produced()
+    if cd:
+        test_installed_layout(cd)
+    else:
+        skip("the tools as a package installs them: cpm_disk.py not found")
     test_arguments_first()
 
     ready = cd is not None

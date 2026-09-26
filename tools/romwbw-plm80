@@ -65,11 +65,18 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def _load_batch():
+    # romwbw-batch beside this file - /usr/bin/, installed - and no bytecode
+    # cache written beside it: see load_module() there.
     path = os.path.join(HERE, "romwbw-batch")
     loader = importlib.machinery.SourceFileLoader("romwbw_batch", path)
     spec = importlib.util.spec_from_loader("romwbw_batch", loader)
     mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
+    saved = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        loader.exec_module(mod)
+    finally:
+        sys.dont_write_bytecode = saved
     return mod
 
 

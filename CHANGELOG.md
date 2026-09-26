@@ -81,6 +81,67 @@ pty, sets `S AB E,2`, reboots and times `AutoBoot in 2` to `AutoBoot in 0`:
 1.98 s, where 1.48 took 1.02 s. The ports call nothing new and are as they
 were - see `DOWNSTREAM.md`.
 
+### The packages carry `romwbw-batch` and `romwbw-plm80`, and what they need
+
+The .deb and .rpm installed `romwbw_emu` and `romwbw-get`. The two batch
+tools 1.48 added were only in a checkout, and the docs said to run
+`tools/romwbw-batch`; a copy put in `/usr/bin` by hand found no
+`cpm_disk.py`, which it cannot touch a disk image without. The packages now
+install:
+
+- `/usr/bin/romwbw-batch` and `/usr/bin/romwbw-plm80`, side by side:
+  `romwbw-plm80` loads `romwbw-batch` from its own directory, and each finds
+  `romwbw_emu` and `romwbw-get` there too;
+- `/usr/share/romwbw_emu/cpm_disk.py`, cpmemu's disk tool, taken from the
+  cpmemu clone the release workflow already makes for the Z80 core - the same
+  floating main. Not `/usr/bin/cpm_disk`: that is what cpmemu's own package
+  installs, and two packages must not own one file. This repository still
+  keeps no copy;
+- `BATCH.md`, `ISX.md` and `isxbios.asm`, the source of the BIOS
+  `romwbw-batch` carries as bytes, in `/usr/share/doc/romwbw-emu/`;
+- and a Recommends on `python3`, which the three tools need and the emulator
+  does not - a Recommends and not a Depends, as in cpmemu's packages, since
+  the documented `dpkg -i` and `rpm -i` resolve nothing.
+
+`romwbw-batch` looks for `cpm_disk.py` in `$CPM_DISK`, a cpmemu checkout
+beside its own tree, the package's copy (`../share/romwbw_emu/` from its own
+directory), then a `cpm_disk` on PATH - the package's copy first because it is
+the one the release was built with. A `cpm_disk.py` without
+`delete_file(..., exact=)`, which came with cpmemu 4.10.0, is refused by name
+(`... is too old for this tool: it has no delete_file(exact=) ...`) rather
+than met as a `TypeError` half way through a batch, and found nowhere, the
+error says where the package puts it and lists the places it looked.
+
+**Neither tool writes a bytecode cache beside a module it loads.**
+`romwbw-plm80` loads `romwbw-batch`, and `romwbw-batch` loads
+`cpm_disk.py`, through `SourceFileLoader`, which writes a `__pycache__`
+beside each - into `/usr/bin` and `/usr/share/romwbw_emu` when run as root.
+It was found by building the .deb here: the workflow's own check of the staged
+tools had left `romwbw-batchcpython-314.pyc` and `cpm_disk`'s in the package.
+
+`release.yml`: the staging check runs both staged tools, checks that the
+staged `romwbw-batch` finds the staged `cpm_disk.py` - not the cpmemu clone
+in the workspace - and that no bytecode reached the staging tree. A new step
+reads both packages back: the four programs executable, `cpm_disk.py` and the
+three documents present, `python3` recommended. It then installs the .deb
+with `dpkg -i`, runs both tools' `--help` from `/usr/bin`, and - catalog
+permitting, tri-state as in `test.yml` - fetches `@rom` and `hd1k_cpm22` and
+runs a batch that copies a file with PIP and takes it back out.
+
+Run here, on macOS with fpm 1.18.0: the staging, staging-check and DEB steps
+as the workflow file has them; the new step with `dpkg-deb`, `rpm` and `sudo`
+stood in for from the .deb just built, and failing as it should with a tool
+taken out of the listing (there is no `rpmbuild` here, so the .rpm was not
+built); and from the .deb unpacked, with no cpmemu checkout in reach and no
+`$CPM_DISK`, a batch and `romwbw-plm80 com DIFF1.PLM`, whose DIFF1.COM is the
+checkout's byte for byte. `tests/batch_test.py` lays the two tools and
+`cpm_disk.py` out as a package does, in a scratch `usr/`, with nothing on
+PATH, and checks that they run and leave no bytecode there, that
+`romwbw-batch` finds the package's `cpm_disk.py` and `romwbw-plm80` the
+`romwbw-batch` beside it, the error with it missing, and the refusal of one
+without `exact=`. README's "What the packages install", `docs/BATCH.md` and
+`docs/ISX.md` say where everything goes.
+
 ## [1.48] - 2026-09-25
 
 ### A script's first line no longer goes to the boot loader

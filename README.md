@@ -113,9 +113,18 @@ No package; build from source, which is what CI tests with Apple clang.
 
 ### What the packages install
 
-`romwbw_emu` and `romwbw-get` into `/usr/bin`, and the browser version under
+`romwbw_emu`, `romwbw-get`, and the batch tools `romwbw-batch` and
+`romwbw-plm80` ([docs/BATCH.md](docs/BATCH.md), [docs/ISX.md](docs/ISX.md))
+into `/usr/bin`; the copy of cpmemu's `cpm_disk.py` the batch tools edit disk
+images with into `/usr/share/romwbw_emu/` - not onto PATH, where cpmemu's own
+package puts `cpm_disk`; this README, the licence, `CATALOG.md`, `BATCH.md`,
+`ISX.md` and `isxbios.asm`, the source of the BIOS `romwbw-batch` carries,
+into `/usr/share/doc/romwbw-emu/`; and the browser version under
 `/usr/share/romwbw_emu/web/` with xterm vendored beside it, so it opens with no
-internet. Neither package contains a ROM or a disk image, and the installed page
+internet. The emulator itself needs no Python; the three tools do, and the
+packages recommend `python3`, which `apt install ./romwbw-emu_amd64.deb` and
+`dnf install ./romwbw-emu.x86_64.rpm` pull in and `dpkg -i` and `rpm -i` do
+not. Neither package contains a ROM or a disk image, and the installed page
 has neither until you populate the mirror beside it:
 
 ```bash
@@ -128,8 +137,9 @@ already have.
 ### From source
 
 See [Building](#building). Note that `make install` installs the emulator
-binary only - `romwbw-get` is staged by the release workflow, so from a source
-build run it out of `tools/`.
+binary only - `romwbw-get`, `romwbw-batch` and `romwbw-plm80` are staged by
+the release workflow, so from a source build run them out of `tools/`, where
+the batch tools find `cpm_disk.py` in a cpmemu checkout beside this one.
 
 ## ROMs and Disk Images
 
@@ -199,7 +209,9 @@ sizes above - 8,388,608 and 8,519,680 bytes. See
 Use `cpm_disk.py`, a stdlib-only Python file owned by
 [cpmemu](https://github.com/avwohl/cpmemu) at `util/cpm_disk.py` and kept in no
 copy here. Point `$CPM_DISK` at it, keep a cpmemu checkout beside this one, or
-run cpmemu's `make install`.
+run cpmemu's `make install`. The .deb and .rpm carry a copy for the batch
+tools, taken from cpmemu when the release was built, at
+`/usr/share/romwbw_emu/cpm_disk.py`, and `python3` runs that like any other.
 
 ```bash
 CPM=~/src/cpmemu/util/cpm_disk.py

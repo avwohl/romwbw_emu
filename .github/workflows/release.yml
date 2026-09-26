@@ -184,6 +184,24 @@ jobs:
           # `romwbw_emu` with no argument tells the user to run `romwbw-get`,
           # and that has to be on their PATH when it does.
           install -m 755 tools/romwbw-get staging/usr/bin/romwbw-get
+          # The batch tools, which were not in any package up to 1.48: docs
+          # told users to run tools/romwbw-batch from a checkout.  Side by
+          # side, because romwbw-plm80 loads romwbw-batch from the directory
+          # it is in, and each finds romwbw_emu and romwbw-get there too.
+          install -m 755 tools/romwbw-batch staging/usr/bin/romwbw-batch
+          install -m 755 tools/romwbw-plm80 staging/usr/bin/romwbw-plm80
+          # romwbw-batch edits its disk images with cpmemu's cpm_disk.py, and
+          # this repository keeps no copy of it (README.md, "Reading an
+          # image").  The package does, from the cpmemu clone the qkz80 step
+          # made - the same floating main as the Z80 core, see "On pinning".
+          # Under share/ and not as /usr/bin/cpm_disk: that is the name
+          # cpmemu's own package installs, and two packages must not own one
+          # file.  romwbw-batch looks here before PATH, since a cpmemu
+          # installed separately can be older than it needs - it refuses one
+          # without delete_file(exact=), which came with cpmemu 4.10.0.
+          # Imported, never run, so 644.
+          install -m 644 cpmemu/util/cpm_disk.py \
+             staging/usr/share/romwbw_emu/cpm_disk.py
           # No 2>/dev/null || true here: every one of these is checked in or
           # built above, so a failure means the package would ship incomplete.
           # Discarding that error is what hid the missing page for this long.
@@ -215,6 +233,11 @@ jobs:
           cp README.md staging/usr/share/doc/romwbw-emu/
           cp LICENSE staging/usr/share/doc/romwbw-emu/
           cp docs/CATALOG.md staging/usr/share/doc/romwbw-emu/
+          # The batch tools' manuals, and the source of the 403-byte BIOS
+          # romwbw-batch carries as bytes for --isx=compact, which ISX.md
+          # describes and the bytes mean little without.
+          cp docs/BATCH.md docs/ISX.md tools/isxbios.asm \
+             staging/usr/share/doc/romwbw-emu/
 
       - name: No artifact slipped into the package
         run: |
@@ -233,6 +256,15 @@ jobs:
             echo "message tells users to run it"
             exit 1
           }
+          for t in romwbw-batch romwbw-plm80; do
+            test -x "staging/usr/bin/$t" || {
+              echo "$t is not in the package, or not executable"; exit 1; }
+          done
+          test -f staging/usr/share/romwbw_emu/cpm_disk.py || {
+            echo "cpm_disk.py is not in the package: romwbw-batch cannot"
+            echo "touch a disk image without it"
+            exit 1
+          }
           # One doc directory, named for the package.  This drifted for as
           # long as the package existed, and silently: a split doc directory
           # breaks nothing, it just means half the documentation is somewhere
@@ -248,11 +280,40 @@ jobs:
             echo "$docdirs" | sed 's/^/  /'
             exit 1
           fi
-          for d in README.md LICENSE CATALOG.md; do
+          for d in README.md LICENSE CATALOG.md BATCH.md ISX.md isxbios.asm; do
             test -f "staging/usr/share/doc/romwbw-emu/$d" || {
               echo "$d is not in the package's doc directory"; exit 1; }
           done
-          echo "no .rom or .img staged; romwbw-get is installed"
+          # The staged tools, run from the staging tree as they will be from
+          # /usr: they must find the cpm_disk.py staged for them - not the
+          # cpmemu clone in this workspace, which is not beside the tree they
+          # are in, staging/ - and it must have what they call.
+          staging/usr/bin/romwbw-batch --help >/dev/null
+          staging/usr/bin/romwbw-plm80 --help >/dev/null
+          env -u CPM_DISK python3 -B - staging/usr/bin/romwbw-batch <<'PY'
+          import importlib.machinery, importlib.util, os, sys
+          tool = sys.argv[1]
+          loader = importlib.machinery.SourceFileLoader("rb", tool)
+          spec = importlib.util.spec_from_loader("rb", loader)
+          rb = importlib.util.module_from_spec(spec)
+          loader.exec_module(rb)
+          got = os.path.realpath(rb.find_cpm_disk().__file__)
+          want = os.path.realpath("staging/usr/share/romwbw_emu/cpm_disk.py")
+          if got != want:
+              sys.exit("the staged romwbw-batch found %s, not %s" % (got, want))
+          print("the staged romwbw-batch finds the staged cpm_disk.py")
+          PY
+          # And those runs left no bytecode cache in the tree to be packaged.
+          # romwbw-plm80 loads romwbw-batch, and romwbw-batch cpm_disk.py, as
+          # modules, which writes a __pycache__ beside them unless told not
+          # to - it went into the package this way before load_module() was.
+          found=$(find staging -name __pycache__ -o -name '*.pyc')
+          if [ -n "$found" ]; then
+            echo "Python bytecode reached the package staging area:"
+            echo "$found"
+            exit 1
+          fi
+          echo "no .rom or .img staged; romwbw-get, romwbw-batch and romwbw-plm80 are installed"
           echo "docs are in usr/share/doc/romwbw-emu/, named for the package"
 
       - name: Build DEB package
@@ -265,6 +326,7 @@ jobs:
             --url "https://github.com/${{ github.repository }}" \
             --license "GPL-3.0" \
             --maintainer "Aaron Wohl" \
+            --deb-recommends python3 \
             -C staging \
             .
 
@@ -278,8 +340,66 @@ jobs:
             --url "https://github.com/${{ github.repository }}" \
             --license "GPL-3.0" \
             --maintainer "Aaron Wohl" \
+            --rpm-tag 'Recommends: python3' \
             -C staging \
             .
+
+      # What the packages carry, read back out of them, and the .deb installed
+      # the way README.md says and its tools run.  python3 is a Recommends and
+      # not a Depends, as in cpmemu's packages and for the same reason: the
+      # documented `dpkg -i` and `rpm -i` resolve no dependencies, so a hard
+      # one would stop the emulator - which needs no interpreter - installing
+      # on a minimal machine; `apt install ./x.deb` and `dnf install ./x.rpm`
+      # pull python3 in for everyone else.  romwbw-get, romwbw-batch and
+      # romwbw-plm80 are Python.  fpm writes --rpm-tag into the spec header
+      # as is, so this is the first place the tag is read back.
+      - name: Check the packages carry the tools, and the installed .deb runs them
+        run: |
+          set -euo pipefail
+          dpkg-deb -c romwbw-emu_*.deb > deb.list
+          rpm -qp --qf '[%{FILEMODES:perms} %{FILENAMES}\n]' romwbw-emu-*.rpm > rpm.list
+          for f in romwbw_emu romwbw-get romwbw-batch romwbw-plm80; do
+            grep -qE "^-rwxr-xr-x .* \./usr/bin/$f\$" deb.list || {
+              echo "the .deb has no executable /usr/bin/$f"; exit 1; }
+            grep -qxF -- "-rwxr-xr-x /usr/bin/$f" rpm.list || {
+              echo "the .rpm has no executable /usr/bin/$f"; exit 1; }
+          done
+          for f in /usr/share/romwbw_emu/cpm_disk.py \
+                   /usr/share/doc/romwbw-emu/BATCH.md \
+                   /usr/share/doc/romwbw-emu/ISX.md \
+                   /usr/share/doc/romwbw-emu/isxbios.asm; do
+            grep -qE " \.$f\$" deb.list || { echo "the .deb has no $f"; exit 1; }
+            grep -qE " $f\$" rpm.list || { echo "the .rpm has no $f"; exit 1; }
+          done
+          dpkg-deb -f romwbw-emu_*.deb Recommends | grep -qx 'python3'
+          rpm -qp --recommends romwbw-emu-*.rpm | grep -q '^python3'
+          echo "both packages carry the emulator and the three tools, and recommend python3"
+          #
+          # Installed.  The staging check above ran the tools from the build
+          # tree; this runs what a user gets, from /usr/bin, in a directory
+          # with nothing of this repository in it.
+          sudo dpkg -i romwbw-emu_*.deb
+          work=$(mktemp -d)
+          cd "$work"
+          romwbw-batch --help >/dev/null
+          romwbw-plm80 --help >/dev/null
+          # A batch needs the ROM and hd1k_cpm22 from the catalog, and the
+          # fetch is tri-state as in test.yml: a GitHub outage is a warning,
+          # not a failed release; a catalog that contradicts itself is red.
+          set +e
+          romwbw-get fetch @rom hd1k_cpm22
+          rc=$?
+          set -e
+          case "$rc" in
+            0) printf 'hello\n' > hello.txt
+               romwbw-batch -t hello.txt -c "PIP COPY.TXT=HELLO.TXT" \
+                   -g COPY.TXT -o out
+               grep -q hello out/COPY.TXT
+               echo "the installed romwbw-batch ran a batch and brought back its file" ;;
+            2) echo "::warning::the romwbw_disks catalog was unreachable, so no batch was run from the installed package" ;;
+            *) echo "::error::romwbw-get fetch failed - see above"; exit 1 ;;
+          esac
+          sudo dpkg -r romwbw-emu
 
       - name: Create version-less copies for latest download
         run: |

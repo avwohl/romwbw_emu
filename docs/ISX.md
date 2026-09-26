@@ -17,6 +17,10 @@ and the 25th differs only in bytes the program never initialises (see
 None of DRI's or Intel's binaries is in this repository. Point the tools at
 your own copy of `PLM_WORK`.
 
+Installed from the .deb or the .rpm, the two tools are `romwbw-batch` and
+`romwbw-plm80` on PATH, and this file, [BATCH.md](BATCH.md) and
+`isxbios.asm` - `tools/isxbios.asm` below - are in `/usr/share/doc/romwbw-emu/`.
+
 ## What ISX is
 
 ISX.COM is 12,544 bytes and loads at 0100H like any CP/M program. It holds:
