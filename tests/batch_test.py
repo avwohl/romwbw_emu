@@ -590,6 +590,7 @@ def test_batches():
         test_boot_image_polls(emu, rom, d)
         test_instruction_limit(emu, rom, d)
         test_escape_at_prompt(emu, rom)
+        test_countdown_real_time(emu, rom)
 
         # ...and MBASIC, which checks for ^C before every statement, ran at a
         # hundred instructions a second and never printed DONE.
@@ -956,6 +957,88 @@ def test_escape_at_prompt(emu, rom):
     check(median is not None and median < 0.06,
           "^E at the boot prompt reaches sim> at once (median of 5: %s)"
           % ("%.3fs" % median if median is not None else "no sim>"))
+
+
+def test_countdown_real_time(emu, rom):
+    """A SYSCONF-set autoboot countdown, on a terminal, takes the seconds it
+    says.  romldr times it with a delay loop calibrated to the 4 MHz the
+    HBIOS reports, and from 1.48, when the idle rule stopped counting it as
+    waiting, it ran at host speed: `S AB E,3` was over in 0.40 s.  (1.47
+    slept 10 ms after every instruction of it, and a one-second countdown
+    had not finished after 400 s.)  The CLI now paces the loader's polls to
+    the time each turn means - `S AB E,2` should take two seconds, from
+    `AutoBoot in 2` to `AutoBoot in 0`."""
+    try:
+        import pty
+        import select
+        import signal
+        import time
+    except ImportError:
+        skip("the autoboot countdown's length: no pty module here")
+        return
+    cfg = tempfile.mkdtemp(prefix="romwbw-countdown-")
+    pid, fd = pty.fork()
+    if pid == 0:
+        try:
+            # SYSCONF changes NVRAM, which the CLI saves at exit: not to the
+            # config directory of whoever runs the tests.
+            os.environ["XDG_CONFIG_HOME"] = cfg
+            os.execv(emu, [emu, "--romwbw=" + rom, "--boot=H", "--no-config"])
+        finally:
+            os._exit(127)
+    buf = bytearray()
+    pos = [0]
+
+    def wait_for(want, secs):
+        """Read until `want` appears after the last match; its time, or None."""
+        end = time.time() + secs
+        while time.time() < end:
+            i = buf.find(want, pos[0])
+            if i >= 0:
+                pos[0] = i + len(want)
+                return time.time()
+            r, _, _ = select.select([fd], [], [], 0.002)
+            if r:
+                try:
+                    buf.extend(os.read(fd, 65536))
+                except OSError:
+                    return None
+        return None
+
+    def type_line(text):
+        for ch in text:
+            os.write(fd, ch.encode())
+            time.sleep(0.02)
+
+    took = None
+    try:
+        if wait_for(b"Boot [H=Help]:", 20):
+            time.sleep(0.3)                       # past the prompt's flush
+            type_line("W\r")
+            if wait_for(b"$", 10):
+                type_line("S AB E,2\r")
+                if wait_for(b"Timeout = 2)", 10) and wait_for(b"$", 10):
+                    type_line("X\r")
+                    if wait_for(b"Boot [H=Help]:", 10):
+                        time.sleep(0.3)
+                        type_line("R\r")
+                        t0 = wait_for(b"AutoBoot in 2 ", 20)
+                        t1 = wait_for(b"AutoBoot in 0 ", 20) if t0 else None
+                        if t1:
+                            took = t1 - t0
+    finally:
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+        os.close(fd)
+        shutil.rmtree(cfg, ignore_errors=True)
+    # Not under 1.9 s, which is the bug.  The upper bound only says it is
+    # paced and not stuck: a loaded host can stall the emulator for longer
+    # than it can catch up, and one run in the full suite at load average 30
+    # took 3.29 s, where alone it takes 1.98.
+    check(took is not None and 1.9 <= took <= 5.0,
+          "a SYSCONF-set `S AB E,2` countdown takes two seconds on a "
+          "terminal (%s)" % ("%.2fs" % took if took is not None
+                             else "no countdown seen"))
 
 
 # --- Intel PL/M-80 under ISX -------------------------------------------------------

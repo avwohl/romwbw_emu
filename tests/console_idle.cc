@@ -610,6 +610,113 @@ int main() {
     g_keys.clear();
   }
 
+  // --- the boot loader's autoboot countdown takes real time ----------------------
+  //
+  // romldr's countdown polls once per 1/64 s turn, timed by vdelay: 976 outer
+  // turns of 9 instructions at the 4 MHz CPUINFO reports, and qkz80 counts 5
+  // cycles for every instruction - 43,920 cycles, plus the poll's own few
+  // dozen instructions, 150 or so.  Run at host speed a SYSCONF-set `S AB
+  // E,3` was over in 0.4 s.  takeLoaderPoll() tells a front end how long each
+  // turn was meant to take, and the CLI waits that long.  But only the
+  // loader's: an OS, a ROM application and a loader command run as fast as
+  // before, and the idle rule above is untouched.
+  {
+    Rig r;
+    r.call(HBF_SYSGET, SYSGET_CPUINFO);
+    check(r.cpu.regs.HL.get_low() == HBIOSDispatch::CPU_KHZ / 1000 &&
+          r.cpu.regs.DE.get_pair16() == HBIOSDispatch::CPU_KHZ,
+          "countdown: CPUINFO reports CPU_KHZ, the clock pacing goes by");
+  }
+  {
+    const unsigned turn = 43920 + 150;
+    Rig r;
+    r.work = Rig::COUNTING;                // acmd_to_64, every turn
+    unsigned long long us = 1;
+    r.poll_after(turn);
+    bool first = r.hbios.takeLoaderPoll(&us);
+    check(first && us == 0, "countdown: the loader's first empty poll starts a "
+                            "run, and asks for no wait");
+    check(!r.hbios.takeLoaderPoll(&us), "countdown: ...and is taken once");
+    unsigned long long total = 0;
+    int reported = 0, sleeps = 0;
+    for (int i = 0; i < 64; i++) {
+      r.poll_after(turn);
+      if (r.hbios.takeLoaderPoll(&us)) {
+        reported++;
+        total += us;
+      }
+      if (r.hbios.takeIdlePoll()) sleeps++;
+    }
+    check(reported == 64 && us >= 15600 && us <= 15700,
+          "countdown: each turn after it is 1/64 s - 15.6 ms - to wait for");
+    check(total >= 990000 && total <= 1010000,
+          "countdown: 64 turns come to one second");
+    check(!r.hbios.isConsoleIdle() && sleeps == 0,
+          "countdown: ...and it is still not idle - it counts, it does not wait");
+  }
+  {
+    // MBASIC after the handover, as fast as 1.48 made it: nothing to wait for.
+    const unsigned mbasic[] = {7380, 4470, 1865, 4180, 1905, 4220, 2010};
+    Rig r;
+    r.work = Rig::COUNTING;
+    r.call(HBF_SYSSET, SYSSET_BOOTINFO);
+    int reported = 0;
+    for (int i = 0; i < 500; i++) {
+      r.poll_after(mbasic[i % 7]);
+      if (r.hbios.takeLoaderPoll(nullptr)) reported++;
+    }
+    check(reported == 0, "countdown: after the handover no poll is paced - "
+                         "MBASIC runs at full speed");
+    // A ROM application is handed over to the same way (romldr's appload),
+    // and a reset puts the loader back.
+    r.call(HBF_SYSRESET, 0x02);            // cold boot
+    unsigned long long us = 1;
+    r.poll_after(44070);
+    check(r.hbios.takeLoaderPoll(&us) && us == 0,
+          "countdown: after a SYSRESET the loader's polls are paced again, "
+          "from a new run");
+    r.poll_after(44070);
+    check(r.hbios.takeLoaderPoll(&us) && us > 15000,
+          "countdown: ...the next one a turn later");
+    r.call(HBF_SYSSET, SYSSET_BOOTINFO);
+    r.hbios.reset();
+    r.poll_after(44070);
+    check(r.hbios.takeLoaderPoll(&us) && us == 0,
+          "countdown: and after HBIOSDispatch::reset() too");
+  }
+  {
+    // What breaks a run: a key read (a loader command starts with one, and is
+    // never paced), a poll that finds a key, disk I/O, and a gap no turn has.
+    Rig r;
+    r.work = Rig::COUNTING;
+    unsigned long long us = 1;
+    r.poll_after(44070);
+    r.poll_after(44070);
+    check(r.hbios.takeLoaderPoll(&us) && us > 15000, "countdown: a run");
+    g_keys.clear();
+    g_keys.push_back('D');
+    r.poll_after(44070);
+    check(!r.hbios.takeLoaderPoll(&us),
+          "countdown: a poll that finds a key is not paced");
+    r.call(HBF_CIOIN);
+    r.poll_after(44070);
+    check(r.hbios.takeLoaderPoll(&us) && us == 0,
+          "countdown: after a key is read the next poll starts a new run");
+    r.poll_after(44070);
+    r.call(HBF_DIOSTATUS, 2);
+    r.poll_after(44070);
+    check(r.hbios.takeLoaderPoll(&us) && us == 0,
+          "countdown: disk I/O starts a new run - a boot under way");
+    r.poll_after(3000000);                 // over a second at 45 cycles/16 us
+    check(r.hbios.takeLoaderPoll(&us) && us == 0,
+          "countdown: a gap of more than a second is no turn, and is not "
+          "waited for");
+    r.poll_after(170);                     // the prompt's poll loop
+    check(r.hbios.takeLoaderPoll(&us) && us < 100,
+          "countdown: the prompt's poll loop asks for next to nothing");
+    g_keys.clear();
+  }
+
   printf("------------------------------------------------------------\n");
   printf("%s (%d failure%s)\n", failures ? "FAILURES" : "all checks passed",
          failures, failures == 1 ? "" : "s");

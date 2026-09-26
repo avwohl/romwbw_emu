@@ -815,6 +815,36 @@ public:
 
 // Disk size constants and MBR checking are now in emu_init.h/emu_init.cc
 
+// Microseconds on a clock that only goes forward.
+static long long monotonic_us() {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (long long)ts.tv_sec * 1000000LL + ts.tv_nsec / 1000;
+}
+
+// One empty console poll by the boot loader (HBIOSDispatch::takeLoaderPoll()):
+// wait until the `us` the loader meant the time since its previous one to
+// take have passed on the host's clock.  0 starts a new run of them, and only
+// notes the time.  Each poll is due `us` after the one before was DUE, not
+// after it happened, so what usleep() oversleeps - milliseconds a call on
+// macOS, 64 calls a second, which made a three-second countdown 3.8 s when
+// each wait was counted from the wake-up - comes off the next wait instead of
+// adding up.  A host that falls behind, busy elsewhere, catches up by not
+// waiting; one more than a second behind - a suspended terminal - starts over
+// from now rather than racing through the rest.  Starting over at a tenth of
+// a second, the first version, stretched a two-second countdown to 2.87 s on
+// a machine at load 40.
+static void pace_loader_poll(unsigned long long us) {
+  static long long due = 0;
+  long long now = monotonic_us();
+  if (us == 0 || due == 0 || now - due > 1000000) {
+    due = now;
+    return;
+  }
+  due += (long long)us;
+  if (due > now) usleep((useconds_t)(due - now));
+}
+
 // This binary names no RomWBW release, because it is pinned to none: the
 // release a guest sees is read out of the ROM at load time, and which
 // releases exist is the romwbw_disks catalog's business. There used to be a
@@ -1757,6 +1787,17 @@ int main(int argc, char** argv) {
     // sleep moved to per poll.
     if (emu.getHBIOS()->takeIdlePoll() && !check_console_escape_async()) {
       usleep(10000);
+    }
+
+    // The boot loader's autoboot countdown takes the seconds it says.  Its
+    // delay loop is calibrated to the 4 MHz the HBIOS reports, and run at
+    // full speed a SYSCONF-set `S AB E,3` was over in 0.4 s.  Each empty poll
+    // the loader makes waits here until the time it meant since its last one
+    // has passed on the host's clock - takeLoaderPoll() says which polls
+    // those are, and nothing after the handover is one.
+    unsigned long long loader_us = 0;
+    if (emu.getHBIOS()->takeLoaderPoll(&loader_us)) {
+      pace_loader_poll(loader_us);
     }
 
     // Check if strict I/O mode halted us during port operations

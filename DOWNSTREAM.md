@@ -2,6 +2,33 @@
 
 This document explains how to integrate the RomWBW emulator core into downstream projects (iOS, macOS, Windows, etc.).
 
+**2026-09-26: `takeLoaderPoll()`, which you need not call.** RomWBW's boot
+loader times its autoboot countdown with a delay loop calibrated to the 4 MHz
+`SYSGET CPUINFO` reports - now `HBIOSDispatch::CPU_KHZ` - so a guest run
+faster than that counts down faster: the CLI's `S AB E,3` took 0.40 s. The
+dispatcher now reports each console status poll that finds no key while the
+boot loader has the machine (nothing handed over since the last reset), with
+how long, in microseconds, the loader meant the time since its previous such
+poll to take; 0 starts a new run, and a key read, disk I/O, a handover, a
+reset or a gap of a second or more breaks one. A front end that waits until
+that much time has passed since the previous such poll - against a
+deadline, so that what a sleep oversleeps comes off the next wait - gets a
+countdown of the seconds it says; the CLI does exactly that
+(`pace_loader_poll()` in `romwbw_emu.cc`). Nothing after the handover is
+ever reported, so an OS or a ROM application runs as it did. None of the
+three ports calls it, and each counts down at whatever pace its own loop
+runs the guest, as before; a batch loop that wants to adopt it can end a
+batch at a poll that asks for a wait and start the next when it is due. The
+flag it clears is set on every loader poll and simply stays set if nobody
+reads it.
+
+One thing worth knowing if you time anything by `cpu->cycles`: qkz80 adds
+five for every instruction, whatever it is, so the "T-states" in this core's
+constants - the idle rule's 1500, the hold's 120M - are five times the
+instructions run, not the guest's T-states. `takeLoaderPoll()` works its
+microseconds out from the instructions of romldr's delay loop for that
+reason.
+
 **2026-09-25, checked against each port: the console-idle and piped-stdin
 changes need nothing from any of the three.** Read at ioscpm 0d9cbe3, z80cpmw
 475b5dd and cpmdroid 414bbe1, which all compile `hbios_dispatch.cc` and

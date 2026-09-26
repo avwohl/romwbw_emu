@@ -615,6 +615,33 @@ public:
     return r;
   }
 
+  // The clock SYSGET CPUINFO tells the guest it runs at, and RomWBW's delay
+  // loops calibrate themselves to (romldr.asm delay_init, vdelay).
+  static constexpr unsigned CPU_KHZ = 4000;
+
+  // For pacing the boot loader's autoboot countdown to real time.  True once
+  // for each console status poll that finds no key while the boot loader has
+  // the machine - nothing handed over since the last reset - cleared by the
+  // call.  *us is how long the loader meant the time since its previous such
+  // poll to take, in microseconds, or 0 when this one starts a new run of
+  // them: the first, or the first after a key was read, a disk transfer, a
+  // reset or a gap of a second or more.
+  //
+  // The countdown (romldr.asm acmd_wait) polls once per 1/64 s, timed by a
+  // delay loop calibrated to CPU_KHZ, so run at host speed a SYSCONF-set
+  // `S AB E,3` was over in 0.4 s.  A front end that waits until *us have
+  // passed on its own clock since the previous such poll gives it its three
+  // seconds.  Nothing else is slowed: an OS, or a ROM application, starts
+  // after the handover, and a loader command after the key that typed it -
+  // see noteLoaderPoll().  A front end that does nothing with this is as it
+  // was.
+  bool takeLoaderPoll(unsigned long long* us) {
+    if (!loader_poll_pending) return false;
+    loader_poll_pending = false;
+    if (us) *us = loader_poll_us;
+    return true;
+  }
+
   //==========================================================================
   // State Machine I/O Interface
   // The emulator is a pure state machine. Instead of calling external functions,
@@ -713,6 +740,19 @@ private:
   // since the last reset"; see releaseHeldInputIfDue().
   unsigned long long handover_at = 0;
   static constexpr unsigned long long HOLD_AFTER_HANDOVER = 120000000ull;
+  // takeLoaderPoll(): cpu->cycles at the boot loader's last empty poll, or 0
+  // when the next one starts a new run; and what the last poll reported.
+  unsigned long long loader_poll_at = 0;
+  unsigned long long loader_poll_us = 0;
+  bool loader_poll_pending = false;
+  // cpu->cycles is not the guest's T-states: qkz80 adds five for every
+  // instruction, whatever it is.  So a delay loop is timed by the
+  // instructions it runs, and romldr's (vdelay) runs 2*MHz+1 of them per
+  // 16 us - at CPU_KHZ, 9 instructions and 45 cycles.  noteLoaderPoll().
+  static constexpr unsigned long long LOADER_DELAY_CYCLES_PER_16US =
+      5 * (2 * (CPU_KHZ / 1000) + 1);
+  static constexpr unsigned long long LOADER_PACE_MAX_US = 1000000;  // 1 s
+  void noteLoaderPoll(bool has_input);
   void noteHandover();
   void releaseHeldInputIfDue();
   bool heldEscapeWaiting() const;

@@ -70,6 +70,9 @@ void HBIOSDispatch::reset() {
   // before it (heldEscapeWaiting()) both go by this.  input_held is the front
   // end's to set and stays as it was.
   handover_at = 0;
+  loader_poll_at = 0;
+  loader_poll_us = 0;
+  loader_poll_pending = false;
   manifest_write_pending = false;  // Clear pending flag
   // Note: manifest_warning_shown is static, persists across resets within session
   emu_state = HBIOS_RUNNING;
@@ -935,6 +938,7 @@ void HBIOSDispatch::handleCIO() {
       cpu->regs.DE.set_low(ch & 0xFF);
       waiting_for_input = false;
       idle_poll_count = 0;
+      loader_poll_at = 0;  // a key read: not the countdown (noteLoaderPoll())
       break;
     }
 
@@ -1171,6 +1175,7 @@ static uint8_t get_md_index(uint8_t unit) {
 // variable, which polls every 1095 T-states: that is working and counts as
 // waiting, as it did under every rule before this one (todo.txt).
 void HBIOSDispatch::notePoll(bool has_input) {
+  noteLoaderPoll(has_input);
   unsigned long long now = cpu ? cpu->cycles : 0;
   unsigned long long gap = now - last_poll_cycles;
   last_poll_cycles = now;
@@ -1220,6 +1225,48 @@ void HBIOSDispatch::notePoll(bool has_input) {
   }
 }
 
+// The boot loader's autoboot countdown, for takeLoaderPoll().  It is a loop
+// of a console status poll and a delay of 976 x 16 us (romldr.asm acmd_wait,
+// the same in 3.5.1, 3.6.0 and 3.7.0-dev.14), and the delay is a loop of
+// instructions calibrated to the CPU speed SYSGET CPUINFO reports, CPU_KHZ:
+// vdelay's inner loop runs MHz-2 times, and an outer turn is 16 us of real
+// T-states.  So it takes real time only on a CPU that runs at that speed,
+// and this emulator runs as fast as the host lets it - a SYSCONF-set `S AB
+// E,3` measured 0.40 s on the CLI.  1.47 slept 10 ms after every instruction
+// once eight polls had found no key, and its one-second countdown had not
+// finished after 400 s; the idle rule in notePoll() rightly no longer counts
+// the countdown as waiting - it decrements a counter every turn, so no poll
+// repeats - and from 1.48 nothing slowed it at all.
+//
+// The time a turn means is worked out from the cycles it took the way the
+// loop itself counts them.  cpu->cycles counts five per instruction (qkz80's
+// flat approximation), not T-states, and an outer turn of vdelay at MHz is
+// 2*MHz+1 instructions whatever their T-states - at 4 MHz, 45 cycles per
+// 16 us, and a 1/64 s turn of the countdown about 44,000 cycles.  Divided by
+// CPU_KHZ as though they were T-states, they came to 70% of the time the
+// loader meant.
+//
+// What tells the countdown from everything else is who has the machine: the
+// boot loader, and no OS or ROM application yet, since each of those starts
+// with a handover (noteHandover()).  Only runs of empty polls count, broken
+// by a key read - so a loader command, which starts with one, is never
+// paced - by disk I/O, which is a boot under way, and by a reset.  A gap
+// of LOADER_PACE_MAX_US or more starts a run over rather than being paced:
+// that is no countdown turn, and a front end must not sleep a second or more
+// on this say-so.
+void HBIOSDispatch::noteLoaderPoll(bool has_input) {
+  unsigned long long now = cpu ? cpu->cycles : 0;
+  if (has_input || handover_at != 0 || now == 0) {
+    loader_poll_at = 0;
+    return;
+  }
+  unsigned long long us = loader_poll_at
+      ? (now - loader_poll_at) * 16 / LOADER_DELAY_CYCLES_PER_16US : 0;
+  loader_poll_us = us < LOADER_PACE_MAX_US ? us : 0;
+  loader_poll_at = now;
+  loader_poll_pending = true;
+}
+
 // The boot loader has handed over to what it booted - SYSSET BOOTINFO, or
 // HBF_SYSBOOT.  Held input stays held a while yet, and is released by the
 // first status poll HOLD_AFTER_HANDOVER T-states on, if nothing has read a key
@@ -1244,6 +1291,7 @@ void HBIOSDispatch::notePoll(bool has_input) {
 void HBIOSDispatch::noteHandover() {
   handover_at = cpu ? cpu->cycles : 0;
   if (handover_at == 0) handover_at = 1;  // 0 means "not handed over"
+  loader_poll_at = 0;
 }
 
 void HBIOSDispatch::releaseHeldInputIfDue() {
@@ -1273,6 +1321,7 @@ bool HBIOSDispatch::heldEscapeWaiting() const {
 void HBIOSDispatch::handleDIO() {
   if (!cpu || !memory) return;
   idle_poll_count = 0;  // Disk I/O = real work
+  loader_poll_at = 0;   // and a boot under way, not the countdown
 
   uint8_t func = cpu->regs.BC.get_high();  // B = function
   uint8_t raw_unit = cpu->regs.BC.get_low();   // C = unit
@@ -2162,6 +2211,7 @@ void HBIOSDispatch::handleSYS() {
       if (reset_type == 0x01 || reset_type == 0x02) {
         // The boot loader runs again, and its countdown is no OS.
         handover_at = 0;
+        loader_poll_at = 0;
         // Call the reset callback if set
         if (reset_callback) {
           reset_callback(reset_type);
@@ -2527,10 +2577,12 @@ void HBIOSDispatch::handleSYS() {
           // H = CPU variant, L = MHz, DE = KHz, BC = oscillator.
           // SYS_GETCPUINFO ends "LD BC,(HB_CPUOSC)"; BC was left as the caller
           // passed it.
-          cpu->regs.HL.set_high(0x00);      // Z80 variant
-          cpu->regs.HL.set_low(4);          // 4 MHz
-          cpu->regs.DE.set_pair16(4000);    // 4000 KHz
-          cpu->regs.BC.set_pair16(4000);    // oscillator, KHz
+          // CPU_KHZ, which the front ends pace the boot loader's countdown
+          // by (takeLoaderPoll()): its delay loop is calibrated to this.
+          cpu->regs.HL.set_high(0x00);                      // Z80 variant
+          cpu->regs.HL.set_low((uint8_t)(CPU_KHZ / 1000));  // 4 MHz
+          cpu->regs.DE.set_pair16((uint16_t)CPU_KHZ);       // 4000 KHz
+          cpu->regs.BC.set_pair16((uint16_t)CPU_KHZ);       // oscillator, KHz
           break;
 
         case SYSGET_MEMINFO:
@@ -3101,6 +3153,7 @@ void HBIOSDispatch::handleVDA() {
 
     case HBF_VDAKRD: {
       input_held = false;  // as CIOIN: a read is the guest wanting a key
+      loader_poll_at = 0;  // and not the countdown (noteLoaderPoll())
       // Keyboard read - the VDA twin of HBF_CIOIN, and handles a missing key
       // the same way. It used to set waiting_for_input and return without
       // rewinding PC, but dispatch is a 2-byte OUT (0xEF),A followed by the

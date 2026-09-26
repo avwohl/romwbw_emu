@@ -19,7 +19,67 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
-Nothing yet.
+### A SYSCONF-set autoboot countdown takes the seconds it says
+
+`S AB E,3` in SYSCONF, then `R` at the boot loader's prompt, and the loader
+counted `AutoBoot in 3 ... 2 ... 1 ... 0` in 0.40 s on the CLI - 1.02 s for
+`S AB E,2` under the test's terminal reader. romldr's countdown
+(`acmd_wait`, the same in 3.5.1, 3.6.0 and 3.7.0-dev.14) is a console status
+poll and a 1/64 s delay, 64 turns to the second, and the delay is a loop of
+instructions calibrated to the CPU speed `SYSGET CPUINFO` reports, 4 MHz.
+The emulator runs as fast as the host lets it. 1.48's idle rule rightly does
+not take the countdown for a wait - it decrements a counter every turn, so no
+poll repeats - and from 1.48 nothing slowed it at all. Before, something
+slowed it far too much: 1.47 slept 10 ms after every instruction once eight
+polls had found no key, and a one-second countdown had not reached 0 after
+400 s.
+
+The dispatcher now says, for each empty console poll the boot loader makes,
+how long the loader meant the time since its previous one to take -
+`takeLoaderPoll()` - and the CLI waits until that has passed. Two things
+decide the numbers:
+
+- **The time is worked out from what the loop executes**, not from
+  `cpu->cycles` taken as T-states. qkz80 counts five cycles for every
+  instruction, whatever it is, and an outer turn of romldr's `vdelay` is
+  2*MHz+1 instructions per 16 us whatever their T-states - 45 cycles at
+  4 MHz. Divided by 4 MHz as though they were T-states, the cycles came to
+  70% of the time the loader meant.
+- **Each wait runs to a deadline** - the previous poll's due time plus the
+  turn - not from the moment the CLI woke. `usleep()` oversleeps by
+  milliseconds on macOS, 64 times a second, and counted from the wake-up a
+  three-second countdown took 3.8 s. A host that falls behind catches up by
+  not waiting; one more than a second behind, a suspended terminal say,
+  starts over from now. Starting over at a tenth of a second, the first
+  version, stretched a two-second countdown to 2.87 s at load average 40.
+
+`S AB E,3` now takes 2.97 s, in three runs of three, and 2.97-2.98 s at load
+average 30.
+
+**Nothing else is paced.** A poll counts only while the boot loader has the
+machine - no handover, `SYSSET BOOTINFO` or `HBF_SYSBOOT`, since the last
+reset - and only in a run of empty polls, which a key read, disk I/O, a
+reset or a gap of a second or more breaks. Every OS and ROM application
+starts with a handover, and every loader command with a key; `--boot=N`
+counts down from zero, one poll and no wait. Against 1.48's binary, measured
+the same: piped and terminal boots of CP/M 2.2, ZSDOS, CP/M 3, ZPM3, NZCOM,
+Z3PLUS and the ROM's Z-System, each to its prompt and a `DIR`; an ISX build
+of MP/M II's MPMSTAT; and the 24 MP/M II rebuilds through `romwbw-plm80`,
+byte for byte as before, 23 identical to DRI's. The idle rule is untouched,
+and every check `tests/console_idle.cc` had passes unchanged. `SYSGET
+CPUINFO` now reports `HBIOSDispatch::CPU_KHZ`, the same 4 MHz, which is what
+the pacing goes by.
+
+`tests/console_idle.cc` checks that CPUINFO reports `CPU_KHZ`; that the
+loader's first empty poll starts a run and asks for no wait; that a
+countdown turn is 15.6 ms to wait for and 64 of them a second, to 1%, while
+the countdown still does not count as idle; that after the handover nothing
+is paced - MBASIC's measured gaps - and after a `SYSRESET` or a `reset()` the
+loader is again; and what breaks a run: a poll that finds a key, a key read,
+disk I/O and a gap of over a second. `tests/batch_test.py` runs SYSCONF on a
+pty, sets `S AB E,2`, reboots and times `AutoBoot in 2` to `AutoBoot in 0`:
+1.98 s, where 1.48 took 1.02 s. The ports call nothing new and are as they
+were - see `DOWNSTREAM.md`.
 
 ## [1.48] - 2026-09-25
 
