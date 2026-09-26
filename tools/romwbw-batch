@@ -18,7 +18,9 @@
 #   4. boots with stdin on /dev/null, so the run ends by itself: when the last
 #      command is done the CCP asks the console for a line, finds end of input,
 #      and the emulator winds down (see "EXIT" below);
-#   5. checks that the batch reached its end, and extracts the files you name.
+#   5. checks that the batch reached its end, and extracts the files you name
+#      - with a warning for any from A: that is still, byte for byte, the
+#      system disk's own, which a failed rebuild of it leaves there.
 #
 # WHY $$$.SUB AND NOT PIPED STDIN.  Piped stdin works for a command or two and
 # then loses keystrokes, for reasons that are the guest's and not the
@@ -608,6 +610,7 @@ class Batch(object):
         self.result = None
         self.isx_files = []                 # (drive, name) of each ISX.COM
         self.system = None
+        self._original = None               # the system disk as cached
         try:
             a = os.path.join(self.workdir, "a.img")
             shutil.copyfile(self.system_src, a)
@@ -805,6 +808,20 @@ class Batch(object):
         """Erase a file before the run - one of the system disk's own, say."""
         return self.drive(drive).remove(cpm_name(name))
 
+    def is_system_original(self, name, drive="A"):
+        """True if the drive's file of this name is, byte for byte, the one
+        the system disk has - A: started as a copy of it, and the run left
+        this file as it was.  A rebuild that failed leaves RomWBW's STAT.COM
+        on A:, and -g STAT.COM would bring it out as though it were built."""
+        if drive.upper() != "A":
+            return False
+        name = cpm_name(name)
+        if self._original is None:
+            self._original = Drive(self.cd, self.system_src, self.exact)
+        if not self._original.has(name) or not self.drive("A").has(name):
+            return False
+        return self._original.read(name) == self.read(name)
+
     def extract(self, pattern, outdir, drive="A"):
         """Files matching a CP/M wildcard, written under their CP/M names."""
         pat = pattern.upper()
@@ -948,6 +965,19 @@ def main(argv):
             b.cleanup()
 
 
+def unchanged_warning(names):
+    """What to say about extracted files that are the system disk's own."""
+    names = sorted(set(names))
+    if len(names) == 1:
+        return ("%s is the system disk's own, byte for byte - the batch did "
+                "not change it" % names[0])
+    shown = ", ".join(names[:8])
+    if len(names) > 8:
+        shown += ", and %d more" % (len(names) - 8)
+    return ("%d of the files extracted are the system disk's own, byte for "
+            "byte - the batch did not change them: %s" % (len(names), shown))
+
+
 def run_batch(b, commands, args):
     r = b.run(commands)
     if args.log:
@@ -965,6 +995,7 @@ def run_batch(b, commands, args):
         print(r.tail(), file=sys.stderr)
         status = EX_FAILED
 
+    unchanged = []
     for spec in args.get:
         drive = "A"
         if len(spec) > 2 and spec[1] == ":":
@@ -973,9 +1004,14 @@ def run_batch(b, commands, args):
         if not got:
             say("no file matches %s:%s" % (drive, spec))
             status = EX_FAILED
-        elif not args.quiet:
+            continue
+        if not args.quiet:
             for p in got:
                 print(p)
+        unchanged += [os.path.basename(p) for p in got
+                      if b.is_system_original(os.path.basename(p), drive)]
+    if unchanged:
+        say(unchanged_warning(unchanged))
     if status == EX_OK and not args.quiet:
         say("completed in %.1fs" % r.seconds)
     if args.work:

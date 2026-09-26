@@ -38,8 +38,8 @@ The autoboot countdown is none of these: it counts down as it polls. Until then
 a status poll sees no key - bar a leading Esc, below - and `VDAKFL` flushes
 nothing. Both scripts above now run as written. A terminal is left alone - Esc
 during a countdown is a person's to press - and so is every other front end:
-`holdInputUntilWanted()` is off unless called. Once released, input is never held again, so what CP/M programs
-do with typed-ahead input is unchanged.
+`holdInputUntilWanted()` is off unless called. Once released, input is never
+held again, so what CP/M programs do with typed-ahead input is unchanged.
 
 **The bounded release.** A first version released the input only on a key read
 or a wait loop, and a program that runs before anything reads a key and prints
@@ -188,21 +188,26 @@ of `hd1k_cpm22`, with 95 files of RomWBW's own in 3.6.0, and `--name ED --stack
 XYZ` - LOCATE cannot read the stack size - reported ED.COM made, RomWBW's. Each
 output name is erased from A: before the run, except ASSIGN.COM, which the
 batch runs to swap B: in and which counts only if the run changed it; an
-`--include` named like an output is refused. `--name` takes a CP/M name of up
+`--include` named like an output is refused. `romwbw-batch -g`, which extracts
+what A: holds after the run, warns about a file that is byte for byte the
+system disk's own - `STAT.COM is the system disk's own, byte for byte - the
+batch did not change it` - since after a rebuild of STAT that failed it brought
+back RomWBW's STAT.COM, said nothing and exited 0; the exit status is as it
+was, as the stock file may be what was wanted. `--name` takes a CP/M name of up
 to eight characters - CONSOLE, DSKRESET, STOPSPLR - and gives the ISIS steps
 the first six or five, as DRI did; a missing `--include` is an error rather
 than skipped. Both tools remove their scratch directory on every exit, `^C` and
 setup errors included, and `romwbw-batch --isx=compact` attaches B: even when
 nothing is added to it, since ISIS programs put their work files on `:F1:`.
 
-`tests/batch_test.py` (in `make test`) checks the pieces with no emulator -
-the submit layout, the OMF, `tools/isxbios.asm` against the bytes the tool
-carries, and `romwbw-plm80`'s reading of the console and of `-o` - then
-batches on the emulator when a ROM and `hd1k_cpm22` are cached, including the
-PIP run that found the console idle bug below and an MBASIC loop the same bug
-stopped, and Intel PL/M-80 in both ISX modes when `$ISX_TOOLS` names a
-`PLM_WORK` directory, with a rebuild that fails. None of DRI's or Intel's
-binaries is in this repository.
+`tests/batch_test.py` (in `make test`) checks the pieces with no emulator - the
+submit layout, the OMF, `tools/isxbios.asm` against the bytes the tool carries,
+and `romwbw-plm80`'s reading of the console and of `-o` - then batches on the
+emulator when a ROM and `hd1k_cpm22` are cached, including the PIP run that
+found the console idle bug below and an MBASIC loop the same bug stopped, `-g`
+of STAT.COM left alone (a warning) and rewritten (none), and Intel PL/M-80 in
+both ISX modes when `$ISX_TOOLS` names a `PLM_WORK` directory, with a rebuild
+that fails. None of DRI's or Intel's binaries is in this repository.
 
 ### A program that polls the keyboard while it works is no longer "idle"
 

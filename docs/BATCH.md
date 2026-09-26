@@ -26,7 +26,9 @@ general: anything you would type at `A>` in a CP/M 2.2 session, it can run.
 4. **Boots with stdin on /dev/null** (`--boot=2 --no-config`, nothing persisted),
    so the run ends by itself: after the last command the CCP reads the console,
    finds end of input, and the emulator winds down.
-5. **Checks the batch reached its end** and extracts the files named with `-g`.
+5. **Checks the batch reached its end** and extracts the files named with `-g`,
+   warning of any from A: that is still the system disk's own - see
+   [Your files and the system disk's](#your-files-and-the-system-disks).
 
 **How it knows the batch finished.** "The emulator exited" does not say that -
 the emulator also stops when a command fails in a way that waits for a key.
@@ -50,7 +52,7 @@ emulator now holds back.
 | `-t, --add-text [B:]PATH[=NAME]` | add a text file: LF becomes CR LF, it ends at its first `^Z`, and it is padded with `^Z` |
 | `-c, --cmd LINE` | a command, run in order; repeat it |
 | `-s, --script FILE` | commands from a file, one a line; `;` and `#` lines are skipped |
-| `-g, --get [B:]PATTERN` | extract matching files after the run; `*` and `?` work |
+| `-g, --get [B:]PATTERN` | extract matching files after the run; `*` and `?` work; a file from A: that is still the system disk's own draws a warning |
 | `-o, --out DIR` | where they go (default `.`), under their CP/M names |
 | `--isx[=compact\|cbios]` | set the machine up for DRI's ISX - [ISX.md](ISX.md) |
 | `--exact` | record exact file lengths the way ISX does, and trim by them on the way out |
@@ -112,10 +114,23 @@ nothing to replace.
 
 The other direction works the same way: `-g` extracts from A: as the run left
 it, so `-g *.COM` brings back ASM.COM, PIP.COM and the rest of RomWBW's along
-with whatever the batch made. Name what you want, or use `--work` and look.
-(`romwbw-plm80` guards against this for its own outputs: it erases their names
-from A: before the run, so a file of that name afterwards is the build's -
-see [ISX.md](ISX.md).)
+with whatever the batch made - and a build that was to replace one of them and
+failed leaves RomWBW's there, so `-g STAT.COM` after a failed rebuild of STAT
+brings back the stock STAT.COM. The tool says so: a file `-g` extracts from A:
+that is byte for byte the system disk's own draws a warning on stderr,
+
+```
+romwbw-batch: STAT.COM is the system disk's own, byte for byte - the batch did not change it
+```
+
+and several are named in one line (`71 of the files extracted are the system
+disk's own ...` for `-g *.COM` after a `DIR`). It is a warning, not a failure:
+the exit status is as it would be, since RomWBW's PIP.COM may be just what you
+asked for. B: starts empty and never draws it. From Python,
+`Batch.is_system_original(name)` asks the same question. (`romwbw-plm80` goes
+further for its own outputs: it erases their names from A: before the run, so
+a file of that name afterwards is the build's, and a build that made none
+fails - see [ISX.md](ISX.md).)
 
 ## From Python
 

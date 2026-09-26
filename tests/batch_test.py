@@ -13,20 +13,21 @@ Three layers, each skipped when what it needs is not here:
     of which it took for a failed build's output;
   * batches on the emulator (needs src/romwbw_emu and a cached ROM and
     hd1k_cpm22 - `tools/romwbw-get fetch @rom hd1k_cpm22`): a batch that runs
-    to its end, one that does not, and the two programs that found the
-    console idle bug - PIP concatenating files and MBASIC running a loop, both
-    of which the emulator used to cut off at end of input - and piped stdin
-    reaching the CCP and the boot menu, which the boot loader used to eat,
-    and a script's leading Esc still stopping the autoboot countdown, which
-    the hold on piped input took away, and the instruction limit, which used
-    to end a run with exit status 0, and a program booted from the disk that prints between polls and never
-    waits, which the hold on piped input starved; and, when hd1k_combo is
-    cached too, ZPM3, whose prompt the idle rule missed so that the emulator
-    never ended there and held piped input from it for ever, and CP/M 3 and
-    NZ-COM, whose starts ate a script's first key when the hold let go at the
-    boot loader's handover; and on a pty, ^E at the boot loader's prompt,
-    which took a tenth of a second or more to reach sim> while the CLI looked
-    for it only every 1024th instruction;
+    to its end, one that does not, -g of a system disk file the batch left
+    alone, which came back with no word said, and the two programs that found
+    the console idle bug - PIP concatenating files and MBASIC running a loop,
+    both of which the emulator used to cut off at end of input - and piped
+    stdin reaching the CCP and the boot menu, which the boot loader used to
+    eat, and a script's leading Esc still stopping the autoboot countdown,
+    which the hold on piped input took away, and the instruction limit, which
+    used to end a run with exit status 0, and a program booted from the disk
+    that prints between polls and never waits, which the hold on piped input
+    starved; and, when hd1k_combo is cached too, ZPM3, whose prompt the idle
+    rule missed so that the emulator never ended there and held piped input
+    from it for ever, and CP/M 3 and NZ-COM, whose starts ate a script's first
+    key when the hold let go at the boot loader's handover; and on a pty, ^E
+    at the boot loader's prompt, which took a tenth of a second or more to
+    reach sim> while the CLI looked for it only every 1024th instruction;
   * Intel PL/M-80 under ISX (needs $ISX_TOOLS naming DRI's PLM_WORK
     directory, which this repository does not carry): a program compiled by
     both ISX modes, and DRI's `CPM` getting back to CP/M from each; a rebuild
@@ -483,6 +484,32 @@ def test_batches():
         r = batch(["-c", "NOSUCH", "-c", "DIR"], d)
         check(r.returncode == 1 and "did not complete" in r.stdout,
               "a command the CCP cannot find stops the batch, and it says so")
+
+        # -g reads A: as the run left it, and A: starts as a copy of the
+        # system disk: after a rebuild of STAT.COM that failed, -g STAT.COM
+        # brought back RomWBW's own, exit 0, and said nothing.
+        stock = open(rb.resolve_asset(rb.DEFAULT_SYSTEM_DISK, offline=True),
+                     "rb").read()
+        r = batch(["-c", "DIR STAT.COM", "-g", "STAT.COM", "-o", "stock"], d)
+        got = os.path.join(d, "stock", "STAT.COM")
+        check(r.returncode == 0 and os.path.exists(got) and
+              "STAT.COM is the system disk's own, byte for byte" in r.stdout,
+              "-g of a system disk file the batch left alone warns that it "
+              "is RomWBW's own")
+        check(os.path.exists(got) and open(got, "rb").read()[:128] in stock,
+              "...and the file extracted is indeed the system disk's")
+        r = batch(["-t", "hi.txt", "-c", "PIP STAT.COM=HI.TXT", "-g",
+                   "STAT.COM", "-o", "made"], d)
+        got = os.path.join(d, "made", "STAT.COM")
+        check(r.returncode == 0 and "system disk's own" not in r.stdout and
+              os.path.exists(got) and
+              open(got, "rb").read().startswith(b"hello\r\n"),
+              "-g of a system disk file the batch rewrote says nothing")
+        r = batch(["-c", "DIR", "-g", "PIP.COM", "-g", "STAT.COM", "-o",
+                   "two"], d)
+        check("2 of the files extracted are the system disk's own, byte for "
+              "byte - the batch did not change them: PIP.COM, STAT.COM"
+              in r.stdout, "...and several are named in one warning")
 
         # The console idle bug.  PIP polls for a key between records and did
         # no disk I/O for eight of them, the emulator took that for a guest
