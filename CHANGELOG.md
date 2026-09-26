@@ -56,6 +56,17 @@ decide the numbers:
 `S AB E,3` now takes 2.97 s, in three runs of three, and 2.97-2.98 s at load
 average 30.
 
+**And it costs next to nothing.** At a terminal the CLI looked for its escape
+key after every instruction the countdown ran - a `select()` each, some 8,800
+a turn - which came to a third of a core, most of it system time, and on six
+cores at load average 47 the emulator could not get that much: `S AB E,5`
+took 5.57 and 8.37 s. While the loader is between two polls of a run
+(`isLoaderPolling()`), the CLI now looks once per poll, before it waits, and
+every 1024th instruction, as it already did while the console is idle. A
+second of countdown costs 0.025 s of CPU, `S AB E,5` takes 4.95 s at load 48,
+and ^E during the countdown reaches `sim>` within a turn, in 0-12 ms (0-8 ms
+on 1.48).
+
 **Nothing else is paced.** A poll counts only while the boot loader has the
 machine - no handover, `SYSSET BOOTINFO` or `HBF_SYSBOOT`, since the last
 reset - and only in a run of empty polls, which a key read, disk I/O, a
@@ -73,8 +84,9 @@ the pacing goes by.
 `tests/console_idle.cc` checks that CPUINFO reports `CPU_KHZ`; that the
 loader's first empty poll starts a run and asks for no wait; that a
 countdown turn is 15.6 ms to wait for and 64 of them a second, to 1%, while
-the countdown still does not count as idle; that after the handover nothing
-is paced - MBASIC's measured gaps - and after a `SYSRESET` or a `reset()` the
+the countdown still does not count as idle; that between its polls the loader
+counts as polling, and after a handover, a key read or disk I/O does not;
+that after the handover nothing is paced - MBASIC's measured gaps - and after a `SYSRESET` or a `reset()` the
 loader is again; and what breaks a run: a poll that finds a key, a key read,
 disk I/O and a gap of over a second. `tests/batch_test.py` runs SYSCONF on a
 pty, sets `S AB E,2`, reboots and times `AutoBoot in 2` to `AutoBoot in 0`:

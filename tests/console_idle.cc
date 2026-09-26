@@ -653,6 +653,30 @@ int main() {
           "countdown: 64 turns come to one second");
     check(!r.hbios.isConsoleIdle() && sleeps == 0,
           "countdown: ...and it is still not idle - it counts, it does not wait");
+    // Between its polls the CLI looks for its escape key once a poll, not
+    // after every instruction: a select() each, 8,800 a turn, was a third of
+    // a core, and a loaded host could not keep the countdown to time.
+    r.cpu.cycles += 20000;
+    check(r.hbios.isLoaderPolling(),
+          "countdown: between its polls the loader counts as polling");
+    r.call(HBF_SYSSET, SYSSET_BOOTINFO);
+    check(!r.hbios.isLoaderPolling(),
+          "countdown: ...and after the handover it does not");
+  }
+  {
+    Rig r;
+    check(!r.hbios.isLoaderPolling(),
+          "countdown: before the loader's first poll nothing counts as polling");
+    r.poll_after(44070);
+    g_keys.clear();
+    g_keys.push_back('X');
+    r.call(HBF_CIOIN);
+    check(!r.hbios.isLoaderPolling(),
+          "countdown: nor after a key is read - a loader command runs");
+    r.poll_after(44070);
+    r.call(HBF_DIOSTATUS, 2);
+    check(!r.hbios.isLoaderPolling(), "countdown: nor after disk I/O");
+    g_keys.clear();
   }
   {
     // MBASIC after the handover, as fast as 1.48 made it: nothing to wait for.

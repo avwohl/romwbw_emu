@@ -804,7 +804,18 @@ public:
     // Z3PLUS's poll every few dozen instructions, so 1024 instructions was
     // 20 to 40 polls - 10 ms each - and ^E took 0.1 to 0.4 s to reach sim>,
     // where it had taken 0.02.
-    if (hbios.isConsoleIdle() && (++idle_escape_tick & 1023) != 0) return;
+    //
+    // The same goes for the boot loader's autoboot countdown, which is no
+    // wait loop - it decrements a counter every turn - but polls the console
+    // once a turn, 1/64 s, and does nothing else in between.  Looked for
+    // after every instruction, the countdown on a terminal cost a third of a
+    // core, most of it system time in select(), and on 6 cores at load
+    // average 47 the emulator could not get that much: `S AB E,5` took 5.57
+    // and 8.37 s.  The main loop looks once per poll, just before it paces
+    // the loader (takeLoaderPoll()), and a countdown second costs 0.025 s of
+    // CPU: 4.95 s at load 48.
+    if ((hbios.isConsoleIdle() || hbios.isLoaderPolling()) &&
+        (++idle_escape_tick & 1023) != 0) return;
     // Check for console escape first
     if (emu_console_check_escape(console_escape_char)) {
       console_mode_requested = true;
@@ -1795,8 +1806,11 @@ int main(int argc, char** argv) {
     // the loader makes waits here until the time it meant since its last one
     // has passed on the host's clock - takeLoaderPoll() says which polls
     // those are, and nothing after the handover is one.
+    // The escape key is looked for first, as for the idle sleep above, and
+    // there is no wait if it is there.
     unsigned long long loader_us = 0;
-    if (emu.getHBIOS()->takeLoaderPoll(&loader_us)) {
+    if (emu.getHBIOS()->takeLoaderPoll(&loader_us) &&
+        !check_console_escape_async()) {
       pace_loader_poll(loader_us);
     }
 

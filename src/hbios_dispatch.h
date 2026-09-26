@@ -642,6 +642,14 @@ public:
     return true;
   }
 
+  // True between two of those polls: the boot loader is in a run of empty
+  // console polls - its countdown, or its prompt's wait loop - and has read
+  // no key, touched no disk and handed nothing over since the last.  A front
+  // end that looks for its own hotkey after every instruction can look once
+  // per poll here instead, as it can while isConsoleIdle() holds: the
+  // countdown is some 8,800 instructions a turn, 64 turns a second.
+  bool isLoaderPolling() const { return loader_poll_at != 0; }
+
   //==========================================================================
   // State Machine I/O Interface
   // The emulator is a pure state machine. Instead of calling external functions,
