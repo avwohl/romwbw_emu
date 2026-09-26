@@ -454,6 +454,44 @@ def test_plm80_produced():
               "outputs is refused")
 
 
+def test_get_specs():
+    """-g takes [B:]PATTERN, and only A: and B:.  `-g C:X` got through the
+    arguments, ran the batch, and ended in a traceback as the files were
+    extracted."""
+    ok = rb.get_spec("B:*.COM") == ("B", "*.COM") and \
+        rb.get_spec("b:x.com") == ("B", "x.com") and \
+        rb.get_spec("HELLO.COM") == ("A", "HELLO.COM")
+    check(ok, "-g: [B:]PATTERN, A: when no drive is given")
+    refused = []
+    for spec in ("C:X.COM", "3:*.COM", "B:"):
+        try:
+            rb.get_spec(spec)
+        except rb.UsageError as e:
+            refused.append(str(e))
+    check(len(refused) == 3 and "not C:" in refused[0] and
+          "user 0" in refused[0],
+          "-g: C:, a user number and an empty name are usage errors")
+
+
+def test_os_check():
+    """The batch runs as A:$$$.SUB, which CP/M 3's CCP does not read at boot:
+    a system disk that boots CP/M 3 used to boot, sit at its prompt and end
+    with "the batch did not complete"."""
+    class Cpm3(object):
+        label, load, end, entry = "CP/M 3", 0x0100, 0x1000, 0x0100
+    try:
+        rb.SystemImage.cpm22_layout(Cpm3())
+        msg = ""
+    except rb.BatchError as e:
+        msg = str(e)
+    check("CP/M 3, 0100H-1000H" in msg and "is not CP/M 2.2" in msg and
+          "hd1k_cpm22" in msg,
+          "a system disk that boots CP/M 3 is refused, saying what it is and "
+          "what to use")
+    check(rb.SystemImage.cpm22_layout(FakeSystem()) == (0xD800, 0xE600),
+          "...and RomWBW's CP/M 2.2 layout is not")
+
+
 def test_installed_layout(cd):
     """The tools as the .deb and .rpm install them: /usr/bin/romwbw-batch and
     /usr/bin/romwbw-plm80, and cpmemu's cpm_disk.py as
@@ -585,6 +623,12 @@ def test_arguments_first():
         check(r.returncode == 64 and "not a count of instructions" in r.stdout,
               "romwbw-plm80 --max-instructions -5: refused first (exit %s)"
               % r.returncode)
+        r = run_tool([os.path.join(TOOLS, "romwbw-batch"), "-c", "DIR",
+                      "-g", "C:*.COM"] + bad_rom, d, timeout=60)
+        check(r.returncode == 64 and "not C:" in r.stdout and
+              "Traceback" not in r.stdout,
+              "romwbw-batch -g C:*.COM: refused first (exit %s)"
+              % r.returncode)
 
 
 def run_tool(argv, cwd, timeout=300):
@@ -616,6 +660,37 @@ def test_batches():
         r = batch(["-c", "NOSUCH", "-c", "DIR"], d)
         check(r.returncode == 1 and "did not complete" in r.stdout,
               "a command the CCP cannot find stops the batch, and it says so")
+        check("never started" not in r.stdout,
+              "...and not that it never started: NOSUCH was run")
+
+        # -g B: with nothing added to B:, which left B: the RAM disk: PIP
+        # wrote the file there, it died with the run, and -g found nothing.
+        r = batch(["-t", "hi.txt", "-c", "PIP B:HI2.TXT=HI.TXT",
+                   "-g", "B:HI2.TXT", "-o", "outb"], d)
+        got = os.path.join(d, "outb", "HI2.TXT")
+        check(r.returncode == 0 and os.path.exists(got) and
+              open(got, "rb").read().startswith(b"hello\r\nworld\r\n"),
+              "-g B:X with nothing added to B: brings back what the batch "
+              "wrote there")
+
+        # A system disk that boots CP/M 3 - here hd1k_cpm22 with its boot
+        # record saying what CP/M 3's does - is refused before the boot.
+        cpm3 = os.path.join(d, "cpm3like.img")
+        shutil.copyfile(rb.resolve_asset(rb.DEFAULT_SYSTEM_DISK, offline=True),
+                        cpm3)
+        os.chmod(cpm3, 0o644)
+        with open(cpm3, "r+b") as f:
+            f.seek(0x400 + 0x1E7)                 # the label, '$'-ended
+            f.write(b"CP/M 3$")
+            f.seek(0x400 + 0x1FA)                 # load, end, entry
+            f.write(bytes([0x00, 0x01, 0x00, 0x10, 0x00, 0x01]))
+        t0 = time.time()
+        r = batch(["--disk", cpm3, "-c", "DIR"], d)
+        check(r.returncode == 2 and "(CP/M 3, 0100H-1000H, entry 0100H) is "
+              "not CP/M 2.2" in r.stdout and
+              "did not complete" not in r.stdout and time.time() - t0 < 20,
+              "a system disk that boots CP/M 3 is refused before the boot "
+              "(exit %s)" % r.returncode)
 
         # -g reads A: as the run left it, and A: starts as a copy of the
         # system disk: after a rebuild of STAT.COM that failed, -g STAT.COM
@@ -683,6 +758,7 @@ def test_batches():
                   "%s" % (boot, "the CCP" if boot == "2" else "the boot menu"))
 
         test_escape_stops_countdown(emu, rom, img)
+        test_nzcom_batch(d)
         test_zpm3(emu, rom, d)
         test_os_starts(emu, rom, d)
         test_boot_image_polls(emu, rom, d)
@@ -744,6 +820,30 @@ def test_escape_stops_countdown(emu, rom, img):
     out = p.stdout.decode("latin-1").replace("\r", "")
     check(listed(out), "Esc and D in one go: the countdown stops, and the D "
                        "is not flushed at the prompt")
+
+
+def test_nzcom_batch(d):
+    """NZ-COM's system disk (hd1k_combo slice 2) is laid out as CP/M 2.2 and
+    passes the OS check, but its startup reaches its prompt without running
+    $$$.SUB.  The tool says the batch never started, rather than only that
+    it did not complete."""
+    try:
+        combo = rb.resolve_asset("hd1k_combo", offline=True)
+    except rb.BatchError:
+        skip("a batch on NZ-COM: hd1k_combo is not cached")
+        return
+    cd = rb.find_cpm_disk()
+    with open(combo, "rb") as f:
+        data = f.read()
+    base = cd.get_disk_object(bytearray(data), slice_num=2).base
+    img = os.path.join(d, "nzcom.img")
+    with open(img, "wb") as f:
+        f.write(data[base:base + 8 * 1024 * 1024])
+    r = batch(["--disk", img, "-c", "DIR", "--timeout", "120"], d)
+    check(r.returncode == 1 and "the batch never started" in r.stdout and
+          "NZ-COM" in r.stdout,
+          "a batch on NZ-COM's disk says it never started (exit %s)"
+          % r.returncode)
 
 
 def test_zpm3(emu, rom, d):
@@ -1246,6 +1346,8 @@ def main():
     test_plm80_console()
     test_plm80_outputs()
     test_plm80_produced()
+    test_get_specs()
+    test_os_check()
     if cd:
         test_installed_layout(cd)
     else:

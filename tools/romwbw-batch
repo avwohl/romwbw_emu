@@ -84,6 +84,15 @@
 # padding as "UNPRINTABLE ASCII CHARACTER" errors.  --isx (or --exact) writes
 # S1 when adding a file and honours it when extracting one.
 #
+# WHAT IT RUNS ON, AND WHAT IT REACHES.  A CP/M 2.2 CCP: the batch is
+# A:$$$.SUB, which CP/M 2.2's CCP - and ZSDOS's, which is laid out the same -
+# reads at boot, and CP/M 3's, ZPM3's and Z3PLUS's do not.  A --disk whose OS
+# is not laid out as CP/M 2.2 is refused before the boot; NZ-COM's is, but
+# its startup reaches its prompt without running the file, and the tool says
+# so when a batch never started.  Files go in and come out on A: and B: only,
+# and in user area 0 only: a command may USER elsewhere or write to another
+# drive, but -g will not see what it writes there.
+#
 # The files it needs: cpm_disk.py (cpmemu's disk tool - $CPM_DISK, then a
 # sister ../cpmemu checkout, then the copy the .deb and .rpm install in
 # /usr/share/romwbw_emu, then a `cpm_disk` on PATH), the romwbw_emu binary
@@ -99,8 +108,9 @@
 #
 # Exit status: 0 the batch completed and every requested file was extracted;
 # 1 it did not complete, or a requested file is missing; 2 something it needs
-# is missing (emulator, ROM, disk, cpm_disk.py); 64 usage, a file to add that
-# is not there among it; 130 interrupted.  The arguments are checked before
+# is missing or will not do (emulator, ROM, disk, cpm_disk.py, a system disk
+# that does not boot CP/M 2.2); 64 usage, a file to add that is not there
+# among it; 130 interrupted.  The arguments are checked before
 # anything is looked for.
 # The scratch directory is removed on every exit but --work.
 
@@ -410,13 +420,22 @@ class SystemImage(object):
         return self.image[off:off + n]
 
     def cpm22_layout(self):
-        """(bdos base, bios base), or raise if this is not a CP/M 2.2 image."""
+        """(bdos base, bios base), or raise if this is not a CP/M 2.2 image.
+
+        CP/M 2.2 and ZSDOS are laid out this way, and so are NZ-COM's and
+        the Word Processing disk's systems, which are ZSDOS; CP/M 3, ZPM3
+        and Z3PLUS boot a loader at 0100H instead, and their CCPs do not
+        run A:$$$.SUB at boot."""
         bdos = self.load + CCP_SIZE
         if self.entry != bdos + BDOS_SIZE:
             raise BatchError(
-                "the system disk's image (%s, %04XH-%04XH, entry %04XH) is not "
-                "laid out as CCP 800H + BDOS 0E00H + BIOS; --isx needs CP/M "
-                "2.2" % (self.label, self.load, self.end, self.entry))
+                "the system disk's OS (%s, %04XH-%04XH, entry %04XH) is not "
+                "CP/M 2.2, laid out as CCP 800H + BDOS 0E00H + BIOS.  The "
+                "batch runs as A:$$$.SUB, which a CP/M 2.2 CCP reads at boot "
+                "and CP/M 3's, ZPM3's and Z3PLUS's do not: use hd1k_cpm22 "
+                "(the default) or hd1k_zsdos"
+                % (getattr(self, "label", "?"), self.load, self.end,
+                   self.entry))
         return bdos, self.entry
 
 
@@ -686,12 +705,16 @@ class Batch(object):
             shutil.copyfile(self.system_src, a)
             os.chmod(a, 0o644)
             self.drives["A"] = Drive(self.cd, a, self.exact)
-            # The OS image on the system tracks: only --isx=cbios needs it,
-            # to put the BDOS back, so only it refuses a disk without one -
-            # and it refuses now, not after the boot.
-            if self.isx == "cbios":
+            # The OS on the system tracks.  The commands run as A:$$$.SUB,
+            # which a CP/M 2.2 CCP reads at boot and CP/M 3's does not, so a
+            # disk that boots anything else is refused now: it used to boot,
+            # sit at its prompt and end with "the batch did not complete".
+            # --isx=cbios also takes its BDOS from here.
+            try:
                 self.system = SystemImage(self.drives["A"].slice_bytes())
                 self.system.cpm22_layout()
+            except BatchError as e:
+                raise BatchError("--disk %s: %s" % (system, e))
             # The compact BIOS has only the drives the batch attaches, and
             # ISIS programs put their work files on :F1: - PL/M-80 its five
             # - so without B: the first one ends in "Bdos Err On B: Select".
@@ -768,6 +791,7 @@ class Batch(object):
                     returns_from_isx(c):
                 seq.append(swap)
         seq.append("TYPE " + SENTINEL_FILE)
+        first = seq[0]
         a.add(SENTINEL_FILE, pad_ctrl_z((marker + "\r\n").encode()))
         a.add("$$$.SUB", submit_file(seq))
         if self.isx == "compact":
@@ -838,6 +862,19 @@ class Batch(object):
 
         if res.timed_out:
             res.problems.append("timed out after %ds" % self.timeout)
+        # A CCP that never read $$$.SUB leaves no trace of the first command
+        # on the console.  The OS check in __init__ refuses CP/M 3 and its
+        # kind, laid out otherwise; NZ-COM's disk is laid out as CP/M 2.2,
+        # and its startup reaches its prompt without running the file.
+        if not res.completed and not res.timed_out and \
+                res.returncode == 0 and \
+                first.upper() not in res.console.upper():
+            res.problems.append(
+                "the batch never started: its first command, %s, is nowhere "
+                "on the console.  The commands run as A:$$$.SUB, which the "
+                "CCP must read at boot as CP/M 2.2's and ZSDOS's do - "
+                "NZ-COM's system disk, for one, reaches its prompt without "
+                "running it" % first)
         if res.returncode == EMU_EXIT_INSTRUCTION_LIMIT and \
                 not res.timed_out:
             m = re.search(r"instruction limit, (\d+) instructions", res.stderr)
@@ -979,14 +1016,31 @@ def planned_adds(specs, text, flag):
     return plan
 
 
+def get_spec(spec):
+    """-g [B:]PATTERN -> (drive, pattern), or UsageError.  Checked before the
+    run: a drive letter other than A or B used to get through it and end in
+    a traceback when the files were extracted."""
+    drive, pattern = "A", spec
+    if len(spec) > 1 and spec[1] == ":":
+        drive, pattern = spec[0].upper(), spec[2:]
+        if drive not in ("A", "B"):
+            raise UsageError("-g %s: files come from A: or B:, not %s:, and "
+                             "from user 0" % (spec, spec[0]))
+    if not pattern:
+        raise UsageError("-g %s: no file name" % spec)
+    return drive, pattern
+
+
 def build_parser():
     p = Parser(
         prog="romwbw-batch",
         description="Boot CP/M 2.2 on romwbw_emu, run commands from a submit "
                     "file with nobody at the keyboard, and extract the results.",
         epilog="Files: -a/-t take [B:]PATH[=NAME]; a directory adds every file "
-               "in it.  B: is a second disk swapped in with ASSIGN.  "
-               "See docs/BATCH.md.")
+               "in it.  B: is a second disk swapped in with ASSIGN.  The batch "
+               "needs a CP/M 2.2 CCP (hd1k_cpm22, or hd1k_zsdos), and files go "
+               "in and come out on A: and B:, in user 0, only.  See BATCH.md "
+               "(docs/ in the source, /usr/share/doc/romwbw-emu/ installed).")
     p.add_argument("-a", "--add", action="append", default=[], metavar="SPEC",
                    help="add a host file (binary) to A: or B:")
     p.add_argument("-t", "--add-text", action="append", default=[],
@@ -1054,6 +1108,7 @@ def main(argv):
                 raise UsageError("no commands: give -c LINE or --script FILE")
             plan = planned_adds(args.add, False, "-a") + \
                 planned_adds(args.add_text, True, "-t")
+            gets = [get_spec(s) for s in args.get]
             b = Batch(workdir=args.work, rom=args.rom, system=args.disk,
                       emulator=args.emu, offline=args.offline, isx=args.isx,
                       exact=args.exact, timeout=args.timeout,
@@ -1061,6 +1116,12 @@ def main(argv):
                       max_instructions=args.max_instructions)
             for path, name, drive, text in plan:
                 b.add(path, name, drive, text)
+            # B: is the batch's own disk only when it is attached, and it was
+            # attached only for files added to it: `-c "PIP B:X=Y" -g B:X`
+            # wrote X to the RAM disk, which died with the run, and -g found
+            # nothing.  Attaching it swaps it in, as for an added file.
+            if any(d == "B" for d, _ in gets):
+                b.drive("B")
         except UsageError as e:
             say(str(e))
             return EX_USAGE
@@ -1070,7 +1131,7 @@ def main(argv):
         except OSError as e:
             say(os_error(e))
             return EX_ENV
-        return run_batch(b, commands, args)
+        return run_batch(b, commands, gets, args)
     except KeyboardInterrupt:
         say("interrupted")
         return EX_INTERRUPTED
@@ -1094,7 +1155,7 @@ def unchanged_warning(names):
             "byte - the batch did not change them: %s" % (len(names), shown))
 
 
-def run_batch(b, commands, args):
+def run_batch(b, commands, gets, args):
     r = b.run(commands)
     if args.log:
         with open(args.log, "w", encoding="latin-1") as f:
@@ -1112,10 +1173,7 @@ def run_batch(b, commands, args):
         status = EX_FAILED
 
     unchanged = []
-    for spec in args.get:
-        drive = "A"
-        if len(spec) > 2 and spec[1] == ":":
-            drive, spec = spec[0].upper(), spec[2:]
+    for drive, spec in gets:
         got = b.extract(spec, args.out, drive)
         if not got:
             say("no file matches %s:%s" % (drive, spec))

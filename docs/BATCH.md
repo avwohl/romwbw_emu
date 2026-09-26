@@ -15,6 +15,31 @@ Installed from the .deb or the .rpm, it is `romwbw-batch` on PATH, beside
 and `isxbios.asm` are in `/usr/share/doc/romwbw-emu/`. The examples here are
 written for a checkout, as `tools/romwbw-batch`.
 
+## What a batch runs on, and what it reaches
+
+- **A CP/M 2.2 CCP.** The commands are written as `A:$$$.SUB`, which CP/M
+  2.2's CCP reads at boot. `hd1k_cpm22` is the default and `hd1k_zsdos`
+  works too - ZSDOS is CP/M 2.2's layout with a ZCPR CCP that reads the file
+  the same way. CP/M 3, ZPM3 and Z3PLUS boot a loader at 0100H instead and
+  their CCPs do not run `$$$.SUB` at boot, so a `--disk` whose boot record
+  says so is refused before the boot, exit 2:
+
+  ```
+  romwbw-batch: --disk hd1k_cpm3: the system disk's OS (CP/M 3, 0100H-1000H, entry 0100H) is not CP/M 2.2, ...
+  ```
+
+  NZ-COM's disk is laid out as CP/M 2.2 and passes that check, but its
+  startup reaches its `A0:SYSTEM>` prompt without running the file; a batch
+  whose first command never reaches the console is reported as one that
+  **never started**, which is what to look for with any other system disk.
+- **A: and B: only.** `-a`, `-t` and `-g` take `A:` (the default) or `B:`;
+  anything else is a usage error, exit 64, before anything runs. The commands
+  themselves can use any drive the booted CP/M has - C: is the ROM disk, and
+  so on - but files the batch writes there cannot be taken back out.
+- **User area 0 only.** Files are added to user 0 and `-g` reads user 0. A
+  command may `USER 3` and work there, but what it writes there stays on the
+  scratch image, which `--work` keeps for you to read with `cpm_disk.py`.
+
 ## What it does
 
 1. **Copies the system disk.** `hd1k_cpm22` from the selected RomWBW release,
@@ -57,7 +82,7 @@ emulator now holds back.
 | `-t, --add-text [B:]PATH[=NAME]` | add a text file: LF becomes CR LF, it ends at its first `^Z`, and it is padded with `^Z` |
 | `-c, --cmd LINE` | a command, run in order; repeat it |
 | `-s, --script FILE` | commands from a file, one a line; `;` and `#` lines are skipped |
-| `-g, --get [B:]PATTERN` | extract matching files after the run; `*` and `?` work; a file from A: that is still the system disk's own draws a warning |
+| `-g, --get [B:]PATTERN` | extract matching files after the run; `*` and `?` work; A: or B:, user 0; a file from A: that is still the system disk's own draws a warning |
 | `-o, --out DIR` | where they go (default `.`), under their CP/M names |
 | `--isx[=compact\|cbios]` | set the machine up for DRI's ISX - [ISX.md](ISX.md) |
 | `--exact` | record exact file lengths the way ISX does, and trim by them on the way out |
@@ -76,10 +101,12 @@ refuses longer. Commands are passed as written; the CCP upper-cases them.
 
 Exit status: **0** the batch completed and every `-g` matched something; **1**
 it did not complete, or a `-g` matched nothing; **2** something it needs is
-missing - the emulator, the ROM, the disk, `cpm_disk.py`; **64** usage, a file
-to add or a `--script` that is not there among it, all checked before the ROM
-and the disk are looked for; **130** interrupted. The scratch directory, with
-its disk images, is removed however the tool exits, unless `--work` named it.
+missing or will not do - the emulator, the ROM, the disk, `cpm_disk.py`, a
+system disk that does not boot CP/M 2.2; **64** usage, a file to add or a
+`--script` that is not there among it, or a `-g` drive other than A: or B:,
+all checked before the ROM and the disk are looked for; **130** interrupted.
+The scratch directory, with its disk images, is removed however the tool
+exits, unless `--work` named it.
 
 It needs `cpm_disk.py`, cpmemu's disk tool, and looks for it in this order:
 `$CPM_DISK`; a cpmemu checkout beside this one, as the rest of this
@@ -169,9 +196,8 @@ b.cleanup()
 
 ## Limits
 
-- **A CP/M 2.2 CCP.** The submit file is read by the CCP at boot; CP/M 3 reads
-  `$$$.SUB` differently and is not supported. `hd1k_cpm22` is the default.
-- **A: and B: only**, and user area 0.
+- **A CP/M 2.2 CCP, A: and B:, user 0** - see
+  [What a batch runs on](#what-a-batch-runs-on-and-what-it-reaches).
 - **Ten billion instructions a run**, by default - the emulator's own limit
   for a run whose stdin is not a terminal, which a batch's never is (it is
   `/dev/null`); some seven minutes at full speed. `--max-instructions` moves

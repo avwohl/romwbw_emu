@@ -142,6 +142,41 @@ PATH, and checks that they run and leave no bytecode there, that
 without `exact=`. README's "What the packages install", `docs/BATCH.md` and
 `docs/ISX.md` say where everything goes.
 
+### `romwbw-batch`: a CP/M 2.2 CCP, A: and B:, user 0 - said, and checked
+
+What a batch needs was one bullet at the end of `docs/BATCH.md`. It is now a
+section near the top, the tool's header and `--help` say it, and the tool
+checks what it can:
+
+- **A system disk that boots CP/M 3, ZPM3 or Z3PLUS is refused before the
+  boot**, exit 2. The commands are `A:$$$.SUB`, which a CP/M 2.2 CCP reads at
+  boot and theirs do not; their boot records load a loader at 0100H rather
+  than CCP 800H + BDOS 0E00H + BIOS, the check `--isx=cbios` already made.
+  `--disk hd1k_cpm3` used to boot, sit at `A>` and end with "the batch did
+  not complete". `hd1k_zsdos` passes, and runs a batch - its ZCPR CCP reads
+  the file the same way.
+- **A batch that never started says so.** NZ-COM's disk is laid out as CP/M
+  2.2, but its startup reaches `A0:SYSTEM>` without running the file; when
+  the first command is nowhere on the console, the tool says the batch never
+  started and why that happens, beside "did not complete".
+- **`-g` takes A: or B:, checked with the other arguments**, exit 64.
+  `-g C:*.COM` used to run the whole batch and then end in a Python
+  traceback, `UsageError: files go on A: or B:, not C:`.
+- **`-g B:...` attaches B: before the run.** With nothing added to B:, B:
+  was the RAM disk, which dies with the run, so `-c "PIP B:X=Y" -g B:X` said
+  `no file matches B:X` and exited 1. Named in a `-g`, B: is the batch's own
+  second disk, swapped in with ASSIGN as for an added file.
+- **User area 0 only**, for what is added and what `-g` takes: a command may
+  `USER 3` and work there, and `--work` keeps the image to read afterwards.
+
+`tests/batch_test.py`: `-g` specs, and `-g C:*.COM` refused before the ROM
+is looked for; the CP/M 3 layout refused, with what it is and what to use,
+and RomWBW's CP/M 2.2 layout not; a copy of `hd1k_cpm22` whose boot record
+says CP/M 3 refused before the boot, exit 2; PIP to B: with nothing added to
+it, and `-g B:` bringing the file back; a command the CCP cannot find not
+reported as never started; and, when `hd1k_combo` is cached, a batch on
+NZ-COM's slice reported as never started.
+
 ## [1.48] - 2026-09-25
 
 ### A script's first line no longer goes to the boot loader
