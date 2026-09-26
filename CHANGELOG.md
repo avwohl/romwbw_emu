@@ -19,6 +19,10 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [1.48] - 2026-09-25
+
 ### A script's first line no longer goes to the boot loader
 
 Piped into the CLI, `printf 'STAT DSK:\rSTAT\r' | romwbw_emu ... --boot=2` ran
