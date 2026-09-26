@@ -10,7 +10,9 @@
 #   1. copies the CP/M 2.2 system disk (hd1k_cpm22, from `romwbw-get`) to a
 #      scratch image - the cached original is read-only and stays that way;
 #   2. adds the host files you name to A:, and to B: if you ask for B: (see
-#      DRIVES below);
+#      DRIVES below) - a file named like one of the system disk's own
+#      replaces it in the scratch copy: `-t HELLO.ASM` is yours, not
+#      RomWBW's sample;
 #   3. writes the commands as A:$$$.SUB, in the layout DRI's SUBMIT.COM writes,
 #      so the CCP runs them at boot exactly as if SUBMIT had been typed;
 #   4. boots with stdin on /dev/null, so the run ends by itself: when the last

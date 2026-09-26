@@ -16,7 +16,9 @@ general: anything you would type at `A>` in a CP/M 2.2 session, it can run.
    through `tools/romwbw-get path` - the cached original is read-only - into a
    scratch image, with the ROM from the same release (`@rom`). `--disk` and
    `--rom` name other catalog ids or files.
-2. **Adds your files**, to A: or to B: (see [Drives](#drives)).
+2. **Adds your files**, to A: or to B: (see [Drives](#drives)), each
+   replacing any file of the same name there - see
+   [Your files and the system disk's](#your-files-and-the-system-disks).
 3. **Writes the commands as A:$$$.SUB**, in the layout DRI's SUBMIT.COM writes:
    one 128-byte record per command, last command first, each a length byte,
    the text, 00H and `$`. The CCP runs them at boot as though SUBMIT had just
@@ -95,6 +97,25 @@ the compact BIOS has only the drives the batch attaches, and ISIS programs put
 their work files on `:F1:` - PL/M-80 its five - so without it the first one
 ended the batch with `Bdos Err On B: Select`. (Under `--isx=cbios` an empty B:
 is the RAM disk, which serves.)
+
+## Your files and the system disk's
+
+A: is not empty. It starts as a copy of the system disk, and `hd1k_cpm22`
+holds 95 files of RomWBW's own in 3.6.0 - ASM.COM, ED.COM, PIP.COM, STAT.COM,
+MBASIC.COM, a README.TXT, and a HELLO.ASM among them. A file you add under a
+name that is already there **replaces** RomWBW's in the scratch copy:
+`romwbw-batch -t HELLO.ASM ...` assembles your HELLO.ASM, not RomWBW's sample,
+and `-a ED.COM` of your own is the ED every later command runs. Nothing warns
+you, since it is usually what you meant; the cached original is never touched,
+so the next batch starts from RomWBW's files again. B:, a fresh image, has
+nothing to replace.
+
+The other direction works the same way: `-g` extracts from A: as the run left
+it, so `-g *.COM` brings back ASM.COM, PIP.COM and the rest of RomWBW's along
+with whatever the batch made. Name what you want, or use `--work` and look.
+(`romwbw-plm80` guards against this for its own outputs: it erases their names
+from A: before the run, so a file of that name afterwards is the build's -
+see [ISX.md](ISX.md).)
 
 ## From Python
 
