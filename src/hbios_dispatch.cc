@@ -64,6 +64,12 @@ void HBIOSDispatch::reset() {
   idle_poll_count = 0;
   idle_poll_pending = false;
   for (uint64_t& p : recent_polls) p = 0;
+  // A reset starts the machine over at the boot loader, as a warm or cold
+  // SYSRESET does, and no OS has been handed it yet: the release a bounded
+  // time after the handover (releaseHeldInputIfDue()) and the Esc let through
+  // before it (heldEscapeWaiting()) both go by this.  input_held is the front
+  // end's to set and stays as it was.
+  handover_at = 0;
   manifest_write_pending = false;  // Clear pending flag
   // Note: manifest_warning_shown is static, persists across resets within session
   emu_state = HBIOS_RUNNING;

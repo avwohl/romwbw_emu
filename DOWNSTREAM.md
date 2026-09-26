@@ -44,22 +44,22 @@ before the first instruction, is the fix the CLI uses.
 turns it on for piped stdin so that RomWBW's boot loader, which reads and drops
 typed-ahead keys during its autoboot countdown and flushes them at its prompt,
 does not eat a script's first line. While it holds, CIOIST and VDAKST report no
-key and VDAKFL flushes nothing. It lets go the first time the guest reads a
-key (CIOIN, VDAKRD), or sits in a loop polling for one (console idle, below),
-or - for a program that starts before anything reads a key and prints between
-polls, which does neither - at the first status poll 120M T-states after the
-boot loader hands over to what it booted: `SYSSET BOOTINFO`, romldr's last
-call before it jumps, or `HBF_SYSBOOT`. Not at the handover itself, because
-CP/M 3's CPMLDR, NZCOM's loader and Z3PLUS's start poll the console and take
-what they find; 120M is seven times the slowest start measured (NZCOM, 16.4M)
-and 30 seconds at the 4 MHz the HBIOS reports. A warm or cold `SYSRESET`
-forgets the handover, since the loader runs again. One key gets through
-early, and only if the front end passes a second argument, a function
+key and VDAKFL flushes nothing. It lets go the first time the guest reads a key
+(CIOIN, VDAKRD), or sits in a loop polling for one (console idle, below), or -
+for a program that starts before anything reads a key and prints between polls,
+which does neither - at the first status poll 120M T-states after the boot
+loader hands over to what it booted: `SYSSET BOOTINFO`, romldr's last call
+before it jumps, or `HBF_SYSBOOT`. Not at the handover itself, because CP/M 3's
+CPMLDR, NZCOM's loader and Z3PLUS's start poll the console and take what they
+find; 120M is seven times the slowest start measured (NZCOM, 16.4M) and 30
+seconds at the 4 MHz the HBIOS reports. A warm or cold `SYSRESET` forgets the
+handover, since the loader runs again, and so does `reset()`. One key gets
+through early, and only if the front end passes a second argument, a function
 answering the next byte of input without taking it (the CLI's
 `emu_console_peek_char()`): an Esc at the front of the input before the
 handover, which romldr's autoboot countdown stops on - CIOIN takes it and the
-rest stays held. It is off unless a front end calls it, and none of yours
-does - see above.
+rest stays held. It is off unless a front end calls it, and none of yours does
+(see above).
 
 **2026-09-25: `isConsoleIdle()` means waiting for a key, not polling while
 working - and needs nothing from you.** It used to turn true after eight

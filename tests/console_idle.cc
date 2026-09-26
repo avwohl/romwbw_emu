@@ -481,6 +481,26 @@ int main() {
           "long ago an OS started");
     g_keys.clear();
   }
+  {
+    // The same for HBIOSDispatch::reset(), which a front end calls to
+    // restart the machine - ioscpm and z80cpmw do.  It did not forget the
+    // handover, which only SYSRESET did, so the clock ran on from the last
+    // one and the restarted loader's countdown got the input.
+    Rig r;
+    r.work = Rig::COUNTING;
+    g_keys.clear();
+    g_keys.push_back('Z');
+    r.hbios.holdInputUntilWanted();
+    r.call(HBF_SYSSET, SYSSET_BOOTINFO);
+    r.cpu.cycles += 1000000;
+    r.hbios.reset();
+    r.cpu.cycles += 200000000ull;
+    r.poll_after(50000);
+    check(r.A() == 0 && r.hbios.isInputHeld(),
+          "held: after HBIOSDispatch::reset() the loader's countdown sees no "
+          "key either");
+    g_keys.clear();
+  }
   // --- ...but a script's leading Esc still stops the autoboot countdown -------
   //
   // romldr's countdown takes Esc to mean "go to my prompt", and 0448175 let a

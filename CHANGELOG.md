@@ -59,7 +59,10 @@ ZPM3 14.0M, Z3PLUS 12.6M, CP/M 3 4.5M and CP/M 2.2 2.4M. A program booted as a
 disk's OS that prints a dot, polls and spins, 60,000 times, now gets a piped
 `K` after some 15,000 turns - a second - where it printed `STARVED`; and piped
 into the boot matrix of 18 systems and slices, with and without input, every
-prompt got what it did before.
+prompt got what it did before. A warm or cold `SYSRESET` puts the loader back
+and forgets the handover, and so does `HBIOSDispatch::reset()`, which a front
+end calls to restart the machine; it first went on counting from the last
+handover, so a restarted loader's countdown would have had the input.
 
 **A leading Esc still stops the countdown.** The hold first kept the Esc
 too, so `(printf '\033'; sleep 1.5; printf 'D\r') | romwbw_emu ... --boot=2`,
@@ -85,16 +88,16 @@ exists for scripts longer than a line or two.
 `tests/console_idle.cc` has the dispatcher half - checks that fail without the
 hold, one for ZPM3's prompt getting the key, and the bounded release: not at
 the handover, not 1000 T-states short of the bound, at it, and not after a
-reset has put the loader back - and the Esc: shown to the countdown, taken with
-the rest still held, the next line reaching the prompt's wait loop; held
-without a peek, behind another key, or after the handover; seen again after a
-reset. `tests/cli_console.cc` checks the CLI's peek takes nothing.
-`tests/batch_test.py` pipes both scripts into the built CLI, Esc and `D` into
-`--boot=2` with and without the pause (both fail against e5d61f0, the second
-against 0448175), a `K` into that dot-printing program, booted from a scratch
-copy of `hd1k_cpm22` whose boot record it replaces, and, when `hd1k_combo` is
-cached, `DIR` into ZPM3, CP/M 3 and NZ-COM - the last two fail against a
-release at the handover itself.
+`SYSRESET` or a `reset()` has put the loader back - and the Esc: shown to the
+countdown, taken with the rest still held, the next line reaching the prompt's
+wait loop; held without a peek, behind another key, or after the handover; seen
+again after a reset. `tests/cli_console.cc` checks the CLI's peek takes
+nothing. `tests/batch_test.py` pipes both scripts into the built CLI, Esc and
+`D` into `--boot=2` with and without the pause (both fail against e5d61f0, the
+second against 0448175), a `K` into that dot-printing program, booted from a
+scratch copy of `hd1k_cpm22` whose boot record it replaces, and, when
+`hd1k_combo` is cached, `DIR` into ZPM3, CP/M 3 and NZ-COM - the last two fail
+against a release at the handover itself.
 
 ### The instruction limit is `--max-instructions`, and a run stopped there exits 124
 
