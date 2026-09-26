@@ -2,13 +2,59 @@
 
 This document explains how to integrate the RomWBW emulator core into downstream projects (iOS, macOS, Windows, etc.).
 
+**2026-09-25, checked against each port: the console-idle and piped-stdin
+changes need nothing from any of the three.** Read at ioscpm 0d9cbe3, z80cpmw
+475b5dd and cpmdroid 414bbe1, which all compile `hbios_dispatch.cc` and
+`romwbw_mem.h` in place from a sibling `romwbw_emu/src` - and with ioscpm's
+`hbios_core.cc` syntax-checked against this tree, to be sure of the
+signatures:
+
+- **ioscpm** runs 10,000-instruction batches and sleeps 1 ms while
+  `isWaitingForInput()`, 10 ms while `isIdle()` - which is `isConsoleIdle()` -
+  and 0.1 ms otherwise. The idle rule below is what that sleep now sees.
+- **z80cpmw** skips nine timer ticks in ten while `EmulatorEngine::isIdle()`,
+  `isConsoleIdle() || isWaitingForInput()`, unless `emu_console_has_input()`;
+  the same.
+- **cpmdroid** never reads `isConsoleIdle()`: it paces on
+  `isWaitingForInput()` alone, so the idle rule changes nothing for it, and
+  all it runs of this is the per-store hash in `banked_mem`.
+- **None calls `holdInputUntilWanted()`**, so the hold and all three ways it
+  lets go are inert: CIOIST and VDAKST make one extra test of a false flag,
+  and `SYSSET BOOTINFO` and `HBF_SYSBOOT` note a cycle count nobody reads.
+- **None calls `takeIdlePoll()`.** The flag it clears is set on every idle
+  poll and simply stays set. A loop that does move to it, sleeping once per
+  poll as the CLI does, should look at its own host input (a hotkey, a paste)
+  right after the poll and before the sleep: the CLI first looked for its
+  escape key every 1024th instruction instead, and at prompts that poll every
+  few dozen instructions that was 20 to 40 sleeps, 0.1 to 0.4 s, late.
+- **The rest is the CLI's own**: ^E reaching `sim>` within a poll again,
+  `--max-instructions` and exit status 124 at the limit are `romwbw_emu.cc`'s
+  main loop, which no port compiles - each runs its own loop, and none has an
+  instruction limit to report.
+
+One thing worth knowing if you ever type at a guest before it asks: input
+queued at start reaches RomWBW's boot loader first, which reads up to Enter
+during an autoboot countdown and flushes everything at its prompt - so it is
+lost, as the CLI's piped scripts were. ioscpm's `HBIOSEmulator::start()` can
+queue a boot string that way (`setBootString()`; its Swift code sets the NVRAM
+boot target instead, and nothing calls it). `holdInputUntilWanted()`, called
+before the first instruction, is the fix the CLI uses.
+
 **2026-09-25: `holdInputUntilWanted()`, which you need not call.** The CLI
 turns it on for piped stdin so that RomWBW's boot loader, which reads and drops
-typed-ahead keys during its autoboot countdown, does not eat a script's first
-line; until the guest reads a key or sits in a loop polling for one (console
-idle, below), CIOIST and VDAKST report none and VDAKFL flushes nothing. It is
-off unless a front end calls it, and none of yours feeds scripted input, so
-nothing changes for you.
+typed-ahead keys during its autoboot countdown and flushes them at its prompt,
+does not eat a script's first line. While it holds, CIOIST and VDAKST report no
+key and VDAKFL flushes nothing. It lets go the first time the guest reads a
+key (CIOIN, VDAKRD), or sits in a loop polling for one (console idle, below),
+or - for a program that starts before anything reads a key and prints between
+polls, which does neither - at the first status poll 120M T-states after the
+boot loader hands over to what it booted: `SYSSET BOOTINFO`, romldr's last
+call before it jumps, or `HBF_SYSBOOT`. Not at the handover itself, because
+CP/M 3's CPMLDR, NZCOM's loader and Z3PLUS's start poll the console and take
+what they find; 120M is seven times the slowest start measured (NZCOM, 16.4M)
+and 30 seconds at the 4 MHz the HBIOS reports. A warm or cold `SYSRESET`
+forgets the handover, since the loader runs again. It is off unless a front
+end calls it, and none of yours does - see above.
 
 **2026-09-25: `isConsoleIdle()` means waiting for a key, not polling while
 working - and needs nothing from you.** It used to turn true after eight
