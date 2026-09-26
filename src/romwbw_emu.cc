@@ -832,8 +832,13 @@ static void print_version_banner() {
 // on stderr and exited 0, as though the guest had finished - which a script
 // cannot tell from success.  tools/romwbw-batch looked for the line.  It exits
 // 124 now, the status timeout(1) gives a command it stopped, and the limit is
-// --max-instructions.  Interactive use never gets near the default; an
-// unattended run can.
+// --max-instructions.
+//
+// The default is for a run nobody is watching - stdin a pipe, a file or
+// /dev/null - and a run at a terminal has none.  Ten billion is some seven
+// minutes at the 22 million instructions a CPU second this runs: a bound on a
+// script that has hung, but also a long compile or a benchmark in an
+// interactive session, which it used to cut off with 124.
 static const long long DEFAULT_MAX_INSTRUCTIONS = 10000000000LL;  // 10 billion
 static const int EXIT_INSTRUCTION_LIMIT = 124;
 
@@ -898,11 +903,12 @@ void print_usage(const char* prog) {
   fprintf(stderr, "  --trace=FILE      Write execution trace to FILE\n");
   fprintf(stderr, "  --symbols=FILE    Load symbol table from FILE (.sym)\n");
   fprintf(stderr, "  --max-instructions=N\n");
-  fprintf(stderr, "                    Stop after N Z80 instructions (default %lld, some\n",
+  fprintf(stderr, "                    Stop after N Z80 instructions; 0 for no limit. By\n");
+  fprintf(stderr, "                    default there is none when stdin is a terminal,\n");
+  fprintf(stderr, "                    and %lld (some seven minutes at full\n",
           DEFAULT_MAX_INSTRUCTIONS);
-  fprintf(stderr, "                    seven minutes at full speed); 0 for no limit.\n");
-  fprintf(stderr, "                    A run stopped there exits %d, as timeout(1) does.\n",
-          EXIT_INSTRUCTION_LIMIT);
+  fprintf(stderr, "                    speed) when it is not. A run stopped there exits\n");
+  fprintf(stderr, "                    %d, as timeout(1) does.\n", EXIT_INSTRUCTION_LIMIT);
   fprintf(stderr, "\n");
   fprintf(stderr, "Console mode:\n");
   fprintf(stderr, "  Press the escape char (default Ctrl+E) to enter console mode. On an\n");
@@ -960,7 +966,7 @@ int main(int argc, char** argv) {
   // developer had configured, because the exit path saves whatever NVRAM holds.
   bool boot_from_cli = false;
   bool boot_clear = false;  // --boot=none: forget the persisted target too
-  long long max_instructions = DEFAULT_MAX_INSTRUCTIONS;  // 0: no limit
+  long long max_instructions = -1;  // 0: no limit; -1: not given, see below
 
   // ROM application definitions: key=name:path
   struct RomAppDef {
@@ -1520,6 +1526,19 @@ int main(int argc, char** argv) {
   } else {
     fprintf(stderr, "Console escape: %s - reserved by the emulator, the guest never sees it"
                     " (--escape=none to disable)\n", escape_key_name().c_str());
+  }
+
+  // The instruction limit, when --max-instructions did not give one: none at
+  // a terminal, the default for a pipe, a file or /dev/null (see
+  // DEFAULT_MAX_INSTRUCTIONS).  Said when there is one, as the escape key is
+  // above, so a run that will stop says so from the start.
+  if (max_instructions < 0) {
+    max_instructions = isatty(STDIN_FILENO) ? 0 : DEFAULT_MAX_INSTRUCTIONS;
+  }
+  if (max_instructions > 0) {
+    fprintf(stderr, "Instruction limit: %lld - the run stops there with exit"
+                    " status %d (--max-instructions=0 for none)\n",
+            max_instructions, EXIT_INSTRUCTION_LIMIT);
   }
 
   // Enable raw terminal mode

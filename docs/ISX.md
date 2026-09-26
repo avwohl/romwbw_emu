@@ -321,11 +321,11 @@ figure to plan with.
 | SDIR, 8 modules | | 17 s | 99 s |
 
 A small program is a second or two, which is quick enough for a test oracle.
-The emulator runs about 22 million Z80 instructions per CPU second here, and
-by default stops any run at ten billion (`--max-instructions` on either tool
-moves it, and 0 removes it): the 25 builds above took about 110 CPU seconds
-together, so even one batch doing all of them would use about a quarter of
-that.
+The emulator runs about 22 million Z80 instructions per CPU second here, and by
+default stops a run whose stdin is not a terminal - every batch - at ten
+billion (`--max-instructions` on either tool moves it, and 0 removes it): the
+25 builds above took about 110 CPU seconds together, so even one batch doing
+all of them would use about a quarter of that.
 
 ## A differential test for uplm80
 

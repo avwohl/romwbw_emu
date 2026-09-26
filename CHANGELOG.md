@@ -104,24 +104,31 @@ against a release at the handover itself.
 `romwbw_emu.cc` ended every run at ten billion instructions - a constant in
 `main()` with no option - printed `Reached instruction limit` and exited 0, as
 though the guest had finished. A script could not tell the two apart, and
-`tools/romwbw-batch`, which could see the line, could not lift the limit.
-Interactive use never gets near it; an unattended run can, at some 22 million
-instructions a CPU second.
+`tools/romwbw-batch`, which could see the line, could not lift the limit. It
+applied at a terminal too: at some 22 million instructions a CPU second, seven
+minutes of work in an interactive session - a long compile, a benchmark -
+ended it.
 
-`--max-instructions=N` sets it, and 0 removes it; the default is still ten
-billion. A run stopped there says so on stderr - `Stopped at the instruction
-limit, N instructions, at PC=...: the guest had not finished` - and exits 124,
-the status `timeout(1)` gives a command it stopped; every other end of a run
-still exits 0. A value that is not a plain count (`1e9`, `-5`, nothing) is an
-error rather than read as some other number. `romwbw-batch` and
-`romwbw-plm80` take `--max-instructions N` and pass it on, and report a run
-the emulator stopped by its exit status: "the emulator stopped at its
-instruction limit (200,000 instructions) before the batch finished". It is a
-command-line option only, like `--trace`.
+`--max-instructions=N` sets it, and 0 removes it. Without it, a run whose stdin
+is a terminal has no limit, and any other - a pipe, a file, `/dev/null`, as
+`romwbw-batch` runs it - stops at ten billion, as before. A run that has a
+limit says so on stderr as it starts: `Instruction limit: 10000000000 - the run
+stops there with exit status 124 (--max-instructions=0 for none)`. A run
+stopped there says so on stderr - `Stopped at the instruction limit, N
+instructions, at PC=...: the guest had not finished` - and exits 124, the
+status `timeout(1)` gives a command it stopped; every other end of a run still
+exits 0. A value that is not a plain count (`1e9`, `-5`, nothing) is an error
+rather than read as some other number. `romwbw-batch` and `romwbw-plm80` take
+`--max-instructions N` and pass it on, and report a run the emulator stopped by
+its exit status: "the emulator stopped at its instruction limit (200,000
+instructions) before the batch finished". It is a command-line option only,
+like `--trace`.
 
 `tests/batch_test.py` stops a boot at 1000 instructions (exit 124, and the
 line), lets one run to the prompt with no option and with 0 (exit 0), refuses
-`1e9`, and stops a batch at 200,000.
+`1e9`, and stops a batch at 200,000; with stdin `/dev/null` the ten billion is
+said at the start, on a pty no limit is, and on a pty `--max-instructions=1000`
+still stops the run with 124.
 
 ### `romwbw-batch` and `romwbw-plm80`: unattended CP/M, and Intel's PL/M-80 under DRI's ISX
 

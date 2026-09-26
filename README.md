@@ -321,15 +321,19 @@ use:
   --save-config[=F] Write the effective settings as JSON and exit
   --debug           Enable debug output
   --strict-io       Halt on unexpected I/O ports
-  --max-instructions=N  Stop after N Z80 instructions (default ten billion,
-                    some seven minutes at full speed); 0 for no limit
+  --max-instructions=N  Stop after N Z80 instructions; 0 for no limit.
+                    Default: none if stdin is a terminal, else ten billion
 ```
 
 A run ends with exit status 0 however the guest ends it - at end of piped
 input, `quit` at `sim>`, a `HLT` - and 124, as `timeout(1)` gives, when
-`--max-instructions` stopped it; the line it prints on stderr says so. Until
-2026-09-25 the limit had no option and a run stopped there exited 0 too, which
-a script could not tell from the guest finishing.
+`--max-instructions` stopped it; the line it prints on stderr says so. With no
+`--max-instructions`, a run whose stdin is a terminal has no limit at all, and
+one whose stdin is a pipe, a file or `/dev/null` stops at ten billion
+instructions, some seven minutes at full speed. A run with a limit says so on
+stderr as it starts (`Instruction limit: 10000000000 ...`). Until 2026-09-25
+the limit had no option, applied at a terminal too, and a run stopped there
+exited 0, which a script could not tell from the guest finishing.
 
 `--version`, `-v`, `--help` and `-h` are answered before any settings file is
 read, so they work even with a malformed `romwbw_emu.json` in the directory.

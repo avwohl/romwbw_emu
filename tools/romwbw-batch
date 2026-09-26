@@ -89,9 +89,10 @@
 #
 # LIMITS.  --timeout kills a run after that many seconds of wall clock, and the
 # emulator stops one after --max-instructions Z80 instructions - its own
-# default is ten billion, some seven minutes at full speed - and says so, with
-# exit status 124.  Either way the batch did not complete, and the tool says
-# which stopped it.
+# default when stdin is not a terminal, which in a batch it never is, is ten
+# billion, some seven minutes at full speed - and says so, with exit status
+# 124.  Either way the batch did not complete, and the tool says which
+# stopped it.
 #
 # Exit status: 0 the batch completed and every requested file was extracted;
 # 1 it did not complete, or a requested file is missing; 2 something it needs

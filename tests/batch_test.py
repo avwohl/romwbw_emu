@@ -756,7 +756,12 @@ def test_instruction_limit(emu, rom, d):
     """The emulator stops a run at an instruction limit.  It was ten billion,
     a constant with no option, and a run that reached it exited 0, which a
     script could not tell from the guest finishing.  Now it is
-    --max-instructions, and a run stopped there exits 124."""
+    --max-instructions, and a run stopped there exits 124.
+
+    The default is for a run nobody watches: with stdin a terminal there is
+    none, where seven minutes of work at a prompt used to end with 124.  A
+    run with a limit names it at the start, which is how the terminal case
+    is checked without running ten billion instructions."""
     def run(*opts):
         p = subprocess.run([emu, "--romwbw=" + rom, "--boot=H", "--no-config"]
                            + list(opts), stdin=subprocess.DEVNULL,
@@ -767,9 +772,12 @@ def test_instruction_limit(emu, rom, d):
     check(rc == 124 and "instruction limit, 1000 instructions" in err,
           "a run stopped at --max-instructions exits 124 and says so "
           "(exit %s)" % rc)
-    rc, _ = run()
+    rc, err = run()
     check(rc == 0, "a run that ends at the boot prompt, at end of input, "
                    "exits 0")
+    check("Instruction limit: 10000000000 " in err,
+          "stdin not a terminal: the default limit, ten billion, is in force "
+          "and said")
     rc, _ = run("--max-instructions=0")
     check(rc == 0, "--max-instructions=0 is no limit")
     rc, err = run("--max-instructions=1e9")
@@ -780,6 +788,50 @@ def test_instruction_limit(emu, rom, d):
           "instruction limit (200,000 instructions)" in r.stdout,
           "romwbw-batch: a batch the emulator stopped at its instruction "
           "limit fails, and says so")
+
+    try:
+        import pty
+        import select
+        import signal
+    except ImportError:
+        skip("the instruction limit on a terminal: no pty module here")
+        return
+
+    def on_tty(opts, until, secs=20):
+        """Run on a pty until `until` is printed or the emulator exits:
+        (what it printed, its exit status or None if still running)."""
+        pid, fd = pty.fork()
+        if pid == 0:
+            try:
+                os.execv(emu, [emu, "--romwbw=" + rom, "--boot=H",
+                               "--no-config"] + opts)
+            finally:
+                os._exit(127)
+        buf, status = bytearray(), None
+        end = time.time() + secs
+        while time.time() < end and not (until and until in buf):
+            r, _, _ = select.select([fd], [], [], 0.05)
+            if r:
+                try:
+                    buf.extend(os.read(fd, 65536))
+                except OSError:
+                    pass
+            got, st = os.waitpid(pid, os.WNOHANG)
+            if got:
+                status = os.WEXITSTATUS(st) if os.WIFEXITED(st) else -1
+                break
+        if status is None:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+        os.close(fd)
+        return bytes(buf), status
+    out, status = on_tty([], b"Boot [H=Help]:")
+    check(b"Boot [H=Help]:" in out and b"Instruction limit" not in out,
+          "stdin a terminal: no instruction limit unless one is given")
+    out, status = on_tty(["--max-instructions=1000"], None)
+    check(status == 124 and b"Instruction limit: 1000 " in out,
+          "stdin a terminal: a limit given is kept, and a run stopped there "
+          "exits 124 (exit %s)" % status)
 
 
 def test_escape_at_prompt(emu, rom):
