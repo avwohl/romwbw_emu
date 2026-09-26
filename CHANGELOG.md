@@ -19,6 +19,10 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [1.49] - 2026-09-26
+
 ### A SYSCONF-set autoboot countdown takes the seconds it says
 
 `S AB E,3` in SYSCONF, then `R` at the boot loader's prompt, and the loader
