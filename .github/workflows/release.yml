@@ -191,9 +191,10 @@ jobs:
           install -m 755 tools/romwbw-batch staging/usr/bin/romwbw-batch
           install -m 755 tools/romwbw-plm80 staging/usr/bin/romwbw-plm80
           # romwbw-batch edits its disk images with cpmemu's cpm_disk.py, and
-          # this repository keeps no copy of it (README.md, "Reading an
-          # image").  The package does, from the cpmemu clone the qkz80 step
-          # made - the same floating main as the Z80 core, see "On pinning".
+          # this repository keeps no copy of it (docs/ROMS_AND_DISKS.md,
+          # "Reading an image").  The package does, from the cpmemu clone the
+          # qkz80 step made - the same floating main as the Z80 core, see "On
+          # pinning".
           # Under share/ and not as /usr/bin/cpm_disk: that is the name
           # cpmemu's own package installs, and two packages must not own one
           # file.  romwbw-batch looks here before PATH, since a cpmemu
@@ -231,6 +232,9 @@ jobs:
           #
           # The file pickers work with no mirror at all.
           cp README.md staging/usr/share/doc/romwbw-emu/
+          # The README is short and links out; the user manual it used to
+          # hold is these two files now.
+          cp docs/USAGE.md docs/ROMS_AND_DISKS.md staging/usr/share/doc/romwbw-emu/
           cp LICENSE staging/usr/share/doc/romwbw-emu/
           cp docs/CATALOG.md staging/usr/share/doc/romwbw-emu/
           # The batch tools' manuals, and the source of the 403-byte BIOS
@@ -280,7 +284,7 @@ jobs:
             echo "$docdirs" | sed 's/^/  /'
             exit 1
           fi
-          for d in README.md LICENSE CATALOG.md BATCH.md ISX.md isxbios.asm; do
+          for d in README.md USAGE.md ROMS_AND_DISKS.md LICENSE CATALOG.md BATCH.md ISX.md isxbios.asm; do
             test -f "staging/usr/share/doc/romwbw-emu/$d" || {
               echo "$d is not in the package's doc directory"; exit 1; }
           done

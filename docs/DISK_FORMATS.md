@@ -301,7 +301,8 @@ memory disks follow it:
   F:=HDSK0:3 G:=HDSK0:4 H:=HDSK0:5   I:=HDSK0:6   J:=HDSK0:7
 ```
 
-`../README.md` has the rule again with a two-disk map, and
+[ROMS_AND_DISKS.md](ROMS_AND_DISKS.md#drive-letters) has the rule again with a
+two-disk map, and
 [drive_assignment.md](drive_assignment.md) has the CBIOS side. CP/M's `ASSIGN`
 shows the live map and changes it (`ASSIGN D:=HDSK0:2`), which is how to reach a
 slice the automatic map did not cover.

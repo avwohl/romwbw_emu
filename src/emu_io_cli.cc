@@ -880,7 +880,8 @@ bool emu_host_file_open_read(const char* filename) {
 // resolve only the parent - which does have to exist - and lowercase the
 // basename, which is the same convention W8 has always used for the name it
 // derives from the FCB. CP/M destroys the typed case before we ever see it, so
-// lowercase is a choice, not a recovery; it is documented as such in README.
+// lowercase is a choice, not a recovery; it is documented as such in
+// docs/FILE_TRANSFER.md.
 static std::string resolve_write_path(const std::string& path) {
   size_t slash = path.find_last_of('/');
   std::string base = (slash == std::string::npos) ? path : path.substr(slash + 1);
