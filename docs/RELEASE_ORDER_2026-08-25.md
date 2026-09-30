@@ -252,10 +252,12 @@ Remaining here:
   are measured against it - it is simply never packaged. `gh release list`
   shows `v1.35` (2026-08-07) as Latest until `v1.37` exists. The tag carries no
   disk images either way, so all of this remains independent of steps 4 and 5.
-- The `README.md` line this plan asked for **is now written**, in the
-  **Recommended Disk Images** section directly under the table. It is still the
-  only measure that reaches someone who already has the file, since they read
-  the repo rather than re-clone.
+- The `README.md` line this plan asked for **was written**, in the
+  **Recommended Disk Images** section directly under the table. That section
+  was removed on 2026-09-07 (`ed289ee`), when the ROMs and disks moved to the
+  romwbw_disks catalog. The list of images now lives in
+  [ROMS_AND_DISKS.md](ROMS_AND_DISKS.md) and comes from `romwbw-get list`. The
+  warning about pre-52 `ioscpm` builds was not carried over.
 
 ### Step 1 — `ioscpm` code fix. **Done and committed as `bb5543f`.**
 
