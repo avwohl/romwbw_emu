@@ -379,6 +379,30 @@ static std::string escape_key_name() {
   return std::string(1, (char)c);
 }
 
+// Debugger memory access.  The console's e, dm and d commands used to index
+// cpu->get_mem(), the flat 64K array of qkz80_cpu_mem.  In banked mode
+// banked_mem keeps the guest's memory in its own ram[] and rom[] and never
+// touches that array, so the commands showed zeros.  These two read and write
+// the memory as the CPU sees it at the current bank mapping.
+//
+// A read goes through peek_mem(), which sets no --trace bit.  A write goes
+// through store_mem(): that is the one path that knows the shadow RAM rule
+// for a store to a ROM-mapped address, and it runs the Dazzler write callback.
+// It also sets a bit in the --trace write bitmap and feeds the idle detector's
+// write signature; a deposit is rare and typed by a person, so both stay.
+static uint8_t dbg_peek(qkz80* cpu, banked_mem* memory, uint16_t addr) {
+  if (!memory->is_banking_enabled()) return cpu->get_mem()[addr];
+  return memory->peek_mem(addr);
+}
+
+static void dbg_poke(qkz80* cpu, banked_mem* memory, uint16_t addr, uint8_t val) {
+  if (!memory->is_banking_enabled()) {
+    cpu->get_mem()[addr] = val;
+    return;
+  }
+  memory->store_mem(addr, val);
+}
+
 // Handle console mode - returns action to take
 static ConsoleResult handle_console_mode(qkz80* cpu, banked_mem* memory) {
   char line[256];
@@ -460,11 +484,10 @@ static ConsoleResult handle_console_mode(qkz80* cpu, banked_mem* memory) {
         if (count < 1) count = 1;
         if (count > 256) count = 256;
       }
-      uint8_t* mem = cpu->get_mem();
       for (int i = 0; i < count; i++) {
         uint16_t a = (addr + i) & 0xFFFF;
         fprintf(stderr, "  %s: %02X\n", format_address(a).c_str(),
-                mem[a]);
+                dbg_peek(cpu, memory, a));
       }
       continue;
     }
@@ -486,13 +509,12 @@ static ConsoleResult handle_console_mode(qkz80* cpu, banked_mem* memory) {
         if (count < 1) count = 1;
         if (count > 4096) count = 4096;
       }
-      uint8_t* mem = cpu->get_mem();
       for (int i = 0; i < count; i += 16) {
         uint16_t a = (addr + i) & 0xFFFF;
         fprintf(stderr, "  %04X: ", a);
         // Hex
         for (int j = 0; j < 16 && (i + j) < count; j++) {
-          fprintf(stderr, "%02X ", (uint8_t)mem[(a + j) & 0xFFFF]);
+          fprintf(stderr, "%02X ", dbg_peek(cpu, memory, (uint16_t)(a + j)));
         }
         // Pad if short line
         for (int j = count - i; j < 16; j++) {
@@ -501,7 +523,7 @@ static ConsoleResult handle_console_mode(qkz80* cpu, banked_mem* memory) {
         fprintf(stderr, " ");
         // ASCII
         for (int j = 0; j < 16 && (i + j) < count; j++) {
-          uint8_t c = mem[(a + j) & 0xFFFF];
+          uint8_t c = dbg_peek(cpu, memory, (uint16_t)(a + j));
           fprintf(stderr, "%c", (c >= 0x20 && c < 0x7F) ? c : '.');
         }
         fprintf(stderr, "\n");
@@ -521,7 +543,6 @@ static ConsoleResult handle_console_mode(qkz80* cpu, banked_mem* memory) {
         continue;
       }
       // Parse remaining values from the line
-      uint8_t* mem = cpu->get_mem();
       char* p = line;
       // Skip command
       while (*p && !isspace(*p)) p++;
@@ -534,7 +555,7 @@ static ConsoleResult handle_console_mode(qkz80* cpu, banked_mem* memory) {
       while (*p) {
         unsigned int val;
         if (sscanf(p, "%x", &val) != 1) break;
-        mem[(addr + offset) & 0xFFFF] = val & 0xFF;
+        dbg_poke(cpu, memory, (uint16_t)(addr + offset), (uint8_t)(val & 0xFF));
         offset++;
         // Skip this value
         while (*p && !isspace(*p)) p++;
@@ -1880,7 +1901,7 @@ int main(int argc, char** argv) {
           fprintf(stderr, "Current bank: 0x%02X\n", cur_bank);
           fprintf(stderr, "Code dump 0x4D50-0x4D90:\n");
           for (int i = 0; i < 64; i++) {
-            fprintf(stderr, "%02X ", memory.fetch_mem((uint16_t)(0x4D50 + i)));
+            fprintf(stderr, "%02X ", dbg_peek(&cpu, &memory, (uint16_t)(0x4D50 + i)));
             if ((i + 1) % 16 == 0) fprintf(stderr, "\n");
           }
         }

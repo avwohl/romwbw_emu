@@ -2,6 +2,14 @@
 
 This document explains how to integrate the RomWBW emulator core into downstream projects (iOS, macOS, Windows, etc.).
 
+**2026-11-04: `banked_mem::peek_mem()`, which you need not call.** A new
+public const member of `src/romwbw_mem.h` returns the byte the CPU would read
+at an address under the current bank mapping, with no side effect: unlike
+`fetch_mem()` it sets no `--trace` bit. The CLI's `sim>` commands `e` and `dm`
+use it, because they read the flat `get_mem()` array, which banked mode never
+fills. It changes no layout and no existing call, so a port builds as before.
+A port with a memory viewer of its own can call it.
+
 **2026-09-26: `takeLoaderPoll()`, which you need not call.** RomWBW's boot
 loader times its autoboot countdown with a delay loop calibrated to the 4 MHz
 `SYSGET CPUINFO` reports - now `HBIOSDispatch::CPU_KHZ` - so a guest run

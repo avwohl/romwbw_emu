@@ -227,6 +227,17 @@ public:
         if (write_callback) write_callback(addr, byte);
     }
 
+    // The byte the CPU would read at addr, with no side effect: fetch_mem()
+    // sets a bit in the --trace bitmaps, and the shadow RAM bitmap that
+    // decides a ROM-mapped read below 8000h is private.  For the debugger's
+    // e and dm commands.  Banked mode only; with banking off the flat array
+    // get_mem() returns is the memory, and the caller reads that.
+    uint8_t peek_mem(uint16_t addr) const {
+        if (!banking_enabled) return 0xFF;
+        if (addr < BANK_BOUNDARY) return fetch_banked(addr);
+        return ram[((COMMON_BANK & 0x0F) * BANK_SIZE) + (addr - BANK_BOUNDARY)];
+    }
+
     // Direct bank access (for disk DMA)
     uint8_t read_bank(uint8_t bank_id, uint16_t offset) const {
         if (!banking_enabled || offset >= BANK_SIZE) return 0xFF;

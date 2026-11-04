@@ -19,7 +19,24 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
-Nothing yet.
+### The sim> commands e, dm and d read and write the memory the CPU sees
+
+On a booted 3.6.0 ROM stopped at the entry stub (PC=FFF2), `dm FFF0 16`
+printed 16 zeros and `e 8000 4` printed four zeros; the stub is `D3 EF C9`
+and 8000h holds `C3 00 01 FF`. The three commands indexed `cpu->get_mem()`,
+the flat 64K array of `qkz80_cpu_mem`, and in banked mode `banked_mem` keeps
+the guest's memory in its own `ram[]` and `rom[]` and never touches that
+array. `d` was worse: `d 9000 de ad be ef` then `e 9000 4` printed the bytes
+back, because both used the same unused array, so nothing showed that no
+instruction would ever see them. Now `e` and `dm` read through a new
+`banked_mem::peek_mem()` (no `--trace` bit set) and `d` writes through
+`store_mem()`; the same `dm FFF0 16` prints `D3 EF C9 C3 07 FE ...`, and
+`d 9000 3e 5a`, `pc 9000`, `s`, `r` gives `A=5A`. `sym`, `bp`, `bc`, `bl`,
+`ba` and `pc` read no guest memory. The stuck-loop dump after `--debug` also
+read with `fetch_mem()` and now uses the same side-effect-free read.
+`peek_mem()` is an additive public member of `src/romwbw_mem.h`, which
+ioscpm, z80cpmw and cpmdroid compile in place: it changes no layout and no
+existing call. New check: `tests/debugger_memory.py`, in `make -C src test`.
 
 ## [1.49] - 2026-09-26
 

@@ -198,6 +198,7 @@ test: romwbw_emu $(addprefix test_,$(TESTS))
 	if command -v python3 >/dev/null 2>&1; then \
 	  python3 $(THIS_DIR)../tests/catalog_client_test.py || status=1; echo; \
 	  python3 $(THIS_DIR)../tests/batch_test.py || status=1; echo; \
+	  python3 $(THIS_DIR)../tests/debugger_memory.py || status=1; echo; \
 	else \
 	  echo "SKIP  catalog client and batch tests (python3 not on PATH)"; echo; \
 	fi; \
