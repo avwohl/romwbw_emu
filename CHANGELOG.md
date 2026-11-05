@@ -19,7 +19,9 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
-Nothing yet.
+### Docs: `docs/GDB.md` names 1.50 as the first release with `--gdb`
+
+The "What you need" list said to build from source.
 
 ## [1.50] - 2026-11-05
 

@@ -9,9 +9,8 @@ cpmemu, and the protocol details are in `docs/gdb_stub.md` there.
 
 ## What you need
 
-- **romwbw_emu with `--gdb`.** The stub came after release v1.49. With v1.49
-  or an older release, build romwbw_emu from source, with a cpmemu checkout
-  beside it (see [Start](#start)).
+- **romwbw_emu 1.50 or newer.** An older release has no `--gdb`. A build from
+  source needs a cpmemu checkout beside it (see [Start](#start)).
 - **um80 0.4.0 or newer:** `pip install "um80>=0.4.0"`, for `--debug-info`,
   udb80, `dbg2elf` and the GDB Python scripts. For a C program, also
   `pip install "uc80>=0.8.0"` and compile with `uc80 -g`.
