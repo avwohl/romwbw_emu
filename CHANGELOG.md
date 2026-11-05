@@ -19,6 +19,39 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+### `--gdb`: a GDB stub for the CLI, with banks and a way to find a CP/M program
+
+`romwbw_emu --gdb[=PORT] [--gdb-port-file=FILE]` listens on 127.0.0.1 and stops
+before the first instruction until a debugger connects. The stub is cpmemu's
+`gdbstub.cc`, compiled from the sibling checkout as qkz80 is (`CPMEMU_SRC` in
+`src/makefile` overrides; with no `gdbstub.cc` the CLI builds without the stub
+and `--gdb` says so), behind a `gdb::Target` of this tree in `src/romwbw_gdb.cc`.
+`g`, `m`, `M` and breakpoints use the mapping the CPU has now, through
+`peek_mem()` and `store_mem()`. `monitor bank XX` shows another bank in the low
+32K (8000H and up is always bank 8FH), and `monitor break-bank` limits
+breakpoints to a bank. `monitor wait-program bytes HEX...` or `sha256 LENGTH
+HEX64` stops the run when a program that CP/M started from a disk image is at
+0100H in bank 8EH and the bytes match; the shadow stack (`monitor bt`) then
+restarts at the program. Measured on a booted 3.6.0 ROM with a 128-byte
+test program: stop at PC 0100H with the CPU in bank 8EH, bank 00 at 0000H equals
+the ROM file, and `bt` at the inner routine shows INNER, OUTER and the main routine. ^C reaches
+a guest that waits for a key: before this change a console read blocked in
+`read()` or `select()`, so a debugger waited for the key; the new hook gives the
+turn back every 10 ms and the `T02` arrived in under 2 s. `sim>` still works
+with the stub attached (^E, `bp`, `q`), and a HLT stops with `T05` instead of
+ending the run. Speed with no `--gdb`: the run loop is now four lambdas that the stub shares.
+Without `__attribute__((always_inline))` on them the plain loop was 45 percent
+slower (median user time of 200 million instructions of a DEC/OR/JR loop under
+CP/M, 5 runs: 5.91 s old binary, 8.57 s new). With it the medians over 16
+interleaved runs are 5.81 s (old binary) and 5.89 s (new), 1.4 percent slower, on
+a machine at load average 12; an earlier 10-run set on a quieter machine gave
+3.52 s and 3.53 s. New check: `tests/gdb_stub_test.py` (75
+assertions, 15 s), in `make -C src test`. Not done: watchpoints, `QCatchSyscalls`
+(BDOS is code in RAM here, not a trap), and the stub in ioscpm, z80cpmw and
+cpmdroid (items in their `todo.txt`). [docs/GDB.md](docs/GDB.md).
+
+`--gdb-port-file` without `--gdb` now prints an error and exits 1 (it was ignored). `tests/gdb_stub_test.py` also covers HLT (`T05` at 0103H, then `W00`), and `ROMWBW_REQUIRE_GDB=1`, set in `test.yml`, turns the no-stub skip into a failure. Push the cpmemu commit first: this tree does not compile against the old `gdbstub.h`.
+
 ### The sim> commands e, dm and d read and write the memory the CPU sees
 
 On a booted 3.6.0 ROM stopped at the entry stub (PC=FFF2), `dm FFF0 16`

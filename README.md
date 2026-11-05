@@ -85,6 +85,7 @@ do to take a sync of this core; `docs/DOWNSTREAM_*.md` are the dated notices),
 - [docs/FILE_TRANSFER.md](docs/FILE_TRANSFER.md) - R8/W8 in full
 - [docs/BATCH.md](docs/BATCH.md) - `romwbw-batch`: CP/M commands with nobody at the keyboard
 - [docs/ISX.md](docs/ISX.md) - Intel's ISIS-II tools under DRI's ISX, `romwbw-plm80`, and MP/M II rebuilt byte for byte
+- [docs/GDB.md](docs/GDB.md) - `--gdb`: debug a guest program with GDB or udb80, banks, and finding a CP/M program
 - [docs/DISK_FORMATS.md](docs/DISK_FORMATS.md) - disk formats, SIMH compatibility, and reading images with `cpm_disk.py`
 - [docs/disk-images.md](docs/disk-images.md) - working with disk images by hand
 - [docs/drive_assignment.md](docs/drive_assignment.md) - how CBIOS builds the drive map

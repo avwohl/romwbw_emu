@@ -2,6 +2,18 @@
 
 This document explains how to integrate the RomWBW emulator core into downstream projects (iOS, macOS, Windows, etc.).
 
+**2026-11-04: a GDB stub in the CLI, and no shared file changed.** `--gdb` on
+`romwbw_emu` (`docs/GDB.md`) compiles cpmemu's `gdbstub.cc` and three new files:
+`src/romwbw_gdb.{h,cc}` and `src/gdb_platform.cc`. No port compiles any of them,
+and `hbios_*`, `emu_*` and `romwbw_mem.h` are as they were: the stub reads banked
+memory through `peek_mem()` and `store_mem()`, which are public already. The one
+edit to an `emu_*` file is in `emu_io_cli.cc`, which only the CLI compiles (a
+hook that is null unless a debugger is attached). A port builds as before and
+needs nothing. A port that wants the stub finds what it needs in the "Other
+clients" section of `docs/GDB.md`, and the item in its own `todo.txt`. The
+run-loop turn that the CLI split into four lambdas in `main()` is the model:
+interrupts of the last turn, the instruction, what follows the instruction.
+
 **2026-11-04: `banked_mem::peek_mem()`, which you need not call.** A new
 public const member of `src/romwbw_mem.h` returns the byte the CPU would read
 at an address under the current bank mapping, with no side effect: unlike

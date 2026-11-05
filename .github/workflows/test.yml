@@ -157,6 +157,10 @@ jobs:
           python3 cpmemu/util/cpm_disk.py --help >/dev/null
 
       - name: Build and test
+        env:
+          # tests/gdb_stub_test.py skips when make built no GDB stub; here a
+          # skip would hide a lost gdbstub.cc, so it fails instead.
+          ROMWBW_REQUIRE_GDB: "1"
         run: |
           # Point at the clone explicitly rather than relying on src/makefile's
           # sister-directory fallback, which looks one level further up than

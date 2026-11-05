@@ -278,6 +278,10 @@ int emu_console_peek_char() {
   return ch;
 }
 
+// Set by romwbw_emu.cc while a debugger is attached; null otherwise.  Returns
+// non-zero when stdin has no input yet.  See emu_console_read_char().
+int (*emu_console_wait_hook)(void) = nullptr;
+
 int emu_console_read_char() {
   // Check queued input first. emu_console_queue_char() has no CLI caller
   // (only the web frontend uses it), but emu_console_check_escape() parks a
@@ -320,6 +324,13 @@ int emu_console_read_char() {
     stdin_eof_consumed = true;
     return -1;
   }
+
+  // A debugger on the GDB stub (docs/GDB.md) has to be heard while the guest
+  // waits for a key, and the blocking reads below would not hear it.  The hook
+  // waits a little for stdin and says whether it has input; if it has none,
+  // the read hands the main loop an EMU_CONSOLE_RETRY, as for the escape key,
+  // and the stub looks at its socket before the call runs again.
+  if (emu_console_wait_hook && emu_console_wait_hook()) return EMU_CONSOLE_RETRY;
 
   // For non-TTY (pipe), do a single blocking read
   if (!stdin_is_tty) {

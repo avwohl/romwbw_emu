@@ -114,6 +114,24 @@ endif
 # Object files for romwbw_emu using emu_io abstraction
 ROMWBW_OBJS = emu_io_cli.o emu_io_common.o hbios_dispatch.o hbios_cpu.o emu_init.o emu_config.o
 
+# The GDB stub (docs/GDB.md).  gdbstub.cc is cpmemu's, and this build compiles
+# it out of cpmemu's source directory as it does qkz80: CPMEMU_SRC, else the
+# directory that QKZ80_CFLAGS names with -I and that holds gdbstub.cc, else the
+# sister checkout.  With none of them the CLI is built without the stub, and
+# --gdb says so.  -idirafter, not -I: the qkz80 headers of QKZ80_CFLAGS must
+# win over a second copy, and only gdbstub.h and os/platform.h are wanted here.
+ifndef CPMEMU_SRC
+CPMEMU_SRC := $(firstword $(foreach d,$(patsubst -I%,%,$(filter -I%,$(QKZ80_CFLAGS))) $(SISTER_QKZ80_PATH),$(if $(wildcard $(d)/gdbstub.cc),$(d))))
+endif
+ifneq ($(CPMEMU_SRC),)
+ROMWBW_OBJS += gdbstub.o romwbw_gdb.o gdb_platform.o
+CXXFLAGS += -DROMWBW_GDB -idirafter $(CPMEMU_SRC)
+gdbstub.o: $(CPMEMU_SRC)/gdbstub.cc
+	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
+else
+$(info gdb stub: no gdbstub.cc in cpmemu's source directory; building romwbw_emu without --gdb)
+endif
+
 # Main emulator (boots RomWBW via HBIOS). version.cc is recompiled inside
 # the link recipe so the build date is fresh exactly when the binary changes
 # (and no-op makes stay no-ops).
@@ -199,6 +217,7 @@ test: romwbw_emu $(addprefix test_,$(TESTS))
 	  python3 $(THIS_DIR)../tests/catalog_client_test.py || status=1; echo; \
 	  python3 $(THIS_DIR)../tests/batch_test.py || status=1; echo; \
 	  python3 $(THIS_DIR)../tests/debugger_memory.py || status=1; echo; \
+	  python3 $(THIS_DIR)../tests/gdb_stub_test.py || status=1; echo; \
 	else \
 	  echo "SKIP  catalog client and batch tests (python3 not on PATH)"; echo; \
 	fi; \
@@ -213,6 +232,11 @@ test: romwbw_emu $(addprefix test_,$(TESTS))
 # hd1k_cpm22, and the Intel PL/M-80 runs need $ISX_TOOLS, because DRI's and
 # Intel's binaries are not in this repository.  It uses the romwbw_emu this
 # target has just built.
+#
+# tests/gdb_stub_test.py is a small client of the GDB remote protocol.  It starts
+# the romwbw_emu this target has just built with --gdb=0, runs a program from a
+# disk image under it, and needs a cached ROM, hd1k_cpm22, um80 and ul80.  It
+# skips, with its reason, when the build has no stub or the ROM is not cached.
 #
 # tests/catalog_client_test.py runs tools/romwbw-get against a catalog it
 # builds and serves itself on 127.0.0.1, so it needs no network and no

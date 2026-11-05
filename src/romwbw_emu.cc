@@ -33,6 +33,7 @@
 #include <unistd.h>
 #include <termios.h>
 #include <sys/select.h>
+#include <poll.h>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <map>
@@ -40,6 +41,10 @@
 #include <vector>
 #include <string>
 #include <random>
+#ifdef ROMWBW_GDB
+#include "romwbw_gdb.h"      // The GDB stub (docs/GDB.md); gdbstub.cc is cpmemu's
+#include "os/platform.h"     // cpmemu's; gdb_platform.cc implements the part the stub uses
+#endif
 
 // Build date from version.cc (recompiled on every relink)
 extern const char* emu_build_date;
@@ -47,6 +52,18 @@ extern const char* emu_build_date;
 // emu_io_cli.cc's, and the CLI's alone, so not in emu_io.h: the next byte of
 // console input without taking it, or -1.  See holdInputUntilWanted() below.
 int emu_console_peek_char();
+// emu_io_cli.cc's too: called before a blocking console read; non-zero means
+// "no input yet, give the main loop the turn".  Set while a debugger is attached.
+extern int (*emu_console_wait_hook)(void);
+
+// The four parts of a turn of the run loop (in main()) are lambdas that two
+// callers use.  Without this attribute the compiler leaves them as calls and
+// the plain loop is 45 percent slower (docs/GDB.md has the measurement).
+#define ROMWBW_TURN_INLINE __attribute__((always_inline))
+
+// A turn waited (a sleep, or a console read that found no key): the GDB stub
+// looks at its socket after it.
+static bool turn_waited = false;
 
 // Global for signal handler to request stop
 static volatile bool stop_requested = false;
@@ -962,6 +979,11 @@ void print_usage(const char* prog) {
   fprintf(stderr, "                    guest - ^E is cursor-up in the WordStar diamond.\n");
   fprintf(stderr, "  --escape=none     Reserve no key; every byte reaches CP/M ('off' is\n");
   fprintf(stderr, "                    the same). Console mode is then unreachable.\n");
+  fprintf(stderr, "  --gdb[=PORT]      Wait for a GDB (remote serial protocol) debugger on\n");
+  fprintf(stderr, "                    127.0.0.1:PORT (default 1234; 0 lets the system choose)\n");
+  fprintf(stderr, "                    and stop before the first instruction. See docs/GDB.md.\n");
+  fprintf(stderr, "  --gdb-port-file=FILE\n");
+  fprintf(stderr, "                    Write the port that --gdb uses to FILE\n");
   fprintf(stderr, "  --trace=FILE      Write execution trace to FILE\n");
   fprintf(stderr, "  --symbols=FILE    Load symbol table from FILE (.sym)\n");
   fprintf(stderr, "  --max-instructions=N\n");
@@ -1029,6 +1051,9 @@ int main(int argc, char** argv) {
   bool boot_from_cli = false;
   bool boot_clear = false;  // --boot=none: forget the persisted target too
   long long max_instructions = -1;  // 0: no limit; -1: not given, see below
+  bool gdb_wanted = false;          // --gdb: wait for a debugger (docs/GDB.md)
+  int gdb_port = 1234;
+  std::string gdb_port_file;
 
   // ROM application definitions: key=name:path
   struct RomAppDef {
@@ -1232,6 +1257,21 @@ int main(int argc, char** argv) {
         boot_string = b;
       }
       boot_from_cli = true;
+    } else if (strcmp(argv[i], "--gdb") == 0 || strncmp(argv[i], "--gdb=", 6) == 0) {
+      // Digits only, 0 to 65535: atoi() would take "12ab" as 12.
+      if (argv[i][5] == '=') {
+        const char* n = argv[i] + 6;
+        char* end = nullptr;
+        long v = (*n >= '0' && *n <= '9') ? strtol(n, &end, 10) : -1;
+        if (v < 0 || v > 65535 || !end || *end != '\0') {
+          fprintf(stderr, "Invalid --gdb port: %s (0 to 65535)\n", n);
+          return 1;
+        }
+        gdb_port = (int)v;
+      }
+      gdb_wanted = true;
+    } else if (strncmp(argv[i], "--gdb-port-file=", 16) == 0) {
+      gdb_port_file = argv[i] + 16;
     } else if (strncmp(argv[i], "--trace=", 8) == 0) {
       trace_file = argv[i] + 8;
     } else if (strncmp(argv[i], "--symbols=", 10) == 0) {
@@ -1450,6 +1490,15 @@ int main(int argc, char** argv) {
   emu.set_strict_io_mode(strict_io_mode);
   emu.getHBIOS()->setDebug(debug);  // Enable HBIOS debug output
 
+#ifdef ROMWBW_GDB
+  // The GDB stub (docs/GDB.md).  Built always, used only with --gdb.
+  RomwbwTarget gdb_target(cpu, memory, &stop_requested);
+  gdb::Tracker gdb_tracker;
+  gdb::Stub gdb_stub(gdb_target, gdb_tracker);
+  gdb_target.stub = &gdb_stub;
+  gdb_target.tracker = &gdb_tracker;
+#endif
+
   // Set up HBIOS disk images
   // NOTE: Memory disks are initialized later, after ROM is loaded
   // Attach any file-backed hard disk images (HBIOS dispatch protocol)
@@ -1603,6 +1652,28 @@ int main(int argc, char** argv) {
             max_instructions, EXIT_INSTRUCTION_LIMIT);
   }
 
+  if (!gdb_wanted && !gdb_port_file.empty()) {
+    fprintf(stderr, "--gdb-port-file needs --gdb\n");
+    return 1;
+  }
+
+#ifdef ROMWBW_GDB
+  // Listen before the terminal goes raw and before the ROM loads, so that
+  // the port file is there as soon as possible and a port in use is reported
+  // before anything else happens.
+  if (gdb_wanted &&
+      !gdb_stub.listen(gdb_port, gdb_port_file.empty() ? nullptr : gdb_port_file.c_str()))
+    return 1;
+#else
+  (void)gdb_port;
+  (void)gdb_port_file;
+  if (gdb_wanted) {
+    fprintf(stderr, "--gdb: this build has no GDB stub.  It is compiled from cpmemu's"
+                    " gdbstub.cc,\nwhich make did not find (set CPMEMU_SRC).\n");
+    return 1;
+  }
+#endif
+
   // Enable raw terminal mode
   emu_io_init();
 
@@ -1678,7 +1749,11 @@ int main(int argc, char** argv) {
 
   // Signal handler for graceful stop
   auto signal_handler = [](int sig) {
+#ifdef ROMWBW_GDB
+    romwbw_gdb_note_signal(sig);   // the X packet names it
+#else
     (void)sig;
+#endif
     stop_requested = true;
   };
   // Use sigaction with sa_flags=0 (no SA_RESTART): a handler must interrupt
@@ -1719,7 +1794,16 @@ int main(int argc, char** argv) {
   bool limit_reached = false;
   bool in_step_mode = false;  // True if stepping from console
 
-  while (!stop_requested) {
+  // One turn of the loop is four parts, in this order: before the instruction
+  // (sim> breakpoints, the escape key, HLT), the instruction, what follows it
+  // (console input and output, sleeps, the HBIOS hand-over), the interrupts,
+  // and the periodic checks with the instruction limit.  The same parts run
+  // in the plain loop below and, one turn at a time, for the GDB stub
+  // (docs/GDB.md); the stub needs the interrupts of a turn to come before the
+  // next instruction instead of after this one, which is the same order.
+  enum { TURN_RUN = 0, TURN_AGAIN = 1, TURN_END = 2, TURN_HALT = 3 };
+
+  auto turn_before = [&](bool debugger) ROMWBW_TURN_INLINE -> int {
     uint16_t pc = cpu.regs.PC.get_pair16();
     uint8_t opcode = memory.fetch_mem(pc, true) & 0xFF;
 
@@ -1745,23 +1829,24 @@ int main(int argc, char** argv) {
       switch (result) {
         case CONSOLE_QUIT:
           stop_requested = true;
-          continue;
+          return TURN_AGAIN;
         case CONSOLE_CONTINUE:
           in_step_mode = false;
-          continue;
+          return TURN_AGAIN;
         case CONSOLE_STEP:
           in_step_mode = true;
           // step_count is set by handle_console_mode
           break;
         case CONSOLE_AGAIN:
-          continue;
+          return TURN_AGAIN;
       }
     }
 
-    // Check for HLT instruction
+    // Check for HLT instruction.  With a debugger attached the HLT is not the
+    // end of the run: the debugger is told, and it can go on past the HLT.
     if (opcode == 0x76) {
       fprintf(stderr, "\nHLT instruction at 0x%04X\n", pc);
-      break;
+      return debugger ? TURN_HALT : TURN_END;
     }
 
     // Debug: track first 50000 instructions after boot to see where we go
@@ -1777,11 +1862,10 @@ int main(int argc, char** argv) {
     // Debug: trace instructions after CIOIN (disabled for normal use)
     // emu.trace_after_cioin(pc, opcode);
 
-    // Execute one instruction (I/O is handled via hbios_cpu port_in/port_out)
-    cpu.execute();
-    instruction_count++;
-    if (in_step_mode) step_count--;
+    return TURN_RUN;
+  };
 
+  auto turn_after = [&]() ROMWBW_TURN_INLINE -> int {
     // Poll stdin and queue input to HBIOSDispatch
     emu.poll_stdin();
 
@@ -1819,6 +1903,7 @@ int main(int argc, char** argv) {
     // sleep moved to per poll.
     if (emu.getHBIOS()->takeIdlePoll() && !check_console_escape_async()) {
       usleep(10000);
+      turn_waited = true;
     }
 
     // The boot loader's autoboot countdown takes the seconds it says.  Its
@@ -1833,12 +1918,13 @@ int main(int argc, char** argv) {
     if (emu.getHBIOS()->takeLoaderPoll(&loader_us) &&
         !check_console_escape_async()) {
       pace_loader_poll(loader_us);
+      turn_waited = true;
     }
 
     // Check if strict I/O mode halted us during port operations
     if (emu.is_halted()) {
       fprintf(stderr, "\nEmulator halted (strict I/O mode)\n");
-      break;
+      return TURN_END;
     }
 
     // Check if OUT handler wants to redirect PC (e.g., for romldr bank switch)
@@ -1846,6 +1932,11 @@ int main(int argc, char** argv) {
       cpu.regs.PC.set_pair16(emu.get_next_pc());
     }
 
+    return TURN_RUN;
+  };
+
+  // The interrupts.  True if the CPU took one.
+  auto turn_interrupts = [&]() ROMWBW_TURN_INLINE -> bool {
     // Check for scheduled interrupts (using upstream qkz80 interrupt API)
     if (nmi_config.enabled && cpu.cycles >= nmi_config.next_trigger) {
       cpu.request_nmi();
@@ -1865,7 +1956,7 @@ int main(int argc, char** argv) {
     }
 
     // Deliver pending interrupts
-    cpu.check_interrupts();
+    const bool delivered = cpu.check_interrupts();
 
     // If we were waiting for INT delivery and it completed, schedule next
     if (waiting_for_int_delivery && !cpu.int_pending) {
@@ -1873,6 +1964,10 @@ int main(int argc, char** argv) {
       waiting_for_int_delivery = false;
     }
 
+    return delivered;
+  };
+
+  auto turn_periodic = [&]() ROMWBW_TURN_INLINE -> int {
     // Periodically check for console escape (every 10000 instructions)
     // This allows ^E to work even in tight loops that don't do I/O
     if (instruction_count % 10000 == 0) {
@@ -1914,9 +2009,110 @@ int main(int argc, char** argv) {
                       "--max-instructions=N moves the limit, 0 removes it.\n",
               max_instructions, cpu.regs.PC.get_pair16());
       limit_reached = true;
-      break;
+      return TURN_END;
+    }
+    return TURN_RUN;
+  };
+
+#ifdef ROMWBW_GDB
+  // The stub, if --gdb.  Its target runs one turn per step().
+  bool gdb_ended = false;
+  bool gdb_killed = false;
+  bool irq_owed = false;      // the interrupts of the last stub turn have not run
+  gdb_target.step_fn = [&](gdb::StepEvents& ev) {
+    ev = gdb::StepEvents();
+    if (stop_requested) throw GdbRunEnd{false};
+    if (irq_owed) {
+      irq_owed = false;
+      uint16_t at = cpu.regs.PC.get_pair16();
+      ev.irq = turn_interrupts();
+      ev.irq_ret = at;
+    }
+    int t;
+    while ((t = turn_before(true)) == TURN_AGAIN) {
+      if (stop_requested) throw GdbRunEnd{false};
+    }
+    if (t == TURN_END) throw GdbRunEnd{false};
+    ev.exec_pc = cpu.regs.PC.get_pair16();
+    ev.exec_sp = cpu.regs.SP.get_pair16();
+    if (t == TURN_HALT) {
+      // Not executed: the debugger gets the stop, and a continue goes on
+      // past the HLT.
+      cpu.regs.PC.set_pair16((uint16_t)(ev.exec_pc + 1));
+      ev.halt = true;
+      irq_owed = true;
+      return;
+    }
+    turn_waited = false;
+    cpu.execute();
+    instruction_count++;
+    if (in_step_mode) step_count--;
+    if (turn_after() == TURN_END) throw GdbRunEnd{false};
+    ev.poll = turn_waited;
+    if (turn_periodic() == TURN_END) throw GdbRunEnd{limit_reached};
+    irq_owed = true;
+  };
+
+  if (gdb_wanted) {
+    // While the guest waits for a key, hear the debugger: 10 ms for stdin,
+    // then the turn goes back to the stub, which looks at its socket.
+    emu_console_wait_hook = []() -> int {
+      struct pollfd p;
+      p.fd = STDIN_FILENO;
+      p.events = POLLIN;
+      p.revents = 0;
+      if (poll(&p, 1, 10) > 0) return 0;
+      turn_waited = true;
+      return 1;
+    };
+    // Wait for the debugger.  The program has not run an instruction yet.
+    if (!gdb_stub.accept()) return 1;
+    try {
+      gdb_stub.serve();
+    } catch (const GdbRunEnd& e) {
+      gdb_ended = true;
+      limit_reached = e.limit;
+    }
+    emu_console_wait_hook = nullptr;
+    if (gdb_stub.killed()) {
+      gdb_killed = true;
+      stop_requested = true;
+    } else if (!gdb_ended && irq_owed) {
+      // The debugger let go of the program: run on, with the interrupts of the
+      // last turn first.
+      turn_interrupts();
     }
   }
+#endif
+
+  while (!stop_requested
+#ifdef ROMWBW_GDB
+         && !gdb_ended
+#endif
+         ) {
+    int t = turn_before(false);
+    if (t == TURN_AGAIN) continue;
+    if (t == TURN_END) break;
+
+    // Execute one instruction (I/O is handled via hbios_cpu port_in/port_out)
+    cpu.execute();
+    instruction_count++;
+    if (in_step_mode) step_count--;
+
+    if (turn_after() == TURN_END) break;
+    turn_interrupts();
+    if (turn_periodic() == TURN_END) break;
+  }
+
+#ifdef ROMWBW_GDB
+  if (gdb_wanted && !gdb_killed) {
+    // The W packet (exit status) or the X packet (the signal).  Does nothing
+    // when the debugger has gone.
+    int sig = platform::termination_requested();
+    if (sig && !limit_reached) gdb_stub.report_signal(sig);
+    else gdb_stub.report_exit(limit_reached ? EXIT_INSTRUCTION_LIMIT : 0);
+  }
+#endif
 
   // Write trace file if tracing was enabled
   if (!trace_file.empty()) {
@@ -1943,5 +2139,8 @@ int main(int argc, char** argv) {
     }
   }
 
+#ifdef ROMWBW_GDB
+  if (gdb_killed) return 1;   // the debugger said k
+#endif
   return limit_reached ? EXIT_INSTRUCTION_LIMIT : 0;
 }
