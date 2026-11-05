@@ -180,7 +180,11 @@ percent more.
   either, because BDOS calls here are code in RAM and not traps.
 - A breakpoint below 8000H applies in every bank until the rule or
   `monitor break-bank` limits the bank.
-- One debugger, on 127.0.0.1 only.
+- One debugger, on 127.0.0.1 only. For a debugger on a different machine,
+  use an SSH tunnel: `ssh -N -L 1234:127.0.0.1:1234 USER@EMULATOR-HOST` on
+  the debugger machine, then connect to port 1234 there. The cpmemu document
+  `docs/gdb_stub.md` (Debug from another machine) gives the reason and the
+  measurement.
 - `monitor wait-program` knows the bank 8EH and 0100H only.
 
 ## Other clients

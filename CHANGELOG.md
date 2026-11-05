@@ -19,6 +19,12 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+### Docs: debug from another machine through an SSH tunnel
+
+`docs/GDB.md`'s Limits line "One debugger, on 127.0.0.1 only" now gives the
+`ssh -L` command and points to the cpmemu section with the reason and the
+measurement.
+
 ### Docs: `docs/GDB.md` names 1.50 as the first release with `--gdb`
 
 The "What you need" list said to build from source.
