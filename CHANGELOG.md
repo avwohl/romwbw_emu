@@ -19,6 +19,10 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [1.50] - 2026-11-05
+
 ### Docs: the README names `--gdb`, and udb80 `--wait-program` is released
 
 A Features line links [docs/GDB.md](docs/GDB.md). The page gained "What you
