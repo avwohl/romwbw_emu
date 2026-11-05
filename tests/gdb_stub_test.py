@@ -57,8 +57,8 @@ def check(ok, what):
 class Rsp:
     """The client end of the remote serial protocol, in the small."""
 
-    def __init__(self, port):
-        self.sock = socket.create_connection(("127.0.0.1", port), timeout=30)
+    def __init__(self, port, host="127.0.0.1"):
+        self.sock = socket.create_connection((host, port), timeout=30)
         self.buf = b""
 
     def send_raw(self, data):
@@ -107,7 +107,7 @@ class Rsp:
 class Emu:
     """romwbw_emu with the stub, on pipes.  stdin carries `keys`."""
 
-    def __init__(self, rom, disk, keys=b"GP\r", extra=(), close_stdin=True):
+    def __init__(self, rom, disk, keys=b"GP\r", extra=(), close_stdin=True, host="127.0.0.1"):
         self.dir = tempfile.mkdtemp(prefix="gdbtest-")
         portfile = os.path.join(self.dir, "port")
         argv = [EMU, "--romwbw=" + rom, "--disk0=" + disk, "--boot=2", "--no-config",
@@ -144,7 +144,8 @@ class Emu:
         if port is None:
             self.proc.kill()
             raise RuntimeError("romwbw_emu wrote no port in 30 s")
-        self.rsp = Rsp(port)
+        self.port = port
+        self.rsp = Rsp(port, host)
 
     def _drain(self, name, stream):
         while True:
@@ -218,6 +219,62 @@ A_CALL_OUTER_RET = 0x010B   # the return address of "call outer"
 A_OUTER = 0x0116
 A_INNER = 0x011A
 A_CALL_INNER_RET = 0x0119   # the return address of "call inner"
+
+
+def lan_address():
+    """An IPv4 address of this host that is not loopback, or None.  A UDP
+    connect sends nothing; it only makes the system choose an interface."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("192.0.2.1", 9))
+        addr = s.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        s.close()
+    return None if addr.startswith("127.") or addr == "0.0.0.0" else addr
+
+
+def refused(host, port):
+    try:
+        socket.create_connection((host, port), timeout=5).close()
+    except OSError:
+        return True
+    return False
+
+
+def case_listen(rom, disk):
+    """--gdb-listen=ADDR: the stub on a network address (cpmemu's option)."""
+    p = subprocess.run([EMU, "--romwbw=" + rom, "--no-config", "--gdb-listen=0.0.0.0"],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=30)
+    check(p.returncode == 1 and b"--gdb-listen needs --gdb" in p.stderr,
+          "--gdb-listen without --gdb is an error (exit 1)")
+    for bad in ("1.2.3", "300.1.1.1", "localhost"):
+        p = subprocess.run([EMU, "--romwbw=" + rom, "--no-config", "--gdb", "--gdb-listen=" + bad],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=30)
+        check(p.returncode == 1 and b"Invalid --gdb-listen address" in p.stderr,
+              "--gdb-listen=%s is refused (exit 1)" % bad)
+    lan = lan_address()
+    e = Emu(rom, disk, keys=b"")
+    if lan:
+        check(refused(lan, e.port), "without --gdb-listen the stub refuses %s" % lan)
+    check(e.rsp.cmd("?") == "T05", "without --gdb-listen a client on 127.0.0.1 gets T05")
+    e.kill()
+    check(b"WARNING" not in e.err, "without --gdb-listen there is no warning")
+    if not lan:
+        print("NOTE: no LAN address on this host; the LAN cases were not run")
+        return
+    e = Emu(rom, disk, keys=b"", extra=["--gdb-listen=0.0.0.0"], host=lan)
+    check(e.rsp.cmd("?") == "T05" and e.rsp.reg(5) == 0,
+          "--gdb-listen=0.0.0.0: a client on %s stops at 0000" % lan)
+    e.kill()
+    check(b"WARNING: listening on 0.0.0.0" in e.err, "--gdb-listen=0.0.0.0 prints the warning")
+    e = Emu(rom, disk, keys=b"", extra=["--gdb-listen=" + lan], host=lan)
+    check(refused("127.0.0.1", e.port), "--gdb-listen=%s: 127.0.0.1 is refused" % lan)
+    check(e.rsp.cmd("?") == "T05", "--gdb-listen=%s: a client on %s gets T05" % (lan, lan))
+    e.kill()
 
 
 def case_connect(rom, disk):
@@ -520,6 +577,7 @@ def main():
         disk = disk_with(rb, work, com)
 
         case_connect(rom, disk)
+        case_listen(rom, disk)
         case_program(rom, disk, com_bytes, "bytes")
         case_program(rom, disk, com_bytes, "sha256")
         case_wrong_program(rom, disk, com_bytes)

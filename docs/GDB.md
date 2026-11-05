@@ -29,6 +29,7 @@ documents
 romwbw_emu --gdb ROM ...
 romwbw_emu --gdb=4000 ROM ...
 romwbw_emu --gdb=0 --gdb-port-file=port.txt ROM ...
+romwbw_emu --gdb --gdb-listen=0.0.0.0 ROM ...
 ```
 
 `--gdb` listens on 127.0.0.1 port 1234. `--gdb=PORT` chooses the port. Port 0
@@ -38,6 +39,31 @@ the debugger. When the debugger connects, the CPU is at 0000H in ROM bank 00,
 and no instruction has run. On a terminal, ^C ends romwbw_emu while the wait
 lasts. `--gdb-port-file` without `--gdb` is an error: romwbw_emu prints
 `--gdb-port-file needs --gdb` and exits with status 1.
+
+## Debug from another machine
+
+The stub listens on 127.0.0.1 by default. The stub has no password, and the
+debugger can write guest memory. There are two ways to use a debugger on a
+different machine:
+
+- An SSH tunnel, the safer way. On the debugger machine, run
+  `ssh -N -L 1234:127.0.0.1:1234 USER@EMULATOR-HOST`, then connect the
+  debugger to port 1234 on the debugger machine.
+- `--gdb-listen=ADDR` puts the stub on the IPv4 address ADDR: `0.0.0.0` for
+  every interface, or the address of one interface. The option needs
+  `--gdb`. A bad address gives `Invalid --gdb-listen address` and exit
+  status 1. For an address outside 127.0.0.0/8, romwbw_emu prints a warning.
+  Then connect with `target remote EMULATOR-HOST:1234`, or with
+  `udb80 PROG.dbg --connect EMULATOR-HOST:1234 --wait-program`. Use the
+  option only on a network that you trust.
+
+The cpmemu document `docs/gdb_stub.md` (Debug from another machine) has the
+reason and the commands in full. `tests/gdb_stub_test.py` checks the
+option. Bad addresses are refused. Without the option, the LAN address is
+refused. With `0.0.0.0`, a client on the LAN address connects. With the
+address of one interface, 127.0.0.1 is refused. Measured on 2026-11-05 (macOS 27 arm64)
+with the LAN address of the Mac. A debugger on a different machine was not
+measured.
 
 The stub is off by default. A romwbw_emu that runs without `--gdb` runs the
 same loop as before (see [Speed](#speed)).
@@ -180,11 +206,9 @@ percent more.
   either, because BDOS calls here are code in RAM and not traps.
 - A breakpoint below 8000H applies in every bank until the rule or
   `monitor break-bank` limits the bank.
-- One debugger, on 127.0.0.1 only. For a debugger on a different machine,
-  use an SSH tunnel: `ssh -N -L 1234:127.0.0.1:1234 USER@EMULATOR-HOST` on
-  the debugger machine, then connect to port 1234 there. The cpmemu document
-  `docs/gdb_stub.md` (Debug from another machine) gives the reason and the
-  measurement.
+- One debugger at a time. The stub is on 127.0.0.1 unless `--gdb-listen`
+  names a different address (see
+  [Debug from another machine](#debug-from-another-machine)).
 - `monitor wait-program` knows the bank 8EH and 0100H only.
 
 ## Other clients

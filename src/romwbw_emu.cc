@@ -984,6 +984,9 @@ void print_usage(const char* prog) {
   fprintf(stderr, "                    and stop before the first instruction. See docs/GDB.md.\n");
   fprintf(stderr, "  --gdb-port-file=FILE\n");
   fprintf(stderr, "                    Write the port that --gdb uses to FILE\n");
+  fprintf(stderr, "  --gdb-listen=ADDR Listen on IPv4 address ADDR (0.0.0.0 = every interface)\n");
+  fprintf(stderr, "                    and not on 127.0.0.1. The stub has no password: anyone\n");
+  fprintf(stderr, "                    who reaches ADDR controls the guest. See docs/GDB.md.\n");
   fprintf(stderr, "  --trace=FILE      Write execution trace to FILE\n");
   fprintf(stderr, "  --symbols=FILE    Load symbol table from FILE (.sym)\n");
   fprintf(stderr, "  --max-instructions=N\n");
@@ -1054,6 +1057,7 @@ int main(int argc, char** argv) {
   bool gdb_wanted = false;          // --gdb: wait for a debugger (docs/GDB.md)
   int gdb_port = 1234;
   std::string gdb_port_file;
+  std::string gdb_listen;           // --gdb-listen=ADDR, as typed
 
   // ROM application definitions: key=name:path
   struct RomAppDef {
@@ -1272,6 +1276,8 @@ int main(int argc, char** argv) {
       gdb_wanted = true;
     } else if (strncmp(argv[i], "--gdb-port-file=", 16) == 0) {
       gdb_port_file = argv[i] + 16;
+    } else if (strncmp(argv[i], "--gdb-listen=", 13) == 0) {
+      gdb_listen = argv[i] + 13;
     } else if (strncmp(argv[i], "--trace=", 8) == 0) {
       trace_file = argv[i] + 8;
     } else if (strncmp(argv[i], "--symbols=", 10) == 0) {
@@ -1656,17 +1662,28 @@ int main(int argc, char** argv) {
     fprintf(stderr, "--gdb-port-file needs --gdb\n");
     return 1;
   }
+  if (!gdb_wanted && !gdb_listen.empty()) {
+    fprintf(stderr, "--gdb-listen needs --gdb\n");
+    return 1;
+  }
 
 #ifdef ROMWBW_GDB
   // Listen before the terminal goes raw and before the ROM loads, so that
   // the port file is there as soon as possible and a port in use is reported
   // before anything else happens.
+  uint32_t gdb_addr = gdb::kLoopback;
+  if (!gdb_listen.empty() && !gdb::parse_listen_address(gdb_listen.c_str(), &gdb_addr)) {
+    fprintf(stderr, "Invalid --gdb-listen address: %s (an IPv4 address such as 0.0.0.0)\n",
+            gdb_listen.c_str());
+    return 1;
+  }
   if (gdb_wanted &&
-      !gdb_stub.listen(gdb_port, gdb_port_file.empty() ? nullptr : gdb_port_file.c_str()))
+      !gdb_stub.listen(gdb_addr, gdb_port, gdb_port_file.empty() ? nullptr : gdb_port_file.c_str()))
     return 1;
 #else
   (void)gdb_port;
   (void)gdb_port_file;
+  (void)gdb_listen;
   if (gdb_wanted) {
     fprintf(stderr, "--gdb: this build has no GDB stub.  It is compiled from cpmemu's"
                     " gdbstub.cc,\nwhich make did not find (set CPMEMU_SRC).\n");

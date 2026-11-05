@@ -19,6 +19,16 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+### `--gdb-listen=ADDR`: the GDB stub on a network address, off by default
+
+cpmemu's option, for romwbw_emu: `--gdb-listen=0.0.0.0` or the IPv4 address
+of one interface, with a warning for any address outside 127.0.0.0/8, since
+the stub has no password. It needs `--gdb`; a bad address is exit 1.
+`gdb_platform.cc` has `net_listen` (18df746). `docs/GDB.md` gains "Debug from
+another machine" (the SSH tunnel and the option), and
+`tests/gdb_stub_test.py` a `case_listen` (11 checks, with the LAN address of
+the host).
+
 ### Docs: debug from another machine through an SSH tunnel
 
 `docs/GDB.md`'s Limits line "One debugger, on 127.0.0.1 only" now gives the
