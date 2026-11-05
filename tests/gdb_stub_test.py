@@ -321,7 +321,9 @@ def case_program(rom, disk, com_bytes, how):
     e = Emu(rom, disk)
     r = e.rsp
     stop = run_to_program(e, com_bytes, how)
-    check(stop == "T05swbreak:;", "wait-program %s: the stop reply is T05swbreak (%s)" % (how, stop))
+    # No debugger set a breakpoint at 0100H, so the rule's stop has no
+    # swbreak: GDB would continue past a swbreak it did not ask for.
+    check(stop == "T05", "wait-program %s: the stop reply is a plain T05 (%s)" % (how, stop))
     check(r.reg(5) == 0x0100, "wait-program %s: PC is 0100H" % how)
     st = r.monitor("status")
     check("CPU bank 8E" in st, "wait-program %s: the CPU is in bank 8EH" % how)
@@ -461,7 +463,7 @@ def case_halt(rom, work):
     r.monitor("wait-program bytes 3e 01 76")
     r.send_packet("c")
     reply = r.recv(60)
-    check(reply.startswith("T05") and "swbreak" in reply, "halt.com is found at 0100H (%s)" % reply)
+    check(reply == "T05", "halt.com is found at 0100H, with a plain T05 (%s)" % reply)
     r.send_packet("c")
     reply = r.recv(60)
     check(reply.startswith("T05"), "HLT stops with T05 (%s)" % reply)

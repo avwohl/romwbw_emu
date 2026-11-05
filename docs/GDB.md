@@ -11,7 +11,7 @@ cpmemu, and the protocol details are in `docs/gdb_stub.md` there.
 
 - **romwbw_emu 1.50 or newer.** An older release has no `--gdb`. A build from
   source needs a cpmemu checkout beside it (see [Start](#start)).
-- **um80 0.4.0 or newer:** `pip install "um80>=0.4.0"`, for `--debug-info`,
+- **um80 0.4.2 or newer:** `pip install "um80>=0.4.2"`, for `--debug-info`,
   udb80, `dbg2elf` and the GDB Python scripts. For a C program, also
   `pip install "uc80>=0.8.0"` and compile with `uc80 -g`.
 - **GDB with the Z80 target**, but only if you use GDB. udb80 needs no GDB.
@@ -112,7 +112,9 @@ monitor wait-program
   SHA-256 of those bytes. A `prog.dbg` file from `ul80 --debug-info` has both
   values in `image.length` and `image.sha256`.
 - The stub stops when PC is 0100H, the CPU is in bank 8EH, and the bytes at
-  0100H match. The stop reply is the packet `T05swbreak:;`.
+  0100H match. The stop reply is the packet `T05`, with no `swbreak`, because
+  no debugger set a breakpoint there. GDB reports the stop as a SIGTRAP.
+  (Before 2026-11-05 the reply was `T05swbreak:;`, and GDB did not stop.)
 - The rule fires once. Then the stub does three things. The stub sets the break
   bank to 8EH. The stub restarts the shadow call stack with one frame, the
   return address at SP, which is the address in the CCP. The stub prints a line
@@ -136,8 +138,23 @@ does not find them.
 
 ### Find the program with GDB
 
-GDB needs a breakpoint of its own at 0100H, limited to bank 8EH. Type these
-commands after `target remote`, before CP/M starts the program:
+Type these commands after `target remote`, before CP/M starts the program:
+
+```
+(gdb) monitor wait-program sha256 LENGTH HEX64
+(gdb) continue
+```
+
+Then start the program at the CP/M prompt. GDB stops with
+`Program received signal SIGTRAP, Trace/breakpoint trap.` and the first line
+of the program, at 0100H in bank 8EH. The rule has set the break bank to 8EH.
+Now set the breakpoints of the program, for example `break inner`, and type
+`continue`.
+
+This needs a stub from 2026-11-05 or later (cpmemu `365dfc2`). An older stub
+replies `T05swbreak` for the rule's stop. GDB set no breakpoint at 0100H, so
+GDB continues past that stop with no message, and the program runs to its end.
+With an older stub, use a breakpoint of GDB's own:
 
 ```
 (gdb) monitor break-bank 8E
@@ -145,45 +162,28 @@ commands after `target remote`, before CP/M starts the program:
 (gdb) continue
 ```
 
-Then start the program at the CP/M prompt. GDB stops with
-`Breakpoint 1, start () at ...` at 0100H in bank 8EH. `monitor status` shows
-`CPU bank 8E`. Now set the breakpoints of the program, for example
-`break inner`, and type `continue`.
-
-Each of the two first commands is necessary:
-
-- Without `monitor break-bank 8E`, the breakpoint at 0100H applies in every
-  bank. The boot code of the ROM passes 0100H in a ROM bank, and GDB stops
-  there. GDB shows the source line of the program for that stop, but the CPU
-  is in bank 01 and the program is not loaded yet.
-- Without `break *0x100`, GDB does not stop. The stub reports the stop of the
-  wait-program rule as a breakpoint (`T05swbreak`). GDB set no breakpoint at
-  that address, so GDB continues the program at once, with no message.
-
-`monitor wait-program` does not help GDB. GDB's breakpoint at 0100H in bank
-8EH stops the program first, and the rule does not fire. Thus GDB stops at the
-first program that CP/M starts at 0100H, whatever its bytes are. If CP/M runs
-a different program first (for example from a `SUBMIT` file), type
-`continue` until your program starts. To stop only at the program that
-`prog.dbg` names, use udb80 `--wait-program`.
+These commands stop at the first program that CP/M starts at 0100H, whatever
+its bytes are. GDB's breakpoint stops the program before the stub tests the
+rule.
+Without `monitor break-bank 8E`, GDB stops at 0100H during the boot of the
+ROM, in bank 01, and shows the first line of the program for that wrong stop.
 
 Measured on 2026-11-05 with GDB 18.1, the ELF file of `tests/gdb_prog.asm`
-from `dbg2elf` (um80 0.4.1), and the 3.6.0 ROM with `hd1k_cpm22`:
+from `dbg2elf`, and the 3.6.0 ROM with `hd1k_cpm22`:
 
-- `monitor wait-program` and `continue`: the rule fired (romwbw_emu printed
-  the line on standard error), and GDB did not stop. The program ran to its
-  end.
-- `break *0x100`, `monitor wait-program` and `continue`: GDB stopped at
-  0100H with the CPU in bank 01, before CP/M ran.
-- `monitor break-bank 8E`, `break *0x100` and `continue`: GDB stopped at
-  0100H in bank 8EH. `break inner`, `continue` and `bt` then showed
-  `inner`, `outer` and `start`.
-- `set remote swbreak-feature-packet off` does not help: the stub sends
-  `swbreak` in each case, and GDB prints `Unexpected swbreak stop reason`.
+- New stub, `monitor wait-program` and `continue`: SIGTRAP at `start ()`,
+  0100H, bank 8EH. `break inner`, `continue` and `bt` showed `inner`,
+  `outer` and `start`. The same with `set remote swbreak-feature-packet off`.
+- Old stub, `monitor wait-program` and `continue`: the rule fired, and GDB
+  did not stop.
+- Old stub, `break *0x100` without `break-bank`: GDB stopped at 0100H with
+  the CPU in bank 01.
+- Both stubs, `monitor break-bank 8E`, `break *0x100` and `continue`:
+  `Breakpoint 1` at 0100H in bank 8EH, then `break inner` and `bt` worked.
 
 ## udb80
 
-udb80 is in the um80 package (`pip install "um80>=0.4.0"`). Connect with
+udb80 is in the um80 package (`pip install "um80>=0.4.2"`). Connect with
 `--wait-program`:
 
 ```
@@ -197,7 +197,9 @@ the file. `--wait-program` does these steps before the memory check:
 
 1. Send `monitor wait-program sha256 LENGTH HEX64` with the values from
    `prog.dbg`.
-2. Send `c` and wait for the stop reply `T05swbreak`.
+2. Send `c` and wait for the stop reply at 0100H: `T05` from a stub of
+   2026-11-05 or later, `T05swbreak` from an older stub. udb80 0.4.1 takes
+   only `T05swbreak`, so use udb80 0.4.2 or later with a newer stub.
 3. Run the memory check, and go on as for cpmemu.
 
 A session with `--wait-program` (measured on 2026-11-04 with a copy of

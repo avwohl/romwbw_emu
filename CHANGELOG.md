@@ -19,6 +19,17 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+### GDB stops at a program that wait-program names
+
+cpmemu `365dfc2` makes the rule's stop a plain `T05`. GDB set no breakpoint at
+0100H and continued past the old `T05swbreak`, so `monitor wait-program`
+could not stop GDB. Now `monitor wait-program sha256 ...` and `continue` give
+a SIGTRAP stop at the program's first line in bank 8EH (GDB 18.1, measured).
+`tests/gdb_stub_test.py` expects `T05` for the three rule stops (the two
+wait-program forms and `halt.com`), and still `T05swbreak:;` for a breakpoint
+that the debugger set. `docs/GDB.md` gives the two commands, the older
+three-command form for an older stub, and um80 0.4.2 for udb80.
+
 ### Docs: GDB.md gives the GDB steps for a CP/M program: break-bank 8E and break *0x100
 
 GDB.md said GDB needs only `monitor wait-program` and `continue`. Measured
