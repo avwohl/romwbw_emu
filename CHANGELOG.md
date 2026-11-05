@@ -19,6 +19,15 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+### Docs: the README names `--gdb`, and udb80 `--wait-program` is released
+
+A Features line links [docs/GDB.md](docs/GDB.md). The page gained "What you
+need" (romwbw_emu from source, since the stub came after v1.49; um80>=0.4.0;
+uc80>=0.8.0 for C), and its udb80 section no longer says that `--wait-program`
+is not in um80_and_friends: um80 0.4.0 on PyPI has the option, and
+`tests/test_udb80.py::test_live_wait_program_under_romwbw` passed against this
+tree's build on 2026-11-05.
+
 ### `--gdb`: a GDB stub for the CLI, with banks and a way to find a CP/M program
 
 `romwbw_emu --gdb[=PORT] [--gdb-port-file=FILE]` listens on 127.0.0.1 and stops

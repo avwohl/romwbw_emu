@@ -30,6 +30,8 @@ publishes - see [docs/CATALOG.md](docs/CATALOG.md).
 - **Debugger:** a `sim>` prompt with breakpoints, single-step, register and
   memory dumps, and a symbol table - CLI only, and with no disassembler; `dm`
   prints bytes
+- **GDB:** `--gdb` lets GDB or udb80 debug a guest program by source line, with
+  a backtrace - see [docs/GDB.md](docs/GDB.md)
 - **Unattended runs:** `tools/romwbw-batch` boots CP/M 2.2, runs a list of
   commands from a submit file and extracts the results; `tools/romwbw-plm80`
   uses it to compile PL/M-80 with Intel's own compiler under DRI's ISX - see

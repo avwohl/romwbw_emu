@@ -7,6 +7,23 @@ The debugger talks the GDB remote serial protocol (RSP) over a TCP socket on
 `docs/debugger_plan.md` in the cpmemu repository. The stub itself comes from
 cpmemu, and the protocol details are in `docs/gdb_stub.md` there.
 
+## What you need
+
+- **romwbw_emu with `--gdb`.** The stub came after release v1.49. With v1.49
+  or an older release, build romwbw_emu from source, with a cpmemu checkout
+  beside it (see [Start](#start)).
+- **um80 0.4.0 or newer:** `pip install "um80>=0.4.0"`, for `--debug-info`,
+  udb80, `dbg2elf` and the GDB Python scripts. For a C program, also
+  `pip install "uc80>=0.8.0"` and compile with `uc80 -g`.
+- **GDB with the Z80 target**, but only if you use GDB. udb80 needs no GDB.
+
+The list of what you need, with the GDB choices, is in
+[What you need](https://github.com/avwohl/cpmemu/blob/main/docs/gdb_stub.md#what-you-need)
+of the cpmemu document. The source-level steps are in the um80_and_friends
+documents
+[gdb.md](https://github.com/avwohl/um80_and_friends/blob/main/docs/gdb.md) and
+[udb80.md](https://github.com/avwohl/um80_and_friends/blob/main/docs/udb80.md).
+
 ## Start
 
 ```
@@ -92,21 +109,25 @@ does not find them.
 
 ## udb80
 
-udb80 connects with `udb80 PROG.dbg --connect 127.0.0.1:PORT`. The udb80 of
-um80_and_friends (commit 95555dd) cannot attach before the program starts. At
-connect time, udb80 reads guest memory at 0100H and compares the memory with
-`prog.dbg`. The memory holds no program yet, so udb80 refuses the file.
+udb80 is in the um80 package (`pip install "um80>=0.4.0"`). Connect with
+`--wait-program`:
 
-The needed change is small. An option `--wait-program` does these steps before
-the memory check:
+```
+udb80 PROG.dbg --connect 127.0.0.1:PORT --wait-program
+```
+
+At connect time, udb80 reads guest memory at 0100H and compares the memory
+with `prog.dbg`. When udb80 connects, the ROM has not started yet. Thus the
+memory does not hold the program, and without `--wait-program` udb80 refuses
+the file. `--wait-program` does these steps before the memory check:
 
 1. Send `monitor wait-program sha256 LENGTH HEX64` with the values from
    `prog.dbg`.
 2. Send `c` and wait for the stop reply `T05swbreak`.
 3. Run the memory check, and go on as for cpmemu.
 
-A session with a copy of `udb80.py` that has this option (measured on
-2026-11-04, `bt` output shortened):
+A session with `--wait-program` (measured on 2026-11-04 with a copy of
+`udb80.py` before the option went into um80 0.4.0, `bt` output shortened):
 
 ```
 Breakpoint 1, INNER () at gprog.asm:13
@@ -116,8 +137,8 @@ Breakpoint 1, INNER () at gprog.asm:13
 ```
 
 `break`, `continue`, `bt`, `info registers`, `stepi`, `finish` and `monitor`
-worked. The option is not yet in um80_and_friends. GDB needs no change: send
-the `monitor wait-program` command from the GDB prompt, and use `continue`.
+worked. GDB needs no change: send the `monitor wait-program` command from the
+GDB prompt, and use `continue`.
 
 ## monitor bt
 
