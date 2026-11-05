@@ -19,6 +19,14 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [1.51] - 2026-11-05
+
+### Docs: `docs/GDB.md` names 1.51 for `--gdb-listen` and the wait-program stop
+
+"What you need" and "Find the program with GDB" say which release has which.
+
 ### GDB stops at a program that wait-program names
 
 cpmemu `365dfc2` makes the rule's stop a plain `T05`. GDB set no breakpoint at

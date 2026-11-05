@@ -9,8 +9,9 @@ cpmemu, and the protocol details are in `docs/gdb_stub.md` there.
 
 ## What you need
 
-- **romwbw_emu 1.50 or newer.** An older release has no `--gdb`. A build from
-  source needs a cpmemu checkout beside it (see [Start](#start)).
+- **romwbw_emu 1.50 or newer.** An older release has no `--gdb`. 1.51 and
+  newer also have `--gdb-listen`, and a `wait-program` stop that GDB shows.
+  A build from source needs a cpmemu checkout beside it (see [Start](#start)).
 - **um80 0.4.2 or newer:** `pip install "um80>=0.4.2"`, for `--debug-info`,
   udb80, `dbg2elf` and the GDB Python scripts. For a C program, also
   `pip install "uc80>=0.8.0"` and compile with `uc80 -g`.
@@ -151,7 +152,8 @@ of the program, at 0100H in bank 8EH. The rule has set the break bank to 8EH.
 Now set the breakpoints of the program, for example `break inner`, and type
 `continue`.
 
-This needs a stub from 2026-11-05 or later (cpmemu `365dfc2`). An older stub
+This needs romwbw_emu 1.51 or later, or a build with cpmemu `365dfc2` or
+later. An older stub, as in 1.50,
 replies `T05swbreak` for the rule's stop. GDB set no breakpoint at 0100H, so
 GDB continues past that stop with no message, and the program runs to its end.
 With an older stub, use a breakpoint of GDB's own:
