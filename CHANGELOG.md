@@ -19,6 +19,22 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+### Docs: GDB.md gives the GDB steps for a CP/M program: break-bank 8E and break *0x100
+
+GDB.md said GDB needs only `monitor wait-program` and `continue`. Measured
+with GDB 18.1 on 2026-11-05, that never stops: the rule fires, the stub
+replies `T05swbreak` at 0100H, GDB set no breakpoint there and continues,
+and the program runs to its end. With `break *0x100` and no `break-bank`,
+GDB stops at 0100H in ROM bank 01. "Find the program with GDB" now gives
+`monitor break-bank 8E`, `break *0x100`, `continue`, and says that GDB's
+breakpoint stops before the rule, so `wait-program` does nothing for GDB.
+
+### Docs: GDB.md's "Other clients" names the stub in ioscpm, z80cpmw and cpmdroid
+
+The section said none of them had the stub. It now links each one's
+`docs/gdb.md`, says what was not built, and describes the three platform
+layers.
+
 ### `--gdb-listen=ADDR`: the GDB stub on a network address, off by default
 
 cpmemu's option, for romwbw_emu: `--gdb-listen=0.0.0.0` or the IPv4 address

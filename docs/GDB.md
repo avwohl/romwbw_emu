@@ -126,11 +126,60 @@ A normal session:
    the program (`printf 'PROG\r' | romwbw_emu ...`, or type the name).
 2. Connect the debugger.
 3. Send `monitor wait-program sha256 LENGTH HEX64`, and then `continue`.
+   udb80 `--wait-program` does this step. With GDB, use the steps in
+   [Find the program with GDB](#find-the-program-with-gdb).
 4. The stop at 0100H is the start of the program. Set breakpoints, and go on.
 
 The rule is for CP/M 2.2 style systems, where the program is in bank 8EH at
 0100H. Other systems (CP/M 3, ZPM3) load programs differently, and the rule
 does not find them.
+
+### Find the program with GDB
+
+GDB needs a breakpoint of its own at 0100H, limited to bank 8EH. Type these
+commands after `target remote`, before CP/M starts the program:
+
+```
+(gdb) monitor break-bank 8E
+(gdb) break *0x100
+(gdb) continue
+```
+
+Then start the program at the CP/M prompt. GDB stops with
+`Breakpoint 1, start () at ...` at 0100H in bank 8EH. `monitor status` shows
+`CPU bank 8E`. Now set the breakpoints of the program, for example
+`break inner`, and type `continue`.
+
+Each of the two first commands is necessary:
+
+- Without `monitor break-bank 8E`, the breakpoint at 0100H applies in every
+  bank. The boot code of the ROM passes 0100H in a ROM bank, and GDB stops
+  there. GDB shows the source line of the program for that stop, but the CPU
+  is in bank 01 and the program is not loaded yet.
+- Without `break *0x100`, GDB does not stop. The stub reports the stop of the
+  wait-program rule as a breakpoint (`T05swbreak`). GDB set no breakpoint at
+  that address, so GDB continues the program at once, with no message.
+
+`monitor wait-program` does not help GDB. GDB's breakpoint at 0100H in bank
+8EH stops the program first, and the rule does not fire. Thus GDB stops at the
+first program that CP/M starts at 0100H, whatever its bytes are. If CP/M runs
+a different program first (for example from a `SUBMIT` file), type
+`continue` until your program starts. To stop only at the program that
+`prog.dbg` names, use udb80 `--wait-program`.
+
+Measured on 2026-11-05 with GDB 18.1, the ELF file of `tests/gdb_prog.asm`
+from `dbg2elf` (um80 0.4.1), and the 3.6.0 ROM with `hd1k_cpm22`:
+
+- `monitor wait-program` and `continue`: the rule fired (romwbw_emu printed
+  the line on standard error), and GDB did not stop. The program ran to its
+  end.
+- `break *0x100`, `monitor wait-program` and `continue`: GDB stopped at
+  0100H with the CPU in bank 01, before CP/M ran.
+- `monitor break-bank 8E`, `break *0x100` and `continue`: GDB stopped at
+  0100H in bank 8EH. `break inner`, `continue` and `bt` then showed
+  `inner`, `outer` and `start`.
+- `set remote swbreak-feature-packet off` does not help: the stub sends
+  `swbreak` in each case, and GDB prints `Unexpected swbreak stop reason`.
 
 ## udb80
 
@@ -162,8 +211,7 @@ Breakpoint 1, INNER () at gprog.asm:13
 ```
 
 `break`, `continue`, `bt`, `info registers`, `stepi`, `finish` and `monitor`
-worked. GDB needs no change: send the `monitor wait-program` command from the
-GDB prompt, and use `continue`.
+worked. For GDB, see [Find the program with GDB](#find-the-program-with-gdb).
 
 ## monitor bt
 
@@ -214,8 +262,23 @@ percent more.
 ## Other clients
 
 ioscpm, z80cpmw and cpmdroid compile `hbios_dispatch.cc`, `hbios_cpu.cc`
-and `romwbw_mem.h` from this tree, and each has its own run loop. None of them
-has the stub yet. A client needs these parts:
+and `romwbw_mem.h` from this tree, and each has its own run loop. Since
+2026-11-05 each one also has the stub, off by default, with a setting for the
+port and a setting for the network. Each one's `docs/gdb.md` says how to use
+it:
+
+- ioscpm (iOS, Mac):
+  [docs/gdb.md](https://github.com/avwohl/ioscpm/blob/main/docs/gdb.md)
+- z80cpmw (Windows):
+  [docs/gdb.md](https://github.com/avwohl/z80cpmw/blob/master/docs/gdb.md)
+- cpmdroid (Android):
+  [docs/gdb.md](https://github.com/avwohl/cpmdroid/blob/master/docs/gdb.md)
+
+The z80cpmw and cpmdroid builds were not made on a Windows or Android
+machine. Each one's `todo.txt` says what is still to verify. The debugger plan
+in cpmemu (`docs/debugger_plan.md`, Phase 9 results) has the measurements.
+
+The parts that a client needs:
 
 - `gdbstub.cc` from cpmemu, and `romwbw_gdb.cc` from this tree. Both are
   portable C++11.
@@ -230,5 +293,7 @@ has the stub yet. A client needs these parts:
   z80cpmw calls `runBatch` from `onTimer` on the UI thread.
 - A setting that turns the stub on and chooses the port. The stub is off by
   default.
-
-The work items are in the `todo.txt` of each client.
+- A platform layer. `gdb_platform.cc` waits in `accept()` and `recv()` with
+  no time limit. ioscpm and z80cpmw have their own socket layers that wait in
+  100 ms slices and look at a cancel flag. cpmdroid uses `gdb_platform.cc` and
+  ends a wait with a signal to the stub thread.
