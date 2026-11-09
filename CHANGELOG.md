@@ -19,7 +19,13 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
-Nothing yet.
+### `romwbw-get versions` reports the snapshot a run actually uses
+
+With a development snapshot stored by `romwbw-get use` and `--prerelease` off,
+`versions` said the index did not publish it and that runs used the index
+default, and `versions --json` gave the default as `in_use`. Every run used
+the snapshot. `versions` and `resolve_version` now ask one method,
+`stored_holds`.
 
 ## [1.51] - 2026-11-05
 

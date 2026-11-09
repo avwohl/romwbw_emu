@@ -120,8 +120,3 @@ its stores change every time round - but ZDE (475) and BBC BASIC (690) wait in
 loops that also store something new every time, so dropping the gap rule would
 stop the run ending at their prompts instead. Measured 2026-09-25; the numbers
 are in the notePoll() comment.
-
-- [ANY] `romwbw-get versions` computes stored_ok from pool(), so a snapshot stored
-by `use` while --prerelease is off is reported as "this index does not publish
-it, so runs use <default>", while resolve_version() keeps it and runs use the
-snapshot.  Make cmd_versions apply resolve_version()'s rule.

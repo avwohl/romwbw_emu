@@ -661,6 +661,23 @@ class Catalog(object):
                 return e["romwbw_version"]
         return pool[0]["romwbw_version"]
 
+    def stored_holds(self, stored, pool):
+        """Whether a run given no --romwbw and no ROMWBW_VERSION uses `stored`.
+
+        It does when the pool has it, and when it is a published snapshot the
+        pool is holding back: `romwbw-get use` stored it, and that is the
+        explicit opt-in 2.3.1 asks for.  ONE RULE for resolve_version and for
+        `versions`, which wrote its own copy without the second half and so
+        told a user with a stored snapshot that the index did not publish it
+        and runs used the default - while every run used the snapshot.
+        """
+        if not stored:
+            return False
+        if any(e["romwbw_version"] == stored for e in pool):
+            return True
+        return any(e["romwbw_version"] == stored and is_prerelease(e)
+                   for e in self.entries())
+
     def resolve_version(self, args):
         """Precedence, matching what the three GUI clients converged on."""
         if getattr(args, "romwbw", None):
@@ -678,22 +695,19 @@ class Catalog(object):
             raise Contradiction("the index publishes no RomWBW releases")
 
         stored = load_choice().get("romwbw_version")
-        if stored and any(e["romwbw_version"] == stored for e in pool):
+        if self.stored_holds(stored, pool):
+            if not any(e["romwbw_version"] == stored for e in pool):
+                # `romwbw-get use <version>` IS the explicit opt-in 2.3.1 asks
+                # for, so a stored snapshot is honoured without --prerelease.
+                # What it must not do is arrive silently: this is the one path
+                # where a snapshot is selected and the user did not say so in
+                # THIS command, and the warning is the difference between an
+                # opt-in and an accident.
+                warn("RomWBW %s is a development snapshot, not a release. "
+                     "It is selected because" % stored)
+                warn("`romwbw-get use` stored it; `use --clear` goes back "
+                     "to the index default.")
             return stored
-        if stored:
-            # `romwbw-get use <version>` IS the explicit opt-in 2.3.1 asks for,
-            # so a stored snapshot is honoured without --prerelease.  What it
-            # must not do is arrive silently: this is the one path where a
-            # snapshot is selected and the user did not say so in THIS command,
-            # and the warning is the difference between an opt-in and an
-            # accident.
-            for e in self.entries():
-                if e["romwbw_version"] == stored and is_prerelease(e):
-                    warn("RomWBW %s is a development snapshot, not a release. "
-                         "It is selected because" % stored)
-                    warn("`romwbw-get use` stored it; `use --clear` goes back "
-                         "to the index default.")
-                    return stored
         chosen = self.fallback(pool)
         if stored:
             # The stored release is not in the pool, so it is about to be
@@ -1083,7 +1097,7 @@ def cmd_versions(cat, args):
     # command is where that has to be visible - it is the one a user runs to
     # ask what is going on.
     pool = cat.pool()
-    stored_ok = bool(stored) and any(e["romwbw_version"] == stored for e in pool)
+    stored_ok = cat.stored_holds(stored, pool)
     in_use = stored if stored_ok else (cat.fallback(pool) if pool else None)
     # A snapshot row is held back unless it was asked for, EXCEPT the one a
     # run is actually going to use.  Hiding THAT row would recreate the bug

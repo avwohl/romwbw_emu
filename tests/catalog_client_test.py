@@ -1014,6 +1014,14 @@ def _tests(tmp, web, base):
         check("3.7.0-dev.14" in r.stdout and "selected" in r.stdout,
               "and the row is shown although it is a snapshot - hiding the "
               "selected row is how a stale choice survives unnoticed")
+        check("does not publish" not in r.stdout,
+              "and `versions` does not claim the index dropped it: it is "
+              "published, and a run uses it - resolve_version's rule")
+        r = run(pcache, b6, "versions", "--json", confdir=pconf)
+        doc = json.loads(r.stdout) if r.returncode == EX_OK else {}
+        check(doc.get("in_use") == "3.7.0-dev.14",
+              "`versions --json` reports in_use as the stored snapshot, the "
+              "release a run actually gets - it said the index default")
 
         r = run(pcache, b6, "use", "--clear", confdir=pconf)
         check(r.returncode == EX_OK, "use --clear forgets it again")
