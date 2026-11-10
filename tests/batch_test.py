@@ -26,7 +26,9 @@ Three layers, each skipped when what it needs is not here:
     starved; and, when hd1k_combo is cached too, ZPM3, whose prompt the idle
     rule missed so that the emulator never ended there and held piped input
     from it for ever, and CP/M 3 and NZ-COM, whose starts ate a script's first
-    key when the hold let go at the boot loader's handover; and on a pty, ^E
+    key when the hold let go at the boot loader's handover; and, when
+    hd1k_games is cached, ZORK1, whose prompt stirs a random seed so that the
+    idle rule missed it too; and on a pty, ^E
     at the boot loader's prompt, which took a tenth of a second or more to
     reach sim> while the CLI looked for it only every 1024th instruction;
   * Intel PL/M-80 under ISX (needs $ISX_TOOLS naming DRI's PLM_WORK
@@ -760,6 +762,7 @@ def test_batches():
         test_escape_stops_countdown(emu, rom, img)
         test_nzcom_batch(d)
         test_zpm3(emu, rom, d)
+        test_infocom(emu, rom, d)
         test_os_starts(emu, rom, d)
         test_boot_image_polls(emu, rom, d)
         test_instruction_limit(emu, rom, d)
@@ -856,6 +859,35 @@ def test_nzcom_batch(d):
           "NZ-COM" in r.stdout,
           "a batch on NZ-COM's disk says it never started (exit %s)"
           % r.returncode)
+
+
+def test_infocom(emu, rom, d):
+    """ZORK1 on hd1k_games: Infocom's interpreter stirs a random seed at its
+    prompt and polls 2390 T-states apart, so no poll repeats and none is
+    close.  With stdin at end of file the run never ended there."""
+    try:
+        games = rb.resolve_asset("hd1k_games", offline=True)
+    except rb.BatchError:
+        skip("ZORK1 at end of input: hd1k_games is not cached "
+             "(tools/romwbw-get fetch hd1k_games)")
+        return
+    sysimg = os.path.join(d, "infocom-sys.img")
+    gameimg = os.path.join(d, "infocom-games.img")
+    shutil.copyfile(rb.resolve_asset(rb.DEFAULT_SYSTEM_DISK, offline=True), sysimg)
+    shutil.copyfile(games, gameimg)
+    os.chmod(sysimg, 0o644)
+    os.chmod(gameimg, 0o644)
+    argv = [emu, "--romwbw=" + rom, "--disk0=" + sysimg, "--disk1=" + gameimg,
+            "--boot=2", "--no-config"]
+    try:
+        p = subprocess.run(argv, input=b"G:\rZORK1\r", stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, timeout=60)
+        out = p.stdout.decode("latin-1")
+        ended = True
+    except subprocess.TimeoutExpired:
+        out, ended = "", False
+    check(ended and "West of House" in out,
+          "ZORK1: with stdin at end of file the run ends at its prompt")
 
 
 def test_zpm3(emu, rom, d):

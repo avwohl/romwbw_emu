@@ -161,9 +161,16 @@ struct Rig {
   // bytes every time round - return addresses, a status byte, and in ZPM3's
   // case the time it has just read from the RTC - and a program at work
   // stores something new: its loop variable, a pointer, a count.
-  enum Work { NOTHING, SAME, COUNTING };
+  //
+  // Two more shapes of work, both for rule (c), which looks at how the
+  // values change: STIRRING runs a random number generator, four bytes of
+  // it, as Infocom's interpreter does at its prompt; COPYING moves a count on
+  // and stores it before and after the step, in three places, as MBASIC
+  // stores I% - by 3 each time, so the bits it flips are no help.
+  enum Work { NOTHING, SAME, COUNTING, STIRRING, COPYING };
   Work work = NOTHING;
   unsigned counter = 0;
+  uint32_t seed = 2463534242u;
 
   void guest_stores() {
     switch (work) {
@@ -177,6 +184,16 @@ struct Rig {
         counter++;
         mem.store_mem(0x9000, (uint8_t)(counter & 0xFF));
         mem.store_mem(0x9001, (uint8_t)((counter >> 8) & 0xFF));
+        break;
+      case STIRRING:
+        seed ^= seed << 13;  seed ^= seed >> 17;  seed ^= seed << 5;  // xorshift32
+        for (int i = 0; i < 4; i++) mem.store_mem(0x9100 + i, (uint8_t)(seed >> (8 * i)));
+        break;
+      case COPYING:
+        mem.store_mem(0x9000, (uint8_t)counter);
+        counter += 3;
+        mem.store_mem(0x9002, (uint8_t)counter);
+        mem.store_mem(0x9004, (uint8_t)counter);
         break;
     }
   }
@@ -249,6 +266,31 @@ int main() {
     r.polls(zcpr, 4, 20);
     check(r.hbios.isConsoleIdle(),
           "the NZ-COM prompt (760-845 T, never repeating) is idle");
+  }
+
+  // --- slow wait loops that stir: idle by rule (c) -------------------------
+  {
+    // Infocom's interpreter at its `>` prompt: a random number generator run
+    // every time round, polls 2390 T-states apart.
+    const unsigned infocom[] = {2390};
+    Rig r;
+    r.work = Rig::STIRRING;
+    int sleeps = r.polls(infocom, 1, 20);
+    check(r.hbios.isConsoleIdle(), "Infocom's prompt (2390 T, stirring a seed) is idle");
+    // The first poll's gap is from the rig's start, not 2390, so the loop's
+    // shape starts at the second; the fourth is the first with two of it
+    // before to compare with, and the count reaches eight at the tenth.
+    check(sleeps == 11, "...and asks for a sleep on each poll from the tenth on");
+  }
+  {
+    // The same gap, a counter moved on by 3 and stored before and after the
+    // step: the values change every time, but by the same amount.
+    const unsigned slow[] = {2390};
+    Rig r;
+    r.work = Rig::COPYING;
+    int sleeps = r.polls(slow, 1, 500);
+    check(!r.hbios.isConsoleIdle() && sleeps == 0,
+          "a counter stepped by 3 and copied before and after the step is not idle");
   }
 
   // --- slow wait loops: idle because they repeat ----------------------------

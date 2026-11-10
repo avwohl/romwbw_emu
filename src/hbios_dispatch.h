@@ -734,9 +734,11 @@ private:
   uint16_t main_entry = 0xFFF0;    // Main HBIOS entry point
 
   // Console idle detection: counts consecutive CIOIST/VDAKST polls returning
-  // "no input", each either within IDLE_POLL_MAX_GAP cycles of the one before
-  // or an exact repeat of one of the last IDLE_POLL_PERIOD polls (same gap,
-  // same memory writes, same registers).  Reset when input is consumed,
+  // "no input", each either within IDLE_POLL_MAX_GAP cycles of the one before,
+  // an exact repeat of one of the last IDLE_POLL_PERIOD polls (same gap,
+  // same memory writes, same registers), or a repeat in all but the values
+  // stored, which change by a new amount every time (a random number
+  // generator stirred while the loop waits).  Reset when input is consumed,
   // output is written, or disk I/O occurs.  When count >= threshold,
   // isConsoleIdle() returns true.  notePoll() keeps it.
   int idle_poll_count = 0;
@@ -773,6 +775,20 @@ private:
   // it matches any of the last four.
   static constexpr int IDLE_POLL_PERIOD = 4;
   uint64_t recent_polls[IDLE_POLL_PERIOD] = {};  // newest first; see notePoll()
+  // The last eight polls' shapes - the gap, the registers and the addresses
+  // stored to, in order, but not the values - and the values, for the
+  // stirring rule in notePoll().  Eight, because the rule compares a poll
+  // with the two before it of the same shape, and a loop can poll up to four
+  // times a turn.  A ring: recent_shape_at is the slot the next poll goes
+  // in.  A shape of 0 is none (more stores than banked_mem logs).
+  // IDLE_STORE_MAX is banked_mem::STORE_LOG_MAX, which this header cannot
+  // see; hbios_dispatch.cc asserts that they agree.
+  static constexpr int IDLE_SHAPE_RING = 8;
+  static constexpr int IDLE_STORE_MAX = 256;
+  uint64_t recent_shape[IDLE_SHAPE_RING] = {};
+  int recent_nstores[IDLE_SHAPE_RING] = {};
+  uint8_t recent_values[IDLE_SHAPE_RING][IDLE_STORE_MAX] = {};
+  int recent_shape_at = 0;
   void notePoll(bool has_input);
 
   // Manifest disk write warning - set true on first write to manifest disk (non-suppressed)

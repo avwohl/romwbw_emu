@@ -19,6 +19,27 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+### An Infocom game's prompt counts as waiting
+
+ZORK1, HITCH, DEADLINE and the other Infocom games run a random number
+generator while they wait at their `>` prompt. The prompt polls every 2390
+T-states, and no two polls are the same, so the console idle rule did not see a
+wait loop. With stdin at end of file, the run did not end at the prompt. At a
+terminal, the CLI used a full core there.
+
+A third idle rule looks at how the stored values change. A counter, a pointer
+or a float stepped by a constant changes each byte by the same amount each time
+round. A random number generator changes each byte by a new amount.
+
+Now a poll
+counts when two things are true. It is the same as a recent poll in all but the
+values. And three in four of the changed bytes changed by a new amount. Each
+Infocom prompt poll passes the test. Of the MBASIC loops measured, none passes
+it more than twice in a row, and the rule needs eight.
+
+`banked_mem` keeps a log of up to 256 stores between two polls for this. An
+MBASIC benchmark took the same time with the log and without it.
+
 ### MBASIC's integer FOR loop is not taken for a program at a prompt
 
 `10 FOR I%=1 TO 3000:NEXT` polls for ^C every 1040-1135 T-states and stores a

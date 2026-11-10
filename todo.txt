@@ -108,7 +108,6 @@ are read against it.  So it now names the machine it measured.
                 itself is gone (4086092, "the one thing it was waiting on is
                 released").
 
-- [ANY] The console idle rule misses a wait loop that stores something new
-each time round and polls over 940 T-states apart: ZORK1 (hd1k_games) stirs a
-random seed at its `>` prompt, 2390 apart, so `printf 'G:\rZORK1\r' |
-romwbw_emu ... --disk1=hd1k_games` never ends there.  notePoll() has the numbers.
+- [ANY] MBASIC stirring RND while it waits, `10 X=RND:IF INKEY$="" THEN 10`, is
+not idle: RND's time and stores vary with its value, so its poll never has the
+same shape twice and rule (c) in notePoll() cannot see it.

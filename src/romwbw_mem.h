@@ -67,6 +67,20 @@ private:
     uint32_t write_signature;
 
 public:
+    // ...and the same stores in order, while there are no more than this
+    // many, for take_store_log().  A wait loop makes a few dozen between two
+    // console polls (Infocom's interpreter 89); more than this is not one.
+    static const int STORE_LOG_MAX = 256;
+private:
+    uint32_t store_log[STORE_LOG_MAX];  // address << 8 | value; see log_store()
+    int store_log_n;                    // STORE_LOG_MAX + 1 once it overflowed
+
+    void log_store(uint32_t entry) {
+        if (store_log_n < STORE_LOG_MAX) store_log[store_log_n++] = entry;
+        else store_log_n = STORE_LOG_MAX + 1;
+    }
+
+public:
     banked_mem() :
         rom(nullptr), ram(nullptr),
         current_bank(0x00), banking_enabled(false), debug(false),
@@ -74,7 +88,8 @@ public:
         bios_trap_start(0), bios_trap_end(0),
         code_bitmap(nullptr), data_read_bitmap(nullptr), data_write_bitmap(nullptr),
         tracing_enabled(false),
-        write_signature(WRITE_SIGNATURE_START)
+        write_signature(WRITE_SIGNATURE_START),
+        store_log_n(0)
     {
     }
 
@@ -167,6 +182,18 @@ public:
         return s;
     }
 
+    // The stores since the last call, in order, each address << 8 | value
+    // (a bank copy's address is bank << 16 | offset), and restarted.  Returns
+    // how many, or -1 if there were more than STORE_LOG_MAX.  notePoll() takes
+    // it with the signature, to see how a loop's stores change from one time
+    // round to the next.
+    int take_store_log(const uint32_t** log) {
+        int n = store_log_n > STORE_LOG_MAX ? -1 : store_log_n;
+        store_log_n = 0;
+        *log = store_log;
+        return n;
+    }
+
     // Memory access
     qkz80_uint8 fetch_mem(qkz80_uint16 addr, bool is_instruction = false) override {
         if (tracing_enabled) {
@@ -194,6 +221,7 @@ public:
 
     void store_mem(qkz80_uint16 addr, qkz80_uint8 byte) override {
         write_signature = (write_signature ^ (((uint32_t)addr << 8) | byte)) * 16777619u;
+        log_store(((uint32_t)addr << 8) | byte);
 
         if (tracing_enabled) {
             data_write_bitmap[addr >> 3] |= (1 << (addr & 7));
@@ -253,6 +281,7 @@ public:
         // In the write signature too: HBIOS bank copies come this way.
         write_signature = (write_signature ^ (((uint32_t)bank_id << 24) |
                                               ((uint32_t)offset << 8) | value)) * 16777619u;
+        log_store(((uint32_t)bank_id << 24) | ((uint32_t)offset << 8) | value);
 
         if (bank_id & 0x80) {
             // RAM bank - write directly, no protection needed

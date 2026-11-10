@@ -2,6 +2,22 @@
 
 This document explains how to integrate the RomWBW emulator core into downstream projects (iOS, macOS, Windows, etc.).
 
+**2026-11-10: a third console idle rule, and `banked_mem` logs stores. A
+port needs no change.** `isConsoleIdle()` is now also true at the prompt of an
+Infocom game. That prompt runs a random number generator while it waits, and
+polls every 2390 T-states.
+
+ioscpm's `isIdle()` and z80cpmw's `EmulatorEngine::isIdle()` sleep there now.
+`notePoll()` has the rule.
+
+`src/romwbw_mem.h` changed: `banked_mem` keeps the last 256 stores between two
+console polls (1 KB more per instance, and one more array write per
+`store_mem()` and `write_bank()`), and `take_store_log()` gives them to
+`notePoll()`. `HBIOSDispatch` is 2 KB larger. Each port compiles both files in
+place, so a rebuild gets the change. Do a clean rebuild: the class layout of
+`banked_mem` changed, and a build that does not track header dependencies
+links objects that disagree about it.
+
 **2026-11-10: the console idle gap is 940, not 1500. A port needs no
 change.** `IDLE_POLL_MAX_GAP` in `src/hbios_dispatch.h` changed, and every port
 compiles `hbios_dispatch.cc` in place, so a rebuild gets it. Now

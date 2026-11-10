@@ -64,6 +64,8 @@ void HBIOSDispatch::reset() {
   idle_poll_count = 0;
   idle_poll_pending = false;
   for (uint64_t& p : recent_polls) p = 0;
+  for (uint64_t& p : recent_shape) p = 0;
+  recent_shape_at = 0;
   // A reset starts the machine over at the boot loader, as a warm or cold
   // SYSRESET does, and no OS has been handed it yet: the release a bounded
   // time after the handover (releaseHeldInputIfDue()) and the Esc let through
@@ -1126,7 +1128,10 @@ static uint8_t get_md_index(uint8_t unit) {
 //       found no key either, or
 //   (b) REPEATS one of the last IDLE_POLL_PERIOD polls: the same T-states since
 //       the poll before it, the same guest writes to memory in that time
-//       (banked_mem::take_write_signature()) and the same registers.
+//       (banked_mem::take_write_signature()) and the same registers, or
+//   (c) STIRS: it repeats a recent poll in everything but the values stored,
+//       and those change by a new amount every time round - a random number
+//       generator, run while the loop waits.  See the end of this comment.
 //
 // Anything else starts the count again at one.  It used to count every empty
 // poll, so a program that polls while it works looked exactly like one
@@ -1185,12 +1190,25 @@ static uint8_t get_md_index(uint8_t unit) {
 // the two, measured 2026-11-10 on the 3.6.0 images - MBASIC on CP/M 2.2,
 // ZSDOS, NZ-COM, CP/M 3, ZPM3 and QPM, the wait loops on those and on hd1k_bp
 // and Z3PLUS too: no wait loop that depends on rule (a) is within 95 T-states
-// of it, and no MBASIC loop within 100. BBC BASIC 5.00's prompt repeats, so rule (b) has it whatever
-// the gap. A wait loop that stores something new every time round AND polls
-// more than 940 T-states apart is caught by neither rule, and 1500 caught none
-// either: ZORK1 (hd1k_games) at its `>` prompt stirs a four-byte random seed
-// at 21AC every time round, 2390 T-states apart, so with stdin at end of file
-// the run never ends there (todo.txt).
+// of it, and no MBASIC loop within 100.  BBC BASIC 5.00's prompt repeats, so
+// rule (b) has it whatever the gap.
+//
+// A wait loop that stores something new every time round AND polls more than
+// 940 T-states apart is caught by neither (a) nor (b).  Infocom's interpreter
+// is one: at its `>` prompt - ZORK1, HITCH, DEADLINE and the rest on
+// hd1k_games and hd1k_infocom - it runs a random number generator, a
+// four-byte seed at 21AC written 16 times a turn, and polls 2390 T-states
+// apart.  So with stdin at end of file the run never ended there, and at a
+// terminal the CLI span.  Rule (c) is for that.  What it asks is how the
+// values changed, which neither of the others looks at: in a counter, a
+// pointer or a float stepped by a constant, each byte changes by the same
+// amount every time round, and in a random number generator by a new one.
+// Measured on the traces of every loop above, with the test the code below
+// makes (three in four of the changed bytes on a new step): every Infocom
+// poll at its prompt passes, 1200 in a row; no MBASIC loop - FOR on integers
+// and floats, STEP 3 and STEP .1, RND in the loop, a running hash - passes
+// more than twice in a row, and it takes eight.  The cost is a log of up to
+// banked_mem::STORE_LOG_MAX stores between two polls, kept by banked_mem.
 void HBIOSDispatch::notePoll(bool has_input) {
   noteLoaderPoll(has_input);
   unsigned long long now = cpu ? cpu->cycles : 0;
@@ -1198,6 +1216,8 @@ void HBIOSDispatch::notePoll(bool has_input) {
   last_poll_cycles = now;
   // Taken on every poll, so each covers exactly the writes since the last.
   uint32_t writes = memory ? memory->take_write_signature() : 0;
+  const uint32_t* stores = nullptr;
+  int nstores = memory ? memory->take_store_log(&stores) : -1;
   if (has_input) {
     idle_poll_count = 0;
     return;
@@ -1205,20 +1225,24 @@ void HBIOSDispatch::notePoll(bool has_input) {
 
   // FNV-1a over what the guest looks like at this poll.  PC is always the
   // dispatch OUT; R counts refreshes and never repeats, so neither is in it.
-  uint64_t state = 14695981039346656037ull;
-  auto mix = [&state](uint64_t v) {
-    state ^= v;
-    state *= 1099511628211ull;
+  auto mix = [](uint64_t& h, uint64_t v) {
+    h ^= v;
+    h *= 1099511628211ull;
   };
-  mix(gap);
-  mix(writes);
+  uint64_t regs = 14695981039346656037ull;
   if (cpu) {
     const qkz80_reg_set& r = cpu->regs;
-    mix(r.AF.get_pair16());  mix(r.BC.get_pair16());  mix(r.DE.get_pair16());
-    mix(r.HL.get_pair16());  mix(r.IX.get_pair16());  mix(r.IY.get_pair16());
-    mix(r.SP.get_pair16());  mix(r.AF_.get_pair16()); mix(r.BC_.get_pair16());
-    mix(r.DE_.get_pair16()); mix(r.HL_.get_pair16());
+    const uint16_t pairs[] = {
+        r.AF.get_pair16(),  r.BC.get_pair16(),  r.DE.get_pair16(),
+        r.HL.get_pair16(),  r.IX.get_pair16(),  r.IY.get_pair16(),
+        r.SP.get_pair16(),  r.AF_.get_pair16(), r.BC_.get_pair16(),
+        r.DE_.get_pair16(), r.HL_.get_pair16()};
+    for (uint16_t p : pairs) mix(regs, p);
   }
+  uint64_t state = 14695981039346656037ull;
+  mix(state, gap);
+  mix(state, writes);
+  mix(state, regs);
   bool repeat = false;
   for (int i = 0; i < IDLE_POLL_PERIOD; i++) {
     if (recent_polls[i] == state) repeat = true;
@@ -1226,8 +1250,57 @@ void HBIOSDispatch::notePoll(bool has_input) {
   for (int i = IDLE_POLL_PERIOD - 1; i > 0; i--) recent_polls[i] = recent_polls[i - 1];
   recent_polls[0] = state;
 
+  // Rule (c), stirring.  The shape is the state without the values stored:
+  // the gap, the registers and the addresses, in order.  Take the two most
+  // recent polls of the same shape.  If three in four of the bytes that
+  // changed since the newer one had also changed between the two, by a
+  // different amount, the poll counts.  A byte constant until now is no
+  // evidence either way: a loop that repeated and then stores one new value
+  // has not started stirring anything.  A counter, a pointer, a float stepped
+  // by a constant - anything moved on by the same step every time round -
+  // changes each of its bytes by the same amount every time, except where a
+  // carry reaches a byte, and that holds however many copies of the value
+  // the loop stores, before or after the step.  What changes every byte by a new
+  // amount every time is a random number generator being stirred while the
+  // loop waits, so that the next game is different: Infocom's interpreter,
+  // whose prompt does exactly that, is the case this is for.
+  static_assert(IDLE_STORE_MAX == banked_mem::STORE_LOG_MAX,
+                "recent_values holds one poll's store log");
+  uint64_t shape = 0;
+  if (nstores >= 0) {
+    shape = 14695981039346656037ull;
+    mix(shape, gap);
+    mix(shape, regs);
+    mix(shape, (uint64_t)nstores);
+    for (int k = 0; k < nstores; k++) mix(shape, stores[k] >> 8);
+    if (shape == 0) shape = 1;  // 0 is "no shape"
+  }
+  bool stirred = false;
+  int match[2], nmatch = 0;
+  for (int j = 1; j <= IDLE_SHAPE_RING && shape != 0 && !repeat && nmatch < 2; j++) {
+    int i = (recent_shape_at + IDLE_SHAPE_RING - j) % IDLE_SHAPE_RING;  // newest first
+    if (recent_shape[i] == shape && recent_nstores[i] == nstores) match[nmatch++] = i;
+  }
+  if (nmatch == 2) {
+    const uint8_t* newer = recent_values[match[0]];
+    const uint8_t* older = recent_values[match[1]];
+    int changed = 0, new_step = 0;
+    for (int k = 0; k < nstores; k++) {
+      uint8_t step = (uint8_t)((uint8_t)stores[k] - newer[k]);
+      uint8_t last = (uint8_t)(newer[k] - older[k]);
+      if (step == 0) continue;
+      changed++;
+      if (last != 0 && step != last) new_step++;
+    }
+    stirred = changed > 0 && 4 * new_step >= 3 * changed;
+  }
+  recent_shape[recent_shape_at] = shape;
+  recent_nstores[recent_shape_at] = nstores > 0 ? nstores : 0;
+  for (int k = 0; k < nstores; k++) recent_values[recent_shape_at][k] = (uint8_t)stores[k];
+  recent_shape_at = (recent_shape_at + 1) % IDLE_SHAPE_RING;
+
   bool close = idle_poll_count > 0 && gap <= IDLE_POLL_MAX_GAP;
-  if (!close && !repeat) {
+  if (!close && !repeat && !stirred) {
     idle_poll_count = 1;
   } else if (idle_poll_count < IDLE_POLL_THRESHOLD) {
     idle_poll_count++;  // capped: an int counting forever at a prompt wraps
