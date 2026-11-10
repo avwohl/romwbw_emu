@@ -13,7 +13,7 @@ ioscpm's `isIdle()` and z80cpmw's `EmulatorEngine::isIdle()` sleep there now.
 `src/romwbw_mem.h` changed: `banked_mem` keeps the last 256 stores between two
 console polls (1 KB more per instance, and one more array write per
 `store_mem()` and `write_bank()`), and `take_store_log()` gives them to
-`notePoll()`. `HBIOSDispatch` is 2 KB larger. Each port compiles both files in
+`notePoll()`. `HBIOSDispatch` is 8 KB larger. Each port compiles both files in
 place, so a rebuild gets the change. Do a clean rebuild: the class layout of
 `banked_mem` changed, and a build that does not track header dependencies
 links objects that disagree about it.

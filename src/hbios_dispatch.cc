@@ -65,7 +65,9 @@ void HBIOSDispatch::reset() {
   idle_poll_pending = false;
   for (uint64_t& p : recent_polls) p = 0;
   for (uint64_t& p : recent_shape) p = 0;
+  for (uint64_t& p : recent_place) p = 0;
   recent_shape_at = 0;
+  last_poll_repeated = false;
   // A reset starts the machine over at the boot loader, as a warm or cold
   // SYSRESET does, and no OS has been handed it yet: the release a bounded
   // time after the handover (releaseHeldInputIfDue()) and the Esc let through
@@ -1130,7 +1132,8 @@ static uint8_t get_md_index(uint8_t unit) {
 //       the poll before it, the same guest writes to memory in that time
 //       (banked_mem::take_write_signature()) and the same registers, or
 //   (c) STIRS: it repeats a recent poll in everything but the values stored,
-//       and those change by a new amount every time round - a random number
+//       or comes from the same repeating poll as two recent ones, and the
+//       values change by a new amount every time round - a random number
 //       generator, run while the loop waits.  See the end of this comment.
 //
 // Anything else starts the count again at one.  It used to count every empty
@@ -1209,6 +1212,37 @@ static uint8_t get_md_index(uint8_t unit) {
 // and floats, STEP 3 and STEP .1, RND in the loop, a running hash - passes
 // more than twice in a row, and it takes eight.  The cost is a log of up to
 // banked_mem::STORE_LOG_MAX stores between two polls, kept by banked_mem.
+//
+// MBASIC stirring RND while it waits, `10 X=RND:IF INKEY$="" THEN 10`, needs
+// the second half of rule (c), the place: see the code.  With it that loop is
+// idle at once (0.16 s to the end of a piped run, which had run until it was
+// killed).  Loops at work with no counter at all still run to the end, as
+// measured: `X=X*1.1` until a limit, Collatz, Newton's square root, SIN and
+// SQR in a loop, and a running sum of RND.
+// The last value each address was left holding by a store log, sorted by
+// address: what the stores left behind, whatever order they came in.  For
+// rule (c) in notePoll().  `out` has room for n; returns how many.
+static int lastStoreEach(const uint32_t* log, int n, uint32_t* out) {
+  // Insertion sort by address, later stores after earlier ones at the same
+  // address: n is at most a few hundred, and this runs only for a poll that
+  // matches the place of two before it and not their shape.
+  int m = 0;
+  for (int k = 0; k < n; k++) {
+    int i = m++;
+    while (i > 0 && (out[i - 1] >> 8) > (log[k] >> 8)) {
+      out[i] = out[i - 1];
+      i--;
+    }
+    out[i] = log[k];
+  }
+  int w = 0;
+  for (int k = 0; k < m; k++) {
+    if (k + 1 < m && (out[k + 1] >> 8) == (out[k] >> 8)) continue;  // a later store follows
+    out[w++] = out[k];
+  }
+  return w;
+}
+
 void HBIOSDispatch::notePoll(bool has_input) {
   noteLoaderPoll(has_input);
   unsigned long long now = cpu ? cpu->cycles : 0;
@@ -1220,6 +1254,7 @@ void HBIOSDispatch::notePoll(bool has_input) {
   int nstores = memory ? memory->take_store_log(&stores) : -1;
   if (has_input) {
     idle_poll_count = 0;
+    last_poll_repeated = false;
     return;
   }
 
@@ -1247,6 +1282,11 @@ void HBIOSDispatch::notePoll(bool has_input) {
   for (int i = 0; i < IDLE_POLL_PERIOD; i++) {
     if (recent_polls[i] == state) repeat = true;
   }
+  // This poll's place in the loop, for rule (c): the poll before it, when
+  // that one repeated - a loop whose other polls repeat comes to this one
+  // from the same state every time round.
+  const uint64_t place = last_poll_repeated ? (recent_polls[0] | 1) : 0;
+  last_poll_repeated = repeat;
   for (int i = IDLE_POLL_PERIOD - 1; i > 0; i--) recent_polls[i] = recent_polls[i - 1];
   recent_polls[0] = state;
 
@@ -1260,12 +1300,20 @@ void HBIOSDispatch::notePoll(bool has_input) {
   // by a constant - anything moved on by the same step every time round -
   // changes each of its bytes by the same amount every time, except where a
   // carry reaches a byte, and that holds however many copies of the value
-  // the loop stores, before or after the step.  What changes every byte by a new
-  // amount every time is a random number generator being stirred while the
-  // loop waits, so that the next game is different: Infocom's interpreter,
-  // whose prompt does exactly that, is the case this is for.
+  // the loop stores, before or after the step.  What changes every byte by
+  // a new amount every time is a random number generator being stirred while
+  // the loop waits, so that the next game is different: Infocom's
+  // interpreter, whose prompt does exactly that, is the case this is for.
+  //
+  // A generator need not run the same way every time, though.  MBASIC's RND
+  // takes a time and makes stores that depend on the number it produces, so
+  // `10 X=RND:IF INKEY$="" THEN 10` never polls in the same shape twice.  Its
+  // other polls repeat, so it comes to that one from the same poll every time
+  // round: that is its place, and a poll with no shape to match is compared
+  // with the two before it in the same place instead - by the last value each
+  // address was left holding, since the stores themselves do not line up.
   static_assert(IDLE_STORE_MAX == banked_mem::STORE_LOG_MAX,
-                "recent_values holds one poll's store log");
+                "recent_stores holds one poll's store log");
   uint64_t shape = 0;
   if (nstores >= 0) {
     shape = 14695981039346656037ull;
@@ -1282,21 +1330,50 @@ void HBIOSDispatch::notePoll(bool has_input) {
     if (recent_shape[i] == shape && recent_nstores[i] == nstores) match[nmatch++] = i;
   }
   if (nmatch == 2) {
-    const uint8_t* newer = recent_values[match[0]];
-    const uint8_t* older = recent_values[match[1]];
+    // Same shape: the stores line up one for one.
+    const uint32_t* newer = recent_stores[match[0]];
+    const uint32_t* older = recent_stores[match[1]];
     int changed = 0, new_step = 0;
     for (int k = 0; k < nstores; k++) {
-      uint8_t step = (uint8_t)((uint8_t)stores[k] - newer[k]);
-      uint8_t last = (uint8_t)(newer[k] - older[k]);
+      uint8_t step = (uint8_t)((uint8_t)stores[k] - (uint8_t)newer[k]);
+      uint8_t last = (uint8_t)((uint8_t)newer[k] - (uint8_t)older[k]);
       if (step == 0) continue;
       changed++;
       if (last != 0 && step != last) new_step++;
     }
     stirred = changed > 0 && 4 * new_step >= 3 * changed;
+  } else if (place != 0 && nstores >= 0 && !repeat) {
+    nmatch = 0;
+    for (int j = 1; j <= IDLE_SHAPE_RING && nmatch < 2; j++) {
+      int i = (recent_shape_at + IDLE_SHAPE_RING - j) % IDLE_SHAPE_RING;  // newest first
+      if (recent_place[i] == place) match[nmatch++] = i;
+    }
+    if (nmatch == 2) {
+      // Same place, another shape: compare what each address was left
+      // holding, over the addresses all three stored to.
+      uint32_t cur[IDLE_STORE_MAX], newer[IDLE_STORE_MAX], older[IDLE_STORE_MAX];
+      int nc = lastStoreEach(stores, nstores, cur);
+      int nn = lastStoreEach(recent_stores[match[0]], recent_nstores[match[0]], newer);
+      int no = lastStoreEach(recent_stores[match[1]], recent_nstores[match[1]], older);
+      int changed = 0, new_step = 0;
+      for (int k = 0, a = 0, b = 0; k < nc; k++) {
+        const uint32_t addr = cur[k] >> 8;
+        while (a < nn && (newer[a] >> 8) < addr) a++;
+        while (b < no && (older[b] >> 8) < addr) b++;
+        if (a == nn || b == no || (newer[a] >> 8) != addr || (older[b] >> 8) != addr) continue;
+        uint8_t step = (uint8_t)((uint8_t)cur[k] - (uint8_t)newer[a]);
+        uint8_t last = (uint8_t)((uint8_t)newer[a] - (uint8_t)older[b]);
+        if (step == 0) continue;
+        changed++;
+        if (last != 0 && step != last) new_step++;
+      }
+      stirred = changed > 0 && 4 * new_step >= 3 * changed;
+    }
   }
   recent_shape[recent_shape_at] = shape;
+  recent_place[recent_shape_at] = nstores >= 0 ? place : 0;
   recent_nstores[recent_shape_at] = nstores > 0 ? nstores : 0;
-  for (int k = 0; k < nstores; k++) recent_values[recent_shape_at][k] = (uint8_t)stores[k];
+  for (int k = 0; k < nstores; k++) recent_stores[recent_shape_at][k] = stores[k];
   recent_shape_at = (recent_shape_at + 1) % IDLE_SHAPE_RING;
 
   bool close = idle_poll_count > 0 && gap <= IDLE_POLL_MAX_GAP;

@@ -19,6 +19,20 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+### MBASIC stirring RND while it waits for a key counts as waiting
+
+`10 X=RND:IF INKEY$="" THEN 10` is the BASIC way to make a game different each
+time it runs. RND takes a time and makes stores that change with its value, so
+its poll is never the same shape twice. The Infocom rule did not see it, and a
+piped run did not end at that loop.
+
+The loop's other polls repeat, so the RND poll always comes after the same
+poll. Now the rule also compares a poll with the two recent polls that came
+after the same repeating poll. It compares the last value at each address.
+The loop now counts as idle at once. Loops at work with no counter still run
+to the end: `X=X*1.1` to a limit, Collatz, Newton's square root, SIN and SQR in
+a loop, and a sum of RND.
+
 ### An Infocom game's prompt counts as waiting
 
 ZORK1, HITCH, DEADLINE and the other Infocom games run a random number

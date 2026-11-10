@@ -107,7 +107,3 @@ are read against it.  So it now names the machine it measured.
                 have been cut since, the PAT problem is over, and WIP.md
                 itself is gone (4086092, "the one thing it was waiting on is
                 released").
-
-- [ANY] MBASIC stirring RND while it waits, `10 X=RND:IF INKEY$="" THEN 10`, is
-not idle: RND's time and stores vary with its value, so its poll never has the
-same shape twice and rule (c) in notePoll() cannot see it.

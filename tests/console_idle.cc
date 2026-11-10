@@ -293,6 +293,46 @@ int main() {
           "a counter stepped by 3 and copied before and after the step is not idle");
   }
 
+  {
+    // MBASIC in `10 X=RND:IF INKEY$="" THEN 10`: three polls a turn repeat,
+    // and the fourth follows RND, whose time and stores depend on the number
+    // it makes, so that poll never has the same shape twice.  It comes from
+    // the same repeating poll every turn, and what it leaves stored is new by
+    // a new amount every time.  `counting` puts a counter there instead.
+    auto turns = [](bool counting) {
+      Rig r;
+      uint32_t seed = 2463534242u;
+      unsigned counter = 0;
+      int idle = 0;
+      for (int turn = 0; turn < 40; turn++) {
+        r.work = Rig::SAME;
+        r.poll_after(920);
+        r.poll_after(3175);
+        r.poll_after(1200);
+        seed ^= seed << 13;  seed ^= seed >> 17;  seed ^= seed << 5;
+        r.cpu.cycles += 6000 + (seed & 0xFF);              // a new gap every turn
+        for (unsigned i = 0; i < (seed >> 29); i++) {      // and a new shape
+          r.mem.store_mem((uint16_t)(0x9300 + i), 0x55);
+        }
+        if (counting) {
+          counter++;
+          r.mem.store_mem(0x9200, (uint8_t)counter);
+          r.mem.store_mem(0x9201, (uint8_t)(counter >> 8));
+        } else {
+          for (int i = 0; i < 4; i++) {
+            r.mem.store_mem((uint16_t)(0x9200 + i), (uint8_t)(seed >> (8 * i)));
+          }
+        }
+        r.call(HBF_CIOIST);
+        if (r.hbios.isConsoleIdle()) idle++;
+      }
+      return idle;
+    };
+    check(turns(false) > 30, "MBASIC stirring RND in an INKEY$ loop is idle");
+    check(turns(true) == 0,
+          "...but a counter in the same place, in a new shape every turn, is not");
+  }
+
   // --- slow wait loops: idle because they repeat ----------------------------
   {
     // ZPM3's command prompt reads the RTC between polls, which puts them 3605

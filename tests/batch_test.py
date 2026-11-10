@@ -793,6 +793,21 @@ def test_batches():
         check(r.returncode == 0 and "DONE" in log,
               "MBASIC running an integer FOR loop finishes and prints DONE")
 
+        # ...and MBASIC waiting for a key while it stirs RND, whose poll never
+        # has the same shape twice: the run never ended there, so this batch
+        # ran to its timeout.  Now it ends at end of input, incomplete.
+        with open(os.path.join(d, "rwait.bas"), "w") as f:
+            f.write('10 X=RND:IF INKEY$="" THEN 10\n')
+        t0 = time.monotonic()
+        r = batch(["-t", "rwait.bas", "-c", "MBASIC RWAIT", "--timeout", "60",
+                   "--work", "mr"], d)
+        took = time.monotonic() - t0
+        log = open(os.path.join(d, "mr", "console.log"), encoding="latin-1").read() \
+            if os.path.exists(os.path.join(d, "mr", "console.log")) else ""
+        check(took < 30 and "Bytes free" in log,
+              "MBASIC stirring RND while it waits for a key: the run ends at end "
+              "of input (%.1fs)" % took)
+
 
 def test_escape_stops_countdown(emu, rom, img):
     """A script led with Esc stops the autoboot countdown, as it did before
