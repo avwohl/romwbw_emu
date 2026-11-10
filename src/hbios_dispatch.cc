@@ -1147,12 +1147,15 @@ static uint8_t get_md_index(uint8_t unit) {
 //   waiting   romldr boot prompt 170, BIOS CONST loop 160, BDOS fn 6 loop
 //             370 (CP/M 2.2 and 3) and 425 (ZSDOS), BDOS fn 11 loop 395
 //             (CP/M 2.2), 410 (ZSDOS), 885 (CP/M 3, through its bank switch),
-//             ZDE 475, BBC BASIC 690 - and ZPM3's command prompt 3605
+//             ZDE 445-550, WordStar 4 405-610, the NZ-COM and BPBIOS command
+//             prompts 720-845, BBC BASIC 690-765 - and ZPM3's command prompt
+//             3605
 //   working   MBASIC FOR/NEXT loop 1865-7380, never two in a row under 1865;
-//             PIP concatenating 46335; the BDOS between printed characters
-//             650, but every one of those follows output, which resets
+//             MBASIC's NEXT on an integer variable 1040-1135; PIP
+//             concatenating 46335; the BDOS between printed characters 650,
+//             but every one of those follows output, which resets
 //
-// Rule (a) alone put the line at 1500, and ZPM3 is on the wrong side of it:
+// Rule (a) alone once put the line at 1500, and ZPM3 is on the wrong side of it:
 // its prompt reads the RTC between polls.  So it never counted as idle, and
 // on the CLI that meant three things - with stdin at end of file the run
 // never ended, piped input held by holdInputUntilWanted() was never released
@@ -1169,11 +1172,25 @@ static uint8_t get_md_index(uint8_t unit) {
 // before the statement, then INKEY$), which rule (a) had also given up on, and
 // HTALK every second poll (the console, then the serial port).
 //
-// Rule (a) stays for wait loops that do change memory each time round, and
-// ZDE and BBC BASIC's are two: neither repeats, both poll well inside 1500.
-// It is also rule (a) that takes MBASIC running a FOR loop on an INTEGER
-// variable, which polls every 1095 T-states: that is working and counts as
-// waiting, as it did under every rule before this one (todo.txt).
+// Rule (a) stays for wait loops that do change memory each time round. ZDE
+// takes one off a 16-bit count every time round (through zero and on, over
+// 2400 polls watched); the NZ-COM and BPBIOS prompts, and WordStar's, change
+// something every time too. None of them repeats, and the slowest polls 845 T-states apart.
+//
+// So the line is 940, not 1500. At 1500 rule (a) also took MBASIC running a
+// FOR loop on an INTEGER variable, which polls every 1040-1135 T-states and
+// stores the new count every time: working, and counted as waiting, so with
+// stdin at end of file `10 FOR I%=1 TO 3000:NEXT` was ended in the middle and
+// at a terminal it ran at a hundred polls a second. 940 is half way between
+// the two, measured 2026-11-10 on CP/M 2.2, ZSDOS, NZ-COM, CP/M 3, ZPM3, QPM,
+// BPBIOS and Z3PLUS (the 3.6.0 combo slices and hd1k_* images): no wait loop
+// that depends on rule (a) is within 95 T-states of it, and no MBASIC loop
+// within 100. BBC BASIC 5.00's prompt repeats, so rule (b) has it whatever
+// the gap. A wait loop that stores something new every time round AND polls
+// more than 940 T-states apart is caught by neither rule, and 1500 caught none
+// either: ZORK1 (hd1k_games) at its `>` prompt stirs a four-byte random seed
+// at 21AC every time round, 2390 T-states apart, so with stdin at end of file
+// the run never ends there (todo.txt).
 void HBIOSDispatch::notePoll(bool has_input) {
   noteLoaderPoll(has_input);
   unsigned long long now = cpu ? cpu->cycles : 0;

@@ -108,15 +108,7 @@ are read against it.  So it now names the machine it measured.
                 itself is gone (4086092, "the one thing it was waiting on is
                 released").
 
-- [ANY] The console idle rule (notePoll() in src/hbios_dispatch.cc) still
-takes one working program for a waiting one: MBASIC running a FOR loop on an
-INTEGER variable - `10 FOR I%=1 TO 3000: NEXT` - polls for ^C every 1095
-T-states, inside IDLE_POLL_MAX_GAP (1500). So at end of piped input the run
-ends mid-loop (tools/romwbw-batch -c "MBASIC PROG" reports it incomplete), and
-at a terminal the CLI sleeps 10 ms per poll of it: on a pty, 3000 turns of
-that loop took 43 seconds, on 0ddea4b and after it alike. Every rule so far
-has done this. The repeat rule does not need the gap and does not take it -
-its stores change every time round - but ZDE (475) and BBC BASIC (690) wait in
-loops that also store something new every time, so dropping the gap rule would
-stop the run ending at their prompts instead. Measured 2026-09-25; the numbers
-are in the notePoll() comment.
+- [ANY] The console idle rule misses a wait loop that stores something new
+each time round and polls over 940 T-states apart: ZORK1 (hd1k_games) stirs a
+random seed at its `>` prompt, 2390 apart, so `printf 'G:\rZORK1\r' |
+romwbw_emu ... --disk1=hd1k_games` never ends there.  notePoll() has the numbers.

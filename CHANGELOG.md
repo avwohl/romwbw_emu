@@ -19,6 +19,19 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+### MBASIC's integer FOR loop is not taken for a program at a prompt
+
+`10 FOR I%=1 TO 3000:NEXT` polls for ^C every 1040-1135 T-states and stores a
+new `I%` each time. The console idle rule counted every poll within 1500
+T-states of the last, so it took the loop for a wait loop. At end of piped input
+the run stopped in the middle of the loop. At a terminal the loop ran at about a
+hundred polls a second.
+
+`IDLE_POLL_MAX_GAP` is now 940. The slowest wait loop that needs the gap rule is
+the NZ-COM and BPBIOS command prompt, at 845. The fastest MBASIC loop is 1040.
+The measurements are from eight operating systems. `tests/console_idle.cc` and
+`tests/batch_test.py` check the integer loop.
+
 ### `romwbw-get versions` reports the snapshot a run actually uses
 
 With a development snapshot stored by `romwbw-get use` and `--prerelease` off,

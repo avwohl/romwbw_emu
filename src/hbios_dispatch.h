@@ -765,7 +765,9 @@ private:
   void releaseHeldInputIfDue();
   bool heldEscapeWaiting() const;
   static constexpr int IDLE_POLL_THRESHOLD = 8;
-  static constexpr unsigned long long IDLE_POLL_MAX_GAP = 1500;  // T-states
+  // Between the slowest wait loop that needs the gap rule (845, NZ-COM's
+  // prompt) and the fastest program at work (1040, MBASIC's integer NEXT).
+  static constexpr unsigned long long IDLE_POLL_MAX_GAP = 940;  // T-states
   // A wait loop can poll more than once per turn - MBASIC's INKEY$ loop polls
   // twice, HTALK the console and then the serial port - so a poll repeats if
   // it matches any of the last four.

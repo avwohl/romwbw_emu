@@ -230,6 +230,26 @@ int main() {
     check(r.hbios.isConsoleIdle(), "VDAKST counts the same way as CIOIST");
   }
 
+  // --- wait loops that change memory every time round: idle by the gap -----
+  {
+    // ZDE takes one off a 16-bit count every time round and never resets it,
+    // so no poll repeats: 475 T-states apart on CP/M 2.2, 445-550 elsewhere.
+    const unsigned zde[] = {475};
+    Rig r;
+    r.work = Rig::COUNTING;
+    r.polls(zde, 1, 20);
+    check(r.hbios.isConsoleIdle(), "ZDE (475 T, a new count every time) is idle");
+  }
+  {
+    // The NZ-COM and BPBIOS command prompts, the slowest that need the gap.
+    const unsigned zcpr[] = {760, 825, 845, 760};
+    Rig r;
+    r.work = Rig::COUNTING;
+    r.polls(zcpr, 4, 20);
+    check(r.hbios.isConsoleIdle(),
+          "the NZ-COM prompt (760-845 T, never repeating) is idle");
+  }
+
   // --- slow wait loops: idle because they repeat ----------------------------
   {
     // ZPM3's command prompt reads the RTC between polls, which puts them 3605
@@ -291,6 +311,29 @@ int main() {
     check(!r.hbios.isConsoleIdle() && sleeps == 0,
           "a loop polling at a steady gap but storing a new value each time is "
           "not idle");
+  }
+  {
+    // MBASIC running `FOR I%=1 TO 3000:NEXT`: the NEXT of an integer loop
+    // polls every 1040-1135 T-states, a new I% every time - under the gap of
+    // 1500 this was idle, and a piped run was ended in the middle of it.
+    const unsigned fast[] = {1040};
+    const unsigned slow[] = {1095};
+    Rig r1, r2;
+    r1.work = r2.work = Rig::COUNTING;
+    int sleeps = r1.polls(fast, 1, 500) + r2.polls(slow, 1, 500);
+    check(!r1.hbios.isConsoleIdle() && !r2.hbios.isConsoleIdle() && sleeps == 0,
+          "MBASIC's integer FOR loop (1040 and 1095 T) is not idle");
+  }
+  {
+    // The line itself: 940 is close, 941 is not.
+    const unsigned at[] = {940};
+    const unsigned over[] = {941};
+    Rig r1, r2;
+    r1.work = r2.work = Rig::COUNTING;
+    r1.polls(at, 1, 20);
+    r2.polls(over, 1, 20);
+    check(r1.hbios.isConsoleIdle(), "a new poll 940 T after the last counts");
+    check(!r2.hbios.isConsoleIdle(), "...and one 941 T after it does not");
   }
   {
     // The same, with the count kept in a register rather than memory.

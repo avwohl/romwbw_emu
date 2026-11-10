@@ -2,6 +2,17 @@
 
 This document explains how to integrate the RomWBW emulator core into downstream projects (iOS, macOS, Windows, etc.).
 
+**2026-11-10: the console idle gap is 940, not 1500. A port needs no
+change.** `IDLE_POLL_MAX_GAP` in `src/hbios_dispatch.h` changed, and every port
+compiles `hbios_dispatch.cc` in place, so a rebuild gets it. Now
+`isConsoleIdle()` stays false while MBASIC runs a FOR loop on an integer
+variable, which polls every 1040-1135 T-states. Before, the rule took that loop
+for a wait loop, and an `isIdle()` that sleeps on it slowed the loop.
+
+The wait loops that need the gap rule poll at 845 T-states or less: ZDE,
+WordStar 4, and the NZ-COM and BPBIOS command prompts. They are still idle.
+`notePoll()` has the numbers.
+
 **2026-11-04: a GDB stub in the CLI, and no shared file changed.** `--gdb` on
 `romwbw_emu` (`docs/GDB.md`) compiles cpmemu's `gdbstub.cc` and three new files:
 `src/romwbw_gdb.{h,cc}` and `src/gdb_platform.cc`. No port compiles any of them,
@@ -48,7 +59,7 @@ reads it.
 
 One thing worth knowing if you time anything by `cpu->cycles`: qkz80 adds
 five for every instruction, whatever it is, so the "T-states" in this core's
-constants - the idle rule's 1500, the hold's 120M - are five times the
+constants - the idle rule's 940, the hold's 120M - are five times the
 instructions run, not the guest's T-states. `takeLoaderPoll()` works its
 microseconds out from the instructions of romldr's delay loop for that
 reason.

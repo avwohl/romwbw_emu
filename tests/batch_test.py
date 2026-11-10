@@ -778,6 +778,18 @@ def test_batches():
         check(r.returncode == 0 and "DONE" in log,
               "MBASIC running a loop finishes and prints DONE")
 
+        # ...and on an INTEGER variable, whose NEXT polls every 1040-1135
+        # T-states with a new I% each time: inside the old idle gap of 1500,
+        # so the run was ended in the middle of the loop.
+        with open(os.path.join(d, "iloop.bas"), "w") as f:
+            f.write('10 FOR I%=1 TO 3000:NEXT\n20 PRINT "DONE"\n30 SYSTEM\n')
+        r = batch(["-t", "iloop.bas", "-c", "MBASIC ILOOP", "--timeout", "60",
+                   "--work", "mi"], d)
+        log = open(os.path.join(d, "mi", "console.log"), encoding="latin-1").read() \
+            if os.path.exists(os.path.join(d, "mi", "console.log")) else ""
+        check(r.returncode == 0 and "DONE" in log,
+              "MBASIC running an integer FOR loop finishes and prints DONE")
+
 
 def test_escape_stops_countdown(emu, rom, img):
     """A script led with Esc stops the autoboot countdown, as it did before
