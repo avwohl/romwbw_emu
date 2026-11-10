@@ -241,7 +241,8 @@ int main() {
     check(r.hbios.isConsoleIdle(), "ZDE (475 T, a new count every time) is idle");
   }
   {
-    // The NZ-COM and BPBIOS command prompts, the slowest that need the gap.
+    // The command prompts of NZ-COM and of hd1k_bp's ZSDOS, the slowest that
+    // need the gap.
     const unsigned zcpr[] = {760, 825, 845, 760};
     Rig r;
     r.work = Rig::COUNTING;

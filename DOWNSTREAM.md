@@ -10,7 +10,8 @@ variable, which polls every 1040-1135 T-states. Before, the rule took that loop
 for a wait loop, and an `isIdle()` that sleeps on it slowed the loop.
 
 The wait loops that need the gap rule poll at 845 T-states or less: ZDE,
-WordStar 4, and the NZ-COM and BPBIOS command prompts. They are still idle.
+WordStar 4, and the command prompts of NZ-COM and of the ZSDOS on `hd1k_bp`.
+They are still idle.
 `notePoll()` has the numbers.
 
 **2026-11-04: a GDB stub in the CLI, and no shared file changed.** `--gdb` on

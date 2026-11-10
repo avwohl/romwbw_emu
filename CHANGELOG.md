@@ -28,8 +28,8 @@ the run stopped in the middle of the loop. At a terminal the loop ran at about a
 hundred polls a second.
 
 `IDLE_POLL_MAX_GAP` is now 940. The slowest wait loop that needs the gap rule is
-the NZ-COM and BPBIOS command prompt, at 845. The fastest MBASIC loop is 1040.
-The measurements are from eight operating systems. `tests/console_idle.cc` and
+the NZ-COM command prompt, at 845. The fastest MBASIC loop is 1040. The MBASIC
+measurements are from six operating systems, and the wait loops from eight. `tests/console_idle.cc` and
 `tests/batch_test.py` check the integer loop.
 
 ### `romwbw-get versions` reports the snapshot a run actually uses
