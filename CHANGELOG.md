@@ -303,7 +303,7 @@ error says where the package puts it and lists the places it looked.
 `cpm_disk.py`, through `SourceFileLoader`, which writes a `__pycache__`
 beside each - into `/usr/bin` and `/usr/share/romwbw_emu` when run as root.
 It was found by building the .deb here: the workflow's own check of the staged
-tools had left `romwbw-batchcpython-314.pyc` and `cpm_disk`'s in the package.
+tools had left the compiled `.pyc` file of `romwbw-batch` and of `cpm_disk` in the package.
 
 `release.yml`: the staging check runs both staged tools, checks that the
 staged `romwbw-batch` finds the staged `cpm_disk.py` - not the cpmemu clone
