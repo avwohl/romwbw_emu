@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdarg>
+#include <cstdlib>
 
 // Static member definition - survives object recreation within session
 bool HBIOSDispatch::manifest_warning_shown = false;

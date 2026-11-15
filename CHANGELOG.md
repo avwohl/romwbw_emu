@@ -19,6 +19,16 @@ on their next build, tag or no tag.
 
 ## [Unreleased]
 
+### The wasm builds again with Emscripten 7
+
+`src/hbios_dispatch.cc` calls `atoi` and did not include `<cstdlib>`. Older
+libc++ headers supplied the declaration through other headers. The libc++ of
+Emscripten 7.0.0 does not, so `make -C web` stopped with `use of undeclared
+identifier 'atoi'`. The `browser` job of the Tests workflow failed on each
+push from 2026-11-09, and a release build of the web page had the same
+failure. The file now includes `<cstdlib>`. With Emscripten 7.0.0 the wasm
+builds, and `tests/web_browser.js` passes its 17 checks in headless Chrome.
+
 ### MBASIC stirring RND while it waits for a key counts as waiting
 
 `10 X=RND:IF INKEY$="" THEN 10` is the BASIC way to make a game different each
